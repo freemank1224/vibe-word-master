@@ -1,0 +1,8 @@
+{
+  "name": "VocabVibe Master",
+  "description": "A high-octane, modern vocabulary learning tool featuring AI-powered image hints, voice input, and visual analytics to supercharge your word retention.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
