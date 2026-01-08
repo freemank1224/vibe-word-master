@@ -6,6 +6,8 @@ export interface WordEntry {
   sessionId: string;
   correct: boolean;
   tested: boolean;
+  image_path?: string | null; // Path in Supabase Storage
+  image_url?: string | null; // Public URL
 }
 
 export interface InputSession {
