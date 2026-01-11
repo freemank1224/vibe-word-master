@@ -68,12 +68,21 @@ export const fetchUserData = async (userId: string) => {
   }
 
   // Map DB structure to App Interface
-  const sessions: InputSession[] = (sessionsData || []).map((s: any) => ({
-    id: s.id,
-    timestamp: new Date(s.created_at).getTime(),
-    wordCount: s.word_count,
-    targetCount: s.target_count
-  }));
+  // Note: We calculate wordCount and timestamp dynamically based on the actual words fetched
+  // to ensure the UI always reflects the latest activity, regardless of stale metadata.
+  const sessions: InputSession[] = (sessionsData || []).map((s: any) => {
+    const sessionWords = (wordsData || []).filter((w: any) => w.session_id === s.id);
+    const lastWordTime = sessionWords.length > 0 
+      ? Math.max(...sessionWords.map(w => new Date(w.created_at).getTime()))
+      : 0;
+
+    return {
+      id: s.id,
+      timestamp: Math.max(new Date(s.created_at).getTime(), lastWordTime),
+      wordCount: sessionWords.length,
+      targetCount: s.target_count
+    };
+  });
 
   const words: WordEntry[] = (wordsData || []).map((w: any) => ({
     id: w.id,
@@ -138,6 +147,21 @@ export const saveSessionData = async (
       throw wordsError;
   }
 
+  // 4. Final Sync: Ensure word_count matches actual inserted words
+  const { count: finalCount } = await supabase
+    .from('words')
+    .select('*', { count: 'exact', head: true })
+    .eq('session_id', sessionData.id)
+    .eq('user_id', userId);
+
+  if (finalCount !== null && finalCount !== wordList.length) {
+    await supabase
+      .from('sessions')
+      .update({ word_count: finalCount })
+      .eq('id', sessionData.id)
+      .eq('user_id', userId);
+  }
+
   return { sessionData, wordsData: wordsData || [] };
 };
 
@@ -189,30 +213,32 @@ export const modifySession = async (
         if (data) newWordsData.push(...data);
     }
 
-    // 3. Update Session Count - Recalculate accurately
-    // We count the words currently associated with this session
+    // 3. Update Session Count & Modification Time - Recalculate accurately
+    // We count the words currently associated with this session to ensure consistency.
     const { count, error: countError } = await supabase
         .from('words')
         .select('*', { count: 'exact', head: true })
-        .eq('session_id', sessionId);
+        .eq('session_id', sessionId)
+        .eq('user_id', userId);
 
     if (countError) {
         console.error("Error counting words:", countError.message);
     }
 
-    if (count !== null) {
-        // Update word count AND timestamp to reflect modification
-        const { error: updateError } = await supabase
-            .from('sessions')
-            .update({ 
-                word_count: count,
-                created_at: new Date().toISOString() // Bump timestamp to now
-            })
-            .eq('id', sessionId);
+    // Always update word_count and created_at (as editing time)
+    const finalCount = count !== null ? count : 0;
+    const { error: updateError } = await supabase
+        .from('sessions')
+        .update({ 
+            word_count: finalCount,
+            target_count: finalCount, // Align target count with actual count
+            created_at: new Date().toISOString() // Bump timestamp to now for "Editing Time"
+        })
+        .eq('id', sessionId)
+        .eq('user_id', userId);
 
-        if (updateError) {
-            console.error("Error updating session metadata:", updateError.message);
-        }
+    if (updateError) {
+        console.error("Error updating session metadata:", updateError.message);
     }
 
     return { newWordsData };

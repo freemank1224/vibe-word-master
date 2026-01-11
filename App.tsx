@@ -464,7 +464,7 @@ const Dashboard: React.FC<{
 
           <div className="text-center md:text-right flex-1 order-first md:order-last">
             <h2 className="text-6xl sm:text-8xl font-headline text-electric-blue leading-tight mb-4">
-              EXPAND YOUR<br/>UNIVERSE.
+              EXPAND YOUR<br/>VOCAB UNIVERSE.
             </h2>
             <p className="text-xl text-text-dark max-w-xl md:ml-auto">Master vocabulary with persistent cloud sync and AI visuals.</p>
           </div>
