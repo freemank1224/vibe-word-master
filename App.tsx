@@ -883,10 +883,12 @@ const InputMode: React.FC<{
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [serviceErrorWord, setServiceErrorWord] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAdd = async () => {
     setErrorMsg(null);
+    setServiceErrorWord(null);
     const trimmed = inputValue.trim();
     if (trimmed) {
       // Local Check: Check duplicate in current session list
@@ -913,6 +915,12 @@ const InputMode: React.FC<{
       const validation = await aiService.validateSpelling(trimmed);
       setIsProcessing(false);
 
+      if (validation.serviceError) {
+        setServiceErrorWord(trimmed);
+        playBuzzer();
+        return;
+      }
+
       if (!validation.isValid) {
         playBuzzer();
         setErrorMsg(`Did you mean "${validation.suggestion || 'something else'}"?`);
@@ -922,6 +930,16 @@ const InputMode: React.FC<{
       const newEntry = { text: trimmed, imageBase64: undefined };
       setCurrentWords([...currentWords, newEntry]);
       setInputValue('');
+      playDing();
+    }
+  };
+
+  const handleManualAdd = () => {
+    if (serviceErrorWord) {
+      const newEntry = { text: serviceErrorWord, imageBase64: undefined };
+      setCurrentWords([...currentWords, newEntry]);
+      setInputValue('');
+      setServiceErrorWord(null);
       playDing();
     }
   };
@@ -1034,10 +1052,38 @@ const InputMode: React.FC<{
         )}
         
         {errorMsg && (
-          <div className="absolute top-full left-0 right-0 mt-4 flex justify-center animate-in slide-in-from-top-2">
-            <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-6 py-3 rounded-xl flex items-center gap-3 shadow-[0_0_20px_rgba(239,68,68,0.2)]">
-               <span className="material-symbols-outlined">spellcheck</span>
-               <span className="font-mono font-bold">{errorMsg}</span>
+          <div className="absolute top-full left-0 right-0 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
+            <div className="bg-red-600 border border-red-400 text-white px-6 py-3 rounded-xl flex items-center gap-3 shadow-[0_0_25px_rgba(220,38,38,0.4)]">
+               <span className="material-symbols-outlined">report</span>
+               <span className="font-mono font-bold tracking-tight">{errorMsg}</span>
+            </div>
+          </div>
+        )}
+
+        {serviceErrorWord && (
+          <div className="absolute top-full left-0 right-0 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
+            <div className="bg-light-charcoal border-2 border-electric-purple text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(147,51,234,0.3)] max-w-md text-center">
+               <div className="flex items-center gap-3 text-electric-purple mb-1">
+                  <span className="material-symbols-outlined text-3xl">cloud_off</span>
+                  <span className="font-headline text-xl uppercase tracking-widest">Neural Link Offline</span>
+               </div>
+               <p className="font-mono text-sm text-text-light leading-relaxed">
+                  The AI validation service could not be reached. We cannot verify if <span className="text-electric-blue">"{serviceErrorWord}"</span> is correct.
+               </p>
+               <div className="flex gap-4 w-full">
+                  <button 
+                    onClick={() => setServiceErrorWord(null)}
+                    className="flex-1 py-3 px-4 rounded-xl border border-mid-charcoal hover:bg-mid-charcoal transition-all font-mono text-xs uppercase tracking-widest"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleManualAdd}
+                    className="flex-1 py-3 px-4 rounded-xl bg-electric-purple text-white hover:bg-purple-500 transition-all font-sans font-bold text-sm shadow-lg shadow-purple-900/20"
+                  >
+                    Add Anyway
+                  </button>
+               </div>
             </div>
           </div>
         )}

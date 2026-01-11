@@ -117,7 +117,7 @@ export class OpenAIProvider implements AIService {
       };
     } catch (error) {
       console.error("OpenAI spelling check failed:", error);
-      return { isValid: true };
+      return { isValid: false, serviceError: true };
     }
   }
 }

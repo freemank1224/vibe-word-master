@@ -94,6 +94,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           onKeyDown={(e) => e.key === 'Enter' && onEnter?.()}
           placeholder={placeholder}
           disabled={disabled}
+          spellCheck="true"
           style={{ width: inputWidth, maxWidth: 'calc(100vw - 6rem)' }}
           className="bg-transparent border-b-4 border-mid-charcoal focus:border-electric-blue outline-none py-8 text-center font-serif text-6xl md:text-9xl text-white tracking-widest transition-all placeholder:text-mid-charcoal/30"
           autoFocus

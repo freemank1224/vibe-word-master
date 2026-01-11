@@ -2,6 +2,8 @@
 export interface SpellingResult {
   isValid: boolean;
   suggestion?: string;
+  found?: boolean; // Used by local provider
+  serviceError?: boolean; // Indicates service was unreachable
 }
 
 export interface AIService {

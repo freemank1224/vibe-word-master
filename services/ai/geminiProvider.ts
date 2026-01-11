@@ -8,12 +8,17 @@ export class GeminiProvider implements AIService {
   }
 
   private getClient(apiKey?: string, endpoint?: string) {
-    const options: any = { apiKey: apiKey || this.defaultApiKey };
-    if (endpoint) {
-      // Remove trailing slash if present
-      options.baseUrl = endpoint.replace(/\/$/, "");
+    const key = apiKey || this.defaultApiKey;
+    
+    const config: any = {
+      apiKey: key
+    };
+
+    if (endpoint && !endpoint.includes('generativelanguage.googleapis.com')) {
+      config.baseURL = endpoint.replace(/\/$/, "");
     }
-    return new GoogleGenAI(options);
+
+    return new GoogleGenAI(config);
   }
 
   async generateImageHint(word: string, apiKey?: string, endpoint?: string): Promise<string | null> {
@@ -22,10 +27,10 @@ export class GeminiProvider implements AIService {
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
-          parts: [{ text: `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality 3D digital art, clean background. No words or characters in the generated image.` }]
+          parts: [{ text: `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality digital art, clean background. No words or characters in the generated image.` }]
         },
         config: {
-          imageConfig: { aspectRatio: "16:9" }
+          imageConfig: { aspectRatio: "1:1" }
         }
       });
 
@@ -116,7 +121,8 @@ export class GeminiProvider implements AIService {
       };
     } catch (error) {
       console.error("Gemini spelling check failed:", error);
-      return { isValid: true };
+      // Return serviceError so the UI can prompt for manual override
+      return { isValid: false, serviceError: true };
     }
   }
 

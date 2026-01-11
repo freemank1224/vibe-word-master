@@ -2,10 +2,12 @@
 import { AIService, AIProviderType } from "./types";
 import { GeminiProvider } from "./geminiProvider";
 import { OpenAIProvider } from "./openaiProvider";
+import { LocalProvider } from "./localProvider";
 
 class AIServiceManager implements AIService {
   private gemini = new GeminiProvider();
   private openai = new OpenAIProvider();
+  private local = new LocalProvider();
 
   private getProvider(type: string): AIService {
     const providerType = (type || 'gemini').toLowerCase() as AIProviderType;
@@ -39,7 +41,19 @@ class AIServiceManager implements AIService {
     return provider.extractWordFromImage(base64Image, process.env.OCR_API_KEY, endpoint);
   }
 
-  async validateSpelling(word: string): Promise<{ isValid: boolean; suggestion?: string }> {
+  async validateSpelling(word: string): Promise<SpellingResult> {
+    // 1. Try local validation first (browser-based/dictionary scheme)
+    const localResult = await this.local.validateSpelling(word);
+    if (localResult.found) {
+      console.log(`Local validation hit for: "${word}"`);
+      return { 
+        isValid: localResult.isValid, 
+        suggestion: localResult.suggestion || undefined 
+      };
+    }
+
+    // 2. Fallback to LLM if local check is inconclusive
+    console.log(`Local validation miss for: "${word}", falling back to LLM...`);
     const providerType = process.env.SPELLING_CHECK_PROVIDER || 'gemini';
     const provider = this.getProvider(providerType);
     const endpoint = process.env.SPELLING_CHECK_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
