@@ -16,9 +16,14 @@ export const Auth: React.FC = () => {
 
     try {
       if (mode === 'SIGNUP') {
+        // Explicitly tell Supabase to redirect back to the current URL (e.g., sandbox URL)
+        // Note: This URL must also be added to "Redirect URLs" in Supabase Dashboard
         const { error } = await supabase.auth.signUp({
           email,
           password,
+          options: {
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (error) throw error;
         setMsg('Signup successful! Please check your email for verification (or login if auto-confirm is on).');

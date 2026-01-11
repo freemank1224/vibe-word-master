@@ -26,12 +26,15 @@ export const uploadImage = async (base64Data: string, userId: string): Promise<s
         upsert: false
       });
 
-    if (error) throw error;
+    if (error) {
+        console.error("Supabase Storage Upload Error:", error.message);
+        throw error;
+    }
     
     // 4. Return path
     return data.path;
-  } catch (error) {
-    console.error("Upload failed:", error);
+  } catch (error: any) {
+    console.error("Upload failed:", error.message || error);
     return null;
   }
 };
@@ -50,7 +53,9 @@ export const fetchUserData = async (userId: string) => {
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
     
-  if (sessionsError) console.error("Error fetching sessions:", sessionsError);
+  if (sessionsError) {
+      console.error("Supabase Error fetching sessions:", sessionsError.message);
+  }
 
   // Fetch Words
   const { data: wordsData, error: wordsError } = await supabase
@@ -58,7 +63,9 @@ export const fetchUserData = async (userId: string) => {
     .select('*')
     .eq('user_id', userId);
 
-  if (wordsError) console.error("Error fetching words:", wordsError);
+  if (wordsError) {
+      console.error("Supabase Error fetching words:", wordsError.message);
+  }
 
   // Map DB structure to App Interface
   const sessions: InputSession[] = (sessionsData || []).map((s: any) => ({
@@ -71,7 +78,7 @@ export const fetchUserData = async (userId: string) => {
   const words: WordEntry[] = (wordsData || []).map((w: any) => ({
     id: w.id,
     text: w.text,
-    timestamp: new Date(w.created_at).getTime(), // Use created_at for simple "added" timestamp
+    timestamp: new Date(w.created_at).getTime(),
     sessionId: w.session_id,
     correct: w.correct,
     tested: w.tested,
@@ -98,11 +105,12 @@ export const saveSessionData = async (
     .select()
     .single();
 
-  if (sessionError) throw sessionError;
+  if (sessionError) {
+      console.error("Error creating session:", sessionError.message);
+      throw sessionError;
+  }
 
   // 2. Process Words & Images
-  // If imageBase64 is present (manual upload), we upload it now.
-  // If not (typed), we skip and allow background process to handle it later.
   const wordsPayload = [];
   
   for (const w of wordList) {
@@ -116,7 +124,6 @@ export const saveSessionData = async (
       session_id: sessionData.id,
       text: w.text,
       image_path: imagePath,
-      // For compatibility, we can set created_at here implicitly by DB default
     });
   }
 
@@ -126,9 +133,89 @@ export const saveSessionData = async (
     .insert(wordsPayload)
     .select();
 
-  if (wordsError) throw wordsError;
+  if (wordsError) {
+      console.error("Error inserting words:", wordsError.message);
+      throw wordsError;
+  }
 
-  return { sessionData, wordsData };
+  return { sessionData, wordsData: wordsData || [] };
+};
+
+export const modifySession = async (
+  userId: string,
+  sessionId: string,
+  addedWords: { text: string, imageBase64?: string }[],
+  removedWordIds: string[]
+) => {
+    // 1. Delete Removed Words
+    if (removedWordIds.length > 0) {
+        const { error: delError } = await supabase
+            .from('words')
+            .delete()
+            .in('id', removedWordIds);
+        
+        if (delError) {
+            console.error("Error deleting words:", delError.message);
+            throw delError;
+        }
+    }
+
+    // 2. Add New Words
+    const newWordsData: any[] = [];
+    if (addedWords.length > 0) {
+        const wordsPayload = [];
+        for (const w of addedWords) {
+            let imagePath = null;
+            if (w.imageBase64) {
+                imagePath = await uploadImage(w.imageBase64, userId);
+            }
+            wordsPayload.push({
+                user_id: userId,
+                session_id: sessionId,
+                text: w.text,
+                image_path: imagePath
+            });
+        }
+        
+        const { data, error: insError } = await supabase
+            .from('words')
+            .insert(wordsPayload)
+            .select();
+            
+        if (insError) {
+            console.error("Error adding words to session:", insError.message);
+            throw insError;
+        }
+        if (data) newWordsData.push(...data);
+    }
+
+    // 3. Update Session Count - Recalculate accurately
+    // We count the words currently associated with this session
+    const { count, error: countError } = await supabase
+        .from('words')
+        .select('*', { count: 'exact', head: true })
+        .eq('session_id', sessionId);
+
+    if (countError) {
+        console.error("Error counting words:", countError.message);
+    }
+
+    if (count !== null) {
+        // Update word count AND timestamp to reflect modification
+        const { error: updateError } = await supabase
+            .from('sessions')
+            .update({ 
+                word_count: count,
+                created_at: new Date().toISOString() // Bump timestamp to now
+            })
+            .eq('id', sessionId);
+
+        if (updateError) {
+            console.error("Error updating session metadata:", updateError.message);
+        }
+    }
+
+    return { newWordsData };
 };
 
 export const updateWordStatus = async (wordId: string, correct: boolean) => {
@@ -140,7 +227,7 @@ export const updateWordStatus = async (wordId: string, correct: boolean) => {
     })
     .eq('id', wordId);
     
-  if (error) console.error("Error updating word:", error);
+  if (error) console.error("Error updating word status:", error.message);
 };
 
 export const updateWordImage = async (wordId: string, imagePath: string) => {
@@ -151,5 +238,5 @@ export const updateWordImage = async (wordId: string, imagePath: string) => {
     })
     .eq('id', wordId);
     
-  if (error) console.error("Error updating word image:", error);
+  if (error) console.error("Error updating word image:", error.message);
 };

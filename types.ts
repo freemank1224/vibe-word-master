@@ -17,7 +17,7 @@ export interface InputSession {
   targetCount: number;
 }
 
-export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST';
+export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';
 
 export interface DayStats {
   date: string; // YYYY-MM-DD
