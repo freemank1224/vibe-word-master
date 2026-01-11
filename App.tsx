@@ -6,7 +6,7 @@ import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
-import { generateImageHint, generateSpeech, extractWordFromImage, validateSpelling } from './services/geminiService';
+import { aiService } from './services/ai';
 import { playDing, playBuzzer } from './utils/audioFeedback';
 
 // Define Test Configuration State
@@ -92,7 +92,7 @@ const App: React.FC = () => {
     for (const w of wordsToProcess) {
         if (!w.image_path) {
             try {
-                const base64 = await generateImageHint(w.text);
+                const base64 = await aiService.generateImageHint(w.text);
                 if (base64) {
                     const path = await uploadImage(base64, userId);
                     if (path) {
@@ -419,7 +419,7 @@ const Dashboard: React.FC<{
             setFeaturedImage(randomWord.image_url);
         } else {
             setIsGenerating(true);
-            const img = await generateImageHint(randomWord.text);
+            const img = await aiService.generateImageHint(randomWord.text);
             setFeaturedImage(img);
             setIsGenerating(false);
         }
@@ -910,7 +910,7 @@ const InputMode: React.FC<{
       }
 
       setIsProcessing(true);
-      const validation = await validateSpelling(trimmed);
+      const validation = await aiService.validateSpelling(trimmed);
       setIsProcessing(false);
 
       if (!validation.isValid) {
@@ -969,7 +969,7 @@ const InputMode: React.FC<{
     const reader = new FileReader();
     reader.onload = async () => {
       const base64 = reader.result as string;
-      const extracted = await extractWordFromImage(base64);
+      const extracted = await aiService.extractWordFromImage(base64);
       if (extracted) {
         setInputValue(extracted);
       } else {
@@ -1145,7 +1145,7 @@ const TestMode: React.FC<{
       if (!currentWord || isPlayingAudio) return;
       setIsPlayingAudio(true);
       try {
-          const audio = await generateSpeech(currentWord.text);
+          const audio = await aiService.generateSpeech(currentWord.text);
           if (audio) {
               if (typeof audio === 'string') {
                   const u = new SpeechSynthesisUtterance(audio);
