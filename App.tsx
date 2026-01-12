@@ -318,14 +318,6 @@ const App: React.FC = () => {
                 setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
             }}
             onComplete={(results) => {
-              // Note: TestModeV2 updates status in real-time
-              // We refresh data once completed
-              if (session?.user) {
-                fetchUserData(session.user.id).then(({ sessions: s, words: w }) => {
-                    setSessions(s);
-                    setWords(w);
-                });
-              }
               setMode('DASHBOARD');
             }}
             onCancel={() => setMode('DASHBOARD')}
