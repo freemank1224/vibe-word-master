@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WordEntry, InputSession } from '../types';
-import { updateWordStatusV2, generateSRSQueue } from '../services/dataService';
+import { updateWordStatusV2 } from '../services/dataService';
 import { fetchDictionaryData } from '../services/dictionaryService';
 import { aiService } from '../services/ai';
 import { playDing, playBuzzer } from '../utils/audioFeedback';
@@ -61,7 +61,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }
   }, [showConfetti]);
 
+  const hasInitialized = useRef(false);
+
   useEffect(() => {
+    // Prevent queue regeneration when allWords updates (e.g., after answering a word)
+    if (hasInitialized.current) return;
+
     let baseWordIds: string[] = [];
     if (initialWordIds && initialWordIds.length > 0) {
       baseWordIds = initialWordIds;
@@ -72,8 +77,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }
 
     if (baseWordIds.length > 0) {
-        const srsQueue = generateSRSQueue(allWords, baseWordIds, Math.max(baseWordIds.length, 10));
-        setQueue(srsQueue);
+        // Fix: Use exactly the selected words without adding random ones or omitting some
+        const selectedWords = allWords.filter(w => baseWordIds.includes(w.id));
+        const shuffledQueue = selectedWords.sort(() => Math.random() - 0.5);
+        setQueue(shuffledQueue);
+        hasInitialized.current = true;
     }
     setStartTime(Date.now());
 
@@ -234,7 +242,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   };
 
 
-  const handleNext = useCallback((success: boolean) => {
+  const handleNext = useCallback(async (success: boolean) => {
       // Clear any pending timeouts
       if (nextTimeoutRef.current) {
           clearTimeout(nextTimeoutRef.current);
@@ -255,7 +263,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       };
 
       // 1. Sync to Database
-      updateWordStatusV2(currentWord.id, updates);
+      try {
+        await updateWordStatusV2(currentWord.id, updates);
+      } catch (e) {
+        console.error("Failed to sync word status to DB:", e);
+      }
 
       // 2. Real-time Local Update (for Calendar/Library synchronization)
       if (onUpdateWord) {
