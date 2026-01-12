@@ -8,6 +8,7 @@ interface LargeWordInputProps {
   placeholder?: string;
   disabled?: boolean;
   hintOverlay?: string; // Partial word hint
+  status?: 'idle' | 'correct' | 'wrong';
 }
 
 export const LargeWordInput: React.FC<LargeWordInputProps> = ({ 
@@ -16,7 +17,8 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   onEnter, 
   placeholder, 
   disabled,
-  hintOverlay 
+  hintOverlay,
+  status = 'idle'
 }) => {
   const [inputWidth, setInputWidth] = useState('400px');
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -68,6 +70,16 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
 
   return (
     <div className="relative w-full flex justify-center items-center h-64 md:h-80 px-4 group">
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-10px); }
+          75% { transform: translateX(10px); }
+        }
+        .animate-shake {
+          animation: shake 0.2s ease-in-out 0s 2;
+        }
+      `}</style>
       {/* Hidden element to measure text width for adaptive resizing */}
       <span 
         ref={spanRef}
@@ -91,12 +103,23 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && onEnter?.()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onEnter?.();
+            }
+          }}
           placeholder={placeholder}
-          disabled={disabled}
+          readOnly={disabled}
           spellCheck="true"
           style={{ width: inputWidth, maxWidth: 'calc(100vw - 6rem)' }}
-          className="bg-transparent border-b-4 border-mid-charcoal focus:border-electric-blue outline-none py-8 text-center font-serif text-6xl md:text-9xl text-white tracking-widest transition-all placeholder:text-mid-charcoal/30"
+          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-all placeholder:text-mid-charcoal/30 ${
+            status === 'correct' 
+              ? 'border-electric-green text-electric-green scale-105' 
+              : status === 'wrong' 
+              ? 'border-red-500 text-red-500 animate-shake' 
+              : 'border-mid-charcoal focus:border-electric-blue text-white'
+          }`}
           autoFocus
         />
       </div>

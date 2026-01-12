@@ -92,7 +92,14 @@ export const fetchUserData = async (userId: string) => {
     correct: w.correct,
     tested: w.tested,
     image_path: w.image_path,
-    image_url: getImageUrl(w.image_path)
+    image_url: getImageUrl(w.image_path),
+    error_count: w.error_count || 0,
+    best_time_ms: w.best_time_ms || null,
+    last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
+    phonetic: w.phonetic || null,
+    audio_url: w.audio_url || null,
+    definition_cn: w.definition_cn || null,
+    definition_en: w.definition_en || null
   }));
 
   return { sessions, words };
@@ -250,10 +257,57 @@ export const updateWordStatus = async (wordId: string, correct: boolean) => {
     .update({ 
       correct: correct, 
       tested: true,
+      last_tested: new Date().toISOString()
     })
     .eq('id', wordId);
     
   if (error) console.error("Error updating word status:", error.message);
+};
+
+export const updateWordStatusV2 = async (
+  wordId: string, 
+  updates: { 
+    correct: boolean, 
+    error_count_increment?: number, 
+    best_time_ms?: number,
+    phonetic?: string,
+    audio_url?: string,
+    definition_cn?: string,
+    definition_en?: string
+  }
+) => {
+  const { data: currentWord } = await supabase
+    .from('words')
+    .select('error_count, best_time_ms')
+    .eq('id', wordId)
+    .single();
+
+  const new_error_count = (currentWord?.error_count || 0) + (updates.error_count_increment || 0);
+  
+  let new_best_time = currentWord?.best_time_ms;
+  if (updates.correct && updates.best_time_ms) {
+    new_best_time = new_best_time ? Math.min(new_best_time, updates.best_time_ms) : updates.best_time_ms;
+  }
+
+  const payload: any = {
+    correct: updates.correct,
+    tested: true,
+    last_tested: new Date().toISOString(),
+    error_count: new_error_count,
+    best_time_ms: new_best_time
+  };
+
+  if (updates.phonetic) payload.phonetic = updates.phonetic;
+  if (updates.audio_url) payload.audio_url = updates.audio_url;
+  if (updates.definition_cn) payload.definition_cn = updates.definition_cn;
+  if (updates.definition_en) payload.definition_en = updates.definition_en;
+
+  const { error } = await supabase
+    .from('words')
+    .update(payload)
+    .eq('id', wordId);
+    
+  if (error) console.error("Error updating word status V2:", error.message);
 };
 
 export const updateWordImage = async (wordId: string, imagePath: string) => {
@@ -265,4 +319,52 @@ export const updateWordImage = async (wordId: string, imagePath: string) => {
     .eq('id', wordId);
     
   if (error) console.error("Error updating word image:", error.message);
+};
+
+export const generateSRSQueue = (
+    allWords: WordEntry[],
+    selectedWordIds: string[],
+    targetSize: number = 20
+): WordEntry[] => {
+    // 1. Core Selection (70%)
+    const selectedWords = allWords.filter(w => selectedWordIds.includes(w.id));
+    const coreCount = Math.floor(targetSize * 0.7);
+    const shuffledSelected = [...selectedWords].sort(() => Math.random() - 0.5).slice(0, coreCount);
+
+    // 2. Error Recall (30%) - Words not in initial selection
+    const pool = allWords.filter(w => !selectedWordIds.includes(w.id));
+    
+    // Calculate weights for all words in pool
+    // Weight = error_count * 10 + (time since last tested in days)
+    const scoredPool = pool.map(w => {
+        const daysSinceLast = w.last_tested 
+            ? (Date.now() - w.last_tested) / (1000 * 60 * 60 * 24)
+            : 30; // Assume 30 days if never tested
+        
+        const score = (w.error_count * 5) + daysSinceLast;
+        return { word: w, score };
+    });
+
+    // Sort by score descending and take the top
+    const errorRecallCount = targetSize - shuffledSelected.length;
+    const errorRecallPool = scoredPool
+        .sort((a, b) => b.score - a.score)
+        .slice(0, errorRecallCount * 2); // Get a slightly larger pool to sample from
+    
+    const shuffledErrorRecall = errorRecallPool
+        .sort(() => Math.random() - 0.5)
+        .slice(0, errorRecallCount)
+        .map(item => item.word);
+
+    // 3. Combine and Final Shuffle with priority
+    // Priority: Higher error_count words should generally appear earlier
+    const finalQueue = [...shuffledSelected, ...shuffledErrorRecall].sort((a, b) => {
+        // We want a mix but weighted towards higher error count
+        // Random element to keep it fresh
+        const valA = (a.error_count * 2) + Math.random() * 10;
+        const bValB = (b.error_count * 2) + Math.random() * 10;
+        return bValB - valA;
+    });
+
+    return finalQueue;
 };

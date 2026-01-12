@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
-import { fetchUserData, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage } from './services/dataService';
+import { fetchUserData, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2 } from './services/dataService';
 import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
+import TestModeV2 from './components/TestModeV2';
 import { aiService } from './services/ai';
+import { fetchDictionaryData } from './services/dictionaryService';
 import { playDing, playBuzzer } from './utils/audioFeedback';
 
 // Define Test Configuration State
@@ -28,6 +30,7 @@ const App: React.FC = () => {
   
   // Test Mode Configuration State
   const [testConfig, setTestConfig] = useState<TestConfig | null>(null);
+  const [showQuickTestModal, setShowQuickTestModal] = useState(false);
   
   // Multi-Select State for Dashboard Testing
   const [selectedDashboardSessionIds, setSelectedDashboardSessionIds] = useState<Set<string>>(new Set());
@@ -76,20 +79,31 @@ const App: React.FC = () => {
   // Derived Stats
   const getStats = (): Record<string, DayStats> => {
     const stats: Record<string, DayStats> = {};
+    
+    // Activity Log should track TEST activity, not just creation.
+    // However, to show a complete picture, we can combine them or focus on 'last_tested'
     words.forEach(w => {
-      const d = new Date(w.timestamp);
+      // Use last_tested if it exists, otherwise use creation timestamp for 'added' activity
+      const time = w.last_tested || w.timestamp;
+      const d = new Date(time);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      
       if (!stats[key]) stats[key] = { date: key, total: 0, correct: 0 };
-      stats[key].total++;
-      if (w.correct) stats[key].correct++;
+      
+      // If it has been tested at least once, we count it towards the activity log
+      if (w.tested) {
+          stats[key].total++;
+          if (w.correct) stats[key].correct++;
+      }
     });
     return stats;
   };
 
   // Background Process
-  const processBackgroundImages = async (userId: string, wordsToProcess: any[]) => {
+  const processBackgroundData = async (userId: string, wordsToProcess: any[]) => {
     if (!wordsToProcess || !Array.isArray(wordsToProcess)) return;
     for (const w of wordsToProcess) {
+        // 1. Process Images
         if (!w.image_path) {
             try {
                 const base64 = await aiService.generateImageHint(w.text);
@@ -105,8 +119,30 @@ const App: React.FC = () => {
                     }
                 }
             } catch (e) {
-                console.warn(`Background generation failed for ${w.text}:`, e);
+                console.warn(`Background image generation failed for ${w.text}:`, e);
             }
+        }
+
+        // 2. Process Dictionary Info (Phonetic, Audio, Definition)
+        try {
+            const dict = await fetchDictionaryData(w.text);
+            if (dict) {
+                await updateWordStatusV2(w.id, {
+                    correct: w.correct || false,
+                    phonetic: dict.phonetic,
+                    audio_url: dict.audioUrl,
+                    definition_en: dict.definition_en
+                });
+                
+                // Update local state if word still exists
+                setWords(prev => prev.map(word => 
+                    word.id === w.id 
+                    ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, definition_en: dict.definition_en || null } 
+                    : word
+                ));
+            }
+        } catch (e) {
+            console.warn(`Background dictionary fetch failed for ${w.text}:`, e);
         }
     }
   };
@@ -145,7 +181,7 @@ const App: React.FC = () => {
       setEditingSessionId(null);
 
       // Trigger Background Process
-      processBackgroundImages(session.user.id, wordsToProcess);
+      processBackgroundData(session.user.id, wordsToProcess);
       
     } catch (e) {
       console.error("Failed to save session", e);
@@ -259,6 +295,7 @@ const App: React.FC = () => {
             onStartTest={(ids) => handleStartTest(ids)}
             onStartEdit={handleStartEdit}
             onOpenLibrary={() => setMode('LIBRARY')}
+            onQuickTest={() => setShowQuickTestModal(true)}
           />
         )}
         {mode === 'INPUT' && (
@@ -273,13 +310,22 @@ const App: React.FC = () => {
           />
         )}
         {mode === 'TEST' && (
-          <TestMode 
+          <TestModeV2 
             allWords={words}
-            allSessions={sessions}
             initialSessionIds={testConfig?.sessionIds || []}
             initialWordIds={testConfig?.wordIds}
+            onUpdateWord={(id, updates) => {
+                setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
+            }}
             onComplete={(results) => {
-              results.forEach(res => handleUpdateWordResult(res.id, res.correct));
+              // Note: TestModeV2 updates status in real-time
+              // We refresh data once completed
+              if (session?.user) {
+                fetchUserData(session.user.id).then(({ sessions: s, words: w }) => {
+                    setSessions(s);
+                    setWords(w);
+                });
+              }
               setMode('DASHBOARD');
             }}
             onCancel={() => setMode('DASHBOARD')}
@@ -291,6 +337,73 @@ const App: React.FC = () => {
                 onClose={() => setMode('DASHBOARD')}
                 onTest={handleStartTestFromLibrary}
             />
+        )}
+
+        {/* Quick Test Modal */}
+        {showQuickTestModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
+                <div className="bg-light-charcoal border border-mid-charcoal rounded-3xl p-8 max-w-md w-full shadow-2xl scale-in-center">
+                    <h3 className="text-3xl font-headline text-white mb-2 tracking-tight">CHOOSE TEST RANGE</h3>
+                    <p className="text-text-dark font-body mb-8">Select which words you want to practice right now.</p>
+                    
+                    <div className="grid gap-4">
+                        <button 
+                            onClick={() => {
+                                if (selectedDashboardSessionIds.size > 0) {
+                                    handleStartTest(Array.from(selectedDashboardSessionIds));
+                                    setShowQuickTestModal(false);
+                                } else {
+                                    alert("Please select at least one session card from the dashboard first!");
+                                }
+                            }}
+                            className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
+                                selectedDashboardSessionIds.size > 0 
+                                ? 'bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal' 
+                                : 'bg-mid-charcoal/50 opacity-100 border border-dashed border-mid-charcoal'
+                            }`}
+                        >
+                            <span className={`text-sm font-mono uppercase tracking-widest ${
+                                selectedDashboardSessionIds.size > 0 ? 'text-electric-blue group-hover:text-charcoal' : 'text-text-dark'
+                            }`}>
+                                Option 1
+                            </span>
+                            <span className={`text-xl font-headline ${
+                                selectedDashboardSessionIds.size > 0 ? 'group-hover:text-charcoal' : 'text-text-dark'
+                            }`}>
+                                {selectedDashboardSessionIds.size > 0 ? 'TEST SELECTED (' + selectedDashboardSessionIds.size + ')' : 'RECENT SESSION'}
+                            </span>
+                            <span className={`text-xs font-body ${
+                                selectedDashboardSessionIds.size > 0 ? 'opacity-50 group-hover:text-charcoal/70' : 'text-text-dark/40'
+                            }`}>
+                                {selectedDashboardSessionIds.size > 0 
+                                    ? `Practice words from your current selection.` 
+                                    : `Select one or more cards on the dashboard to test.`
+                                }
+                            </span>
+                        </button>
+
+                        <button 
+                            onClick={() => {
+                                const allIds = words.map(w => w.id);
+                                handleStartTestFromLibrary(allIds);
+                                setShowQuickTestModal(false);
+                            }}
+                            className="bg-mid-charcoal hover:bg-electric-green hover:text-charcoal transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left"
+                        >
+                            <span className="text-sm font-mono text-electric-green group-hover:text-charcoal uppercase tracking-widest">Option 2</span>
+                            <span className="text-xl font-headline group-hover:text-charcoal">ALL WORD LIBRARY</span>
+                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">A comprehensive test of all {words.length} words in your vault.</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setShowQuickTestModal(false)}
+                            className="mt-4 text-text-dark hover:text-white transition-colors uppercase font-mono text-xs tracking-[0.2em]"
+                        >
+                            Maybe Later
+                        </button>
+                    </div>
+                </div>
+            </div>
         )}
       </main>
 
@@ -403,8 +516,9 @@ const Dashboard: React.FC<{
   onStartInput: () => void, 
   onStartTest: (sIds: string[]) => void, 
   onStartEdit: (sId: string) => void, 
-  onOpenLibrary: () => void 
-}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary }) => {
+  onOpenLibrary: () => void,
+  onQuickTest: () => void
+}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest }) => {
   const [featuredImage, setFeaturedImage] = useState<string | null>(null);
   const [featuredWord, setFeaturedWord] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -490,7 +604,7 @@ const Dashboard: React.FC<{
           ) : (
              <button 
                 className="flex-1 bg-electric-green text-charcoal font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-electric-blue transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
-                onClick={() => (sessions && sessions.length > 0) ? onStartTest([sessions[0].id]) : onStartInput()}
+                onClick={() => (sessions && sessions.length > 0) ? onQuickTest() : onStartInput()}
              >
                 <span className="material-symbols-outlined text-4xl">play_arrow</span>
                 QUICK TEST
