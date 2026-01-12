@@ -8,6 +8,7 @@ interface CalendarViewProps {
 
 export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
   const [viewDate, setViewDate] = useState(new Date());
+  const [flashingDate, setFlashingDate] = useState<string | null>(null);
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -25,15 +26,36 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
   const getCellColor = (stat?: DayStats) => {
     if (!stat || stat.total === 0) return 'bg-dark-charcoal/50 text-text-dark border-mid-charcoal/30 hover:border-mid-charcoal';
     const rate = stat.correct / stat.total;
-    if (rate >= 0.95) return 'bg-electric-green/20 text-electric-green border-electric-green/40 shadow-[inset_0_0_10px_rgba(46,230,124,0.1)]';
-    if (rate <= 0.25) return 'bg-red-500/20 text-red-400 border-red-500/40 shadow-[inset_0_0_10px_rgba(239,68,68,0.1)]';
-    return 'bg-electric-blue/10 text-electric-blue border-electric-blue/30';
+    
+    if (stat.total < 10 || rate < 0.5) {
+      return 'bg-red-500/40 text-red-400 border-red-500/60';
+    }
+    if (rate <= 0.70) {
+      return 'bg-orange-500/40 text-orange-400 border-orange-500/60';
+    }
+    if (rate <= 0.80) {
+      return 'bg-yellow-500/40 text-yellow-400 border-yellow-500/60';
+    }
+    if (rate <= 0.90) {
+      return 'bg-lime-500/40 text-lime-400 border-lime-500/60';
+    }
+    return 'bg-electric-green/40 text-electric-green border-electric-green/60';
   };
 
   const changeMonth = (delta: number) => {
     const newDate = new Date(viewDate);
     newDate.setMonth(newDate.getMonth() + delta);
     setViewDate(newDate);
+  };
+
+  const jumpToToday = () => {
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    
+    setViewDate(now);
+    // Trigger flash animation
+    setFlashingDate(dateStr);
+    setTimeout(() => setFlashingDate(null), 5000); // Flash for 5 seconds (5 times)
   };
 
   return (
@@ -51,7 +73,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                 <span className="material-symbols-outlined">chevron_left</span>
             </button>
             <button 
-                onClick={() => setViewDate(new Date())}
+                onClick={jumpToToday}
                 className="px-3 py-1 text-[10px] font-mono border border-mid-charcoal rounded hover:bg-mid-charcoal transition-colors uppercase"
             >
                 Today
@@ -79,22 +101,15 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
           return (
             <div 
               key={d} 
-              className={`aspect-square rounded-xl border-2 flex flex-col items-center justify-center transition-all cursor-default group relative overflow-hidden ${getCellColor(stat)}`}
+              className={`aspect-square rounded-xl border-2 flex flex-col items-center justify-center transition-all duration-300 cursor-default group relative hover:scale-[1.2] hover:z-50 hover:shadow-xl ${getCellColor(stat)} ${dateStr === flashingDate ? 'animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite] z-40' : ''}`}
             >
               <span className="text-base font-mono font-bold z-10">{d}</span>
-              {stat && stat.total > 0 && (
-                <div className="flex flex-col items-center z-10">
-                    <span className="text-[9px] font-black leading-none mt-1 uppercase tracking-tighter">
-                      {stat.correct}/{stat.total}
-                    </span>
-                    <div className={`w-1 h-1 rounded-full mt-1 ${stat.correct / stat.total >= 0.95 ? 'bg-electric-green' : 'bg-current'}`}></div>
-                </div>
-              )}
-              {/* Tile Glow Effect */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-10 bg-white transition-opacity pointer-events-none"></div>
               
-              {stat && (
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
+              {/* Tile Glow Effect */}
+              <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-10 bg-white transition-opacity pointer-events-none"></div>
+              
+              {stat && stat.total > 0 && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover:block z-[60] bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
                     <p className="font-bold text-white mb-1">Activity Log</p>
                     <p className="text-text-dark"><span className="text-electric-blue">{stat.correct}</span> Correct</p>
                     <p className="text-text-dark"><span className="text-text-light">{stat.total}</span> Total Words</p>
@@ -108,15 +123,27 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
         })}
       </div>
 
-      <div className="mt-8 flex justify-between items-center px-2">
-        <div className="flex gap-4">
+      <div className="mt-8 flex justify-between items-center px-2 flex-wrap gap-4">
+        <div className="flex gap-4 flex-wrap">
+            <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-sm bg-red-500/40 border border-red-500/60"></div>
+                <span className="text-[10px] font-mono text-text-dark uppercase">Low</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-sm bg-orange-500/40 border border-orange-500/60"></div>
+                <span className="text-[10px] font-mono text-text-dark uppercase">50-70%</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-sm bg-yellow-500/40 border border-yellow-500/60"></div>
+                <span className="text-[10px] font-mono text-text-dark uppercase">71-80%</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-sm bg-lime-500/40 border border-lime-500/60"></div>
+                <span className="text-[10px] font-mono text-text-dark uppercase">81-90%</span>
+            </div>
             <div className="flex items-center gap-1.5">
                 <div className="w-2.5 h-2.5 rounded-sm bg-electric-green/40 border border-electric-green/60"></div>
                 <span className="text-[10px] font-mono text-text-dark uppercase">Elite</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-sm bg-red-500/40 border border-red-500/60"></div>
-                <span className="text-[10px] font-mono text-text-dark uppercase">Critical</span>
             </div>
         </div>
         <div className="text-[10px] font-mono text-text-dark opacity-50 uppercase tracking-widest">
