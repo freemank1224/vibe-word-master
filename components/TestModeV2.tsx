@@ -254,17 +254,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       const wordStartTime = startTime; 
       
-      const updates = {
+      // 1. Sync to Database - updateWordStatusV2 handles tested and last_tested internally
+      const dbUpdates = {
           correct: success,
           error_count_increment: success ? 0 : 1,
-          best_time_ms: success ? (Date.now() - wordStartTime) : undefined,
-          tested: true,
-          last_tested: Date.now()
+          best_time_ms: success ? (Date.now() - wordStartTime) : undefined
       };
 
-      // 1. Sync to Database
       try {
-        await updateWordStatusV2(currentWord.id, updates);
+        await updateWordStatusV2(currentWord.id, dbUpdates);
       } catch (e) {
         console.error("Failed to sync word status to DB:", e);
       }
