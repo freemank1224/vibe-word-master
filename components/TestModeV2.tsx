@@ -41,6 +41,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [streak, setStreak] = useState(0);
   const [isStarted, setIsStarted] = useState(false);
 
+  // Loading States & Refs
+  const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
+  const [isResourcesLoaded, setIsResourcesLoaded] = useState(false);
+  const [missingResources, setMissingResources] = useState<{images: number, audio: number}>({ images: 0, audio: 0 });
+  const resourceCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const isMountedRef = useRef(true);
+
+  // Lifecycle
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
   // Milestone tracking settings
   const milestonesReached = useRef<Set<string>>(new Set());
   const nextTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -101,6 +114,128 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     };
   }, [initialSessionIds, initialWordIds, allWords]);
 
+  // Preloading Effect
+  useEffect(() => {
+    if (queue.length === 0) return;
+
+    const loadResources = async () => {
+        setIsResourcesLoaded(false);
+        setLoadingProgress({ current: 0, total: queue.length });
+        setMissingResources({ images: 0, audio: 0 });
+        
+        let completed = 0;
+        let missingImg = 0;
+        let missingAud = 0;
+        
+        // Parallel loading with concurrency limit could be better, but for <20 words, all-at-once is okay
+        const promises = queue.map(async (word) => {
+            if (!isMountedRef.current) return;
+            try {
+                // 1. Fetch Audio Data if missing
+                let audioUrl = word.audio_url;
+                if (!audioUrl) {
+                    try {
+                         // Quick check if we can get it
+                        const data = await fetchDictionaryData(word.text);
+                        if (data?.audioUrl) {
+                            audioUrl = data.audioUrl;
+                            word.audio_url = audioUrl; // Update local reference
+                        } else {
+                            missingAud++;
+                        }
+                    } catch (e) { 
+                        missingAud++;
+                    }
+                }
+
+                // 2. Preload Audio
+                if (audioUrl) {
+                    await new Promise<void>((resolve) => {
+                        const audio = new Audio();
+                        audio.preload = 'auto'; 
+                        
+                        const timeoutId = setTimeout(() => {
+                           // If timeout, we resolve but it might be missing
+                           resolve();
+                        }, 8000); 
+                        
+                        audio.oncanplaythrough = () => {
+                            clearTimeout(timeoutId);
+                            resolve();
+                        };
+                        audio.onerror = () => {
+                            clearTimeout(timeoutId);
+                            missingAud++; // Mark as failed
+                            resolve();
+                        };
+                        audio.src = audioUrl!;
+                        resourceCacheRef.current.set(word.id, audio);
+                    });
+                } else {
+                    // Audio missing
+                    // We don't increment missingAud here again if we already did above
+                    // But if it was originally null and fetch failed, it is missing.
+                }
+
+                // 3. Preload Image - NOW WITH AWAIT
+                if (word.image_url) {
+                    await new Promise<void>((resolve) => {
+                         const img = new Image();
+                         // Timeout for image
+                         const timeoutId = setTimeout(() => {
+                            // Timeout = effectively missing for user experience
+                            // But we don't strictly count it as "error" unless we want to warn.
+                            // Let's count it potentially.
+                            resolve(); 
+                         }, 5000);
+
+                         img.onload = () => {
+                             clearTimeout(timeoutId);
+                             resolve();
+                         };
+                         img.onerror = () => {
+                             clearTimeout(timeoutId);
+                             missingImg++;
+                             resolve();
+                         };
+                         img.src = word.image_url!;
+                    });
+                } else {
+                    missingImg++;
+                }
+
+            } catch (e) {
+                console.warn("Resource load failed for", word.text);
+            } finally {
+                if (isMountedRef.current) {
+                    completed++;
+                    setLoadingProgress({ current: completed, total: queue.length });
+                }
+            }
+        });
+
+        await Promise.all(promises);
+        
+        if (isMountedRef.current) {
+            setMissingResources({ images: missingImg, audio: missingAud });
+            setIsResourcesLoaded(true);
+        }
+    };
+
+    loadResources();
+
+    return () => {
+        // Cleanup cache on unmount or queue change
+        resourceCacheRef.current.forEach(audio => {
+            audio.pause();
+            audio.src = "";
+            audio.removeAttribute('src'); // Detach
+            audio.load(); // Cancel download
+        });
+        resourceCacheRef.current.clear();
+    };
+  }, [queue]);
+
   useEffect(() => {
     if (queue.length > 0 && !isFinished && isStarted) {
         timerRef.current = setInterval(() => {
@@ -115,25 +250,45 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const currentWord = queue[currentIndex];
 
   const stopAudio = useCallback(() => {
-      // Stop any playing audio
-      if (currentAudioSourceRef.current) {
-          try {
-              if (currentAudioSourceRef.current instanceof HTMLAudioElement) {
-                  currentAudioSourceRef.current.pause();
-                  currentAudioSourceRef.current.currentTime = 0;
-              } else {
-                  (currentAudioSourceRef.current as AudioBufferSourceNode).stop();
-              }
-          } catch (e) {
-              // Ignore errors if already stopped
-          }
-          currentAudioSourceRef.current = null;
-      }
-      window.speechSynthesis.cancel();
-      setIsPlayingAudio(false);
+    // Stop any playing audio
+    if (activeWordIdRef.current) {
+        // Stop cached audio if playing
+        const cached = resourceCacheRef.current.get(activeWordIdRef.current);
+        if (cached) {
+            cached.pause();
+            cached.currentTime = 0;
+        }
+    }
+    
+    // Stop ad-hoc audio
+    if (currentAudioSourceRef.current) {
+        try {
+            if (currentAudioSourceRef.current instanceof HTMLAudioElement) {
+                currentAudioSourceRef.current.pause();
+                currentAudioSourceRef.current.currentTime = 0;
+            } else {
+                (currentAudioSourceRef.current as AudioBufferSourceNode).stop();
+            }
+        } catch (e) {
+            // Ignore errors if already stopped
+        }
+        currentAudioSourceRef.current = null;
+    }
+    window.speechSynthesis.cancel();
+    setIsPlayingAudio(false);
   }, []);
 
+  useEffect(() => {
+    // Global safety cleanup when 'isStarted' becomes false or component unmounts
+    // Although main cleanup is in unmount effect, this handles immediate exit from Test UI
+    if (!isStarted) {
+        stopAudio();
+    }
+  }, [isStarted, stopAudio]);
+
   const playAudio = useCallback(async (word: WordEntry) => {
+    if (!isMountedRef.current) return;
+    
     // 1. Mark this word as the intended target for audio
     activeWordIdRef.current = word.id;
     
@@ -141,6 +296,23 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     setIsPlayingAudio(true);
     
     try {
+        // Try cached audio first
+        const cachedAudio = resourceCacheRef.current.get(word.id);
+        if (cachedAudio) {
+            currentAudioSourceRef.current = cachedAudio;
+            cachedAudio.onended = () => {
+                if(isMountedRef.current) setIsPlayingAudio(false);
+            };
+            try {
+                await cachedAudio.play();
+                return; // Success!
+            } catch (err) {
+                console.warn("Cached audio play failed, falling back", err);
+            }
+        }
+
+
+        // Fallback logic
         let audioUrl = word.audio_url;
         
         // If no audio url, try to get it (but don't block if we can use TTS)
@@ -170,18 +342,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         if (audioUrl) {
             const audio = new Audio(audioUrl);
             currentAudioSourceRef.current = audio;
-            audio.onended = () => setIsPlayingAudio(false);
+            audio.onended = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
             try {
                 await audio.play();
             } catch (err) {
                 console.warn("Audio play failed, falling back to TTS", err);
                 // If audio fails, we might still be active, let's try TTS
                 if (activeWordIdRef.current !== word.id) return;
-                // fall through to TTS logic? Or throw to trigger catch? 
-                // Let's just throw to go to catch block but catch block ends function.
-                // We should handle fallback here explicitly or restructure.
-                // Simpler: Set audioUrl to null and let logic proceed? No, it's if/else.
-                // Refactoring slightly for robustness:
+                // fall through to TTS logic
                 throw new Error("Audio element failed");
             }
         } else {
@@ -195,8 +363,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
             if (typeof audioResponse === 'string') {
                 const u = new SpeechSynthesisUtterance(audioResponse);
-                u.onend = () => setIsPlayingAudio(false);
-                u.onerror = () => setIsPlayingAudio(false);
+                u.onend = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
+                u.onerror = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
                 window.speechSynthesis.speak(u);
             } else {
                 if (!audioCtxRef.current) {
@@ -207,7 +375,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 const source = ctx.createBufferSource();
                 source.buffer = audioResponse as AudioBuffer;
                 source.connect(ctx.destination);
-                source.onended = () => setIsPlayingAudio(false);
+                source.onended = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
                 source.start(0);
                 currentAudioSourceRef.current = source;
             }
@@ -215,27 +383,27 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     } catch (e) {
         console.error("Audio playback error", e);
         // Only reset if we are still the active word
-        if (activeWordIdRef.current === word.id) {
+        if (activeWordIdRef.current === word.id && isMountedRef.current) {
             setIsPlayingAudio(false);
         }
     }
   }, [stopAudio]);
 
   useEffect(() => {
-    // Auto-play audio when word changes
+    // Auto-play audio when word changes IN SESSION
     if (currentWord && !isFinished && !isRevealed && feedback === 'NONE' && isStarted) {
         // Sync active ID immediately
         activeWordIdRef.current = currentWord.id;
         
         // Small delay to ensure UI transition is smooth
         const t = setTimeout(() => {
-            if (activeWordIdRef.current === currentWord.id) {
+            if (activeWordIdRef.current === currentWord.id && isMountedRef.current) {
                 playAudio(currentWord);
             }
         }, 300);
         return () => clearTimeout(t);
     }
-  }, [currentIndex, isFinished, isStarted, playAudio, currentWord]); 
+  }, [currentIndex, isFinished, isStarted, playAudio, currentWord, feedback, isRevealed]); 
 
   const handleHint = () => {
       setHintLevel(prev => Math.min(prev + 1, 2));
@@ -403,19 +571,50 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     <svg className="w-12 h-12 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 </div>
                 <h2 className="text-4xl font-headline mb-4 tracking-tight uppercase">Ready to Vibe?</h2>
-                <p className="text-gray-400 mb-10 font-body leading-relaxed">
+                <p className="text-gray-400 mb-6 font-body leading-relaxed">
                     You're about to test <span className="text-white font-bold">{queue.length} words</span>. 
                     Listen carefully to the audio and spell the word correctly.
                 </p>
+
+                {/* Loading Progress Bar */}
+                <div className="mb-10 w-full max-w-xs mx-auto">
+                    <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden mb-2">
+                         <div 
+                            className={`h-full transition-all duration-300 ${isResourcesLoaded ? 'bg-green-500' : 'bg-blue-500'}`}
+                            style={{ width: `${(loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100}%` }}
+                         />
+                    </div>
+                    <div className="flex justify-between text-xs font-mono text-gray-500">
+                      <span>{isResourcesLoaded ? 'READY' : 'LOADING RESOURCES...'}</span>
+                      <span>{Math.round((loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100)}%</span>
+                    </div>
+
+                    {isResourcesLoaded && missingResources.images > 0 && (
+                        <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-3 text-left animate-in fade-in slide-in-from-bottom-2">
+                             <svg className="w-5 h-5 text-yellow-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                             <div>
+                                 <p className="text-xs text-yellow-200 font-bold mb-0.5">Warning: Missing Visuals</p>
+                                 <p className="text-[10px] text-yellow-500/80 leading-relaxed">
+                                     {missingResources.images} images failed to load. You can continue, but hints will be limited to Audio/Definitions.
+                                 </p>
+                             </div>
+                        </div>
+                    )}
+                </div>
+
                 <div className="flex flex-col gap-4">
                     <button 
                         onClick={() => {
                             setIsStarted(true);
                             setStartTime(Date.now());
                         }}
-                        className="w-full px-8 py-4 bg-blue-500 text-black rounded-2xl font-headline text-xl hover:bg-blue-400 transition-all transform hover:scale-[1.02] active:scale-95 shadow-[0_0_20px_rgba(59,130,246,0.3)]"
+                        disabled={!isResourcesLoaded}
+                        className={`w-full px-8 py-4 text-black rounded-2xl font-headline text-xl transition-all transform duration-300
+                            ${isResourcesLoaded 
+                                ? 'bg-blue-500 hover:bg-blue-400 hover:scale-[1.02] active:scale-95 shadow-[0_0_20px_rgba(59,130,246,0.3)] cursor-pointer' 
+                                : 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50'}`}
                     >
-                        START SESSION
+                        {isResourcesLoaded ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') : 'PLEASE WAIT...'}
                     </button>
                     <button 
                         onClick={onCancel}
