@@ -779,11 +779,19 @@ const Dashboard: React.FC<{
             </div>
           </div>
 
-          <div className="text-center md:text-right flex-1 order-first md:order-last">
-            <h2 className="text-6xl sm:text-8xl font-headline text-electric-blue leading-tight mb-4">
-              EXPAND YOUR<br/>VOCAB UNIVERSE.
+          <div 
+            className="text-center md:text-left flex-1 order-first md:order-last relative"
+            style={{
+              backgroundImage: `url(/monsterImages/M${new Date().getDay()}.png)`,
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right top',
+              backgroundSize: 'auto 65%',
+            }}
+          >
+            <h2 className="text-7xl sm:text-9xl font-headline text-electric-blue leading-tight mb-4 relative z-10">
+              VOCAB<br/>MONSTER
             </h2>
-            <p className="text-xl text-text-dark max-w-xl md:ml-auto">Master vocabulary with persistent cloud sync and AI visuals.</p>
+            <p className="text-xl text-text-dark max-w-xl md:ml-auto relative z-10">Master vocabulary with challenges and AI.</p>
           </div>
         </div>
 
