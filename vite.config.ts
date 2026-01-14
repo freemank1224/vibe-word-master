@@ -31,6 +31,8 @@ export default defineConfig(({ mode }) => {
         'process.env.STT_ENDPOINT': JSON.stringify(env.STT_ENDPOINT),
         'process.env.GEMINI_ENDPOINT': JSON.stringify(env.GEMINI_ENDPOINT || 'https://generativelanguage.googleapis.com'),
         'process.env.OPENAI_ENDPOINT': JSON.stringify(env.OPENAI_ENDPOINT || 'https://api.openai.com/v1'),
+        'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL),
+        'process.env.SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY),
       },
       resolve: {
         alias: {
