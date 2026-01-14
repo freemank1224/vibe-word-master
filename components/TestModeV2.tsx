@@ -25,6 +25,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   onCancel,
   onUpdateWord
 }) => {
+  const [coverage, setCoverage] = useState(100);
+  const [tempCoverage, setTempCoverage] = useState(100);
+  const [isSelectionConfirmed, setIsSelectionConfirmed] = useState(false);
+  const [availablePool, setAvailablePool] = useState<WordEntry[]>([]);
   const [queue, setQueue] = useState<WordEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState('');
@@ -74,33 +78,50 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }
   }, [showConfetti]);
 
-  const hasInitialized = useRef(false);
+  useEffect(() => {
+    // Determine the pool of words based on initial configuration
+    if (availablePool.length === 0) {
+      let pool: WordEntry[] = [];
+      if (initialWordIds && initialWordIds.length > 0) {
+        pool = allWords.filter(w => initialWordIds.includes(w.id));
+      } else if (initialSessionIds.length > 0) {
+        pool = allWords.filter(w => initialSessionIds.includes(w.sessionId));
+      }
+      
+      if (pool.length > 0) {
+        // Ensure uniqueness by word text (standardize to lowercase for comparison)
+        const uniqueTextMap = new Map();
+        pool.forEach(item => {
+            const key = item.text.toLowerCase().trim();
+            if (!uniqueTextMap.has(key)) {
+                uniqueTextMap.set(key, item);
+            }
+        });
+        setAvailablePool(Array.from(uniqueTextMap.values()));
+      }
+    }
+  }, [allWords, initialSessionIds, initialWordIds, availablePool.length]);
 
   useEffect(() => {
-    // Prevent queue regeneration when allWords updates (e.g., after answering a word)
-    if (hasInitialized.current) return;
+    // Regenerate queue when coverage is confirmed or updated, but only before starting
+    if (isStarted || availablePool.length === 0 || !isSelectionConfirmed) return;
 
-    let baseWordIds: string[] = [];
-    if (initialWordIds && initialWordIds.length > 0) {
-      baseWordIds = initialWordIds;
-    } else if (initialSessionIds.length > 0) {
-      baseWordIds = allWords
-        .filter(w => initialSessionIds.includes(w.sessionId))
-        .map(w => w.id);
+    const targetCount = Math.max(1, Math.round((availablePool.length * coverage) / 100));
+    
+    // Fisher-Yates Shuffle for true unbiased randomness
+    const shuffled = [...availablePool];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    if (baseWordIds.length > 0) {
-        // Fix: Use exactly the selected words without adding random ones or omitting some
-        const selectedWords = allWords.filter(w => baseWordIds.includes(w.id));
-        const shuffledQueue = selectedWords.sort(() => Math.random() - 0.5);
-        setQueue(shuffledQueue);
-        hasInitialized.current = true;
-    }
-    setStartTime(Date.now());
+    setQueue(shuffled.slice(0, targetCount));
+  }, [availablePool, coverage, isStarted, isSelectionConfirmed]);
 
+  useEffect(() => {
     // Cleanup audio on unmount
     return () => {
-        activeWordIdRef.current = null; // Invalidate any pending audio
+        activeWordIdRef.current = null;
         if (currentAudioSourceRef.current) {
             try {
                 if (currentAudioSourceRef.current instanceof HTMLAudioElement) {
@@ -112,7 +133,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         }
         window.speechSynthesis.cancel();
     };
-  }, [initialSessionIds, initialWordIds, allWords]);
+  }, []);
 
   // Preloading Effect
   useEffect(() => {
@@ -457,8 +478,6 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
           if (isLastWord) {
             setConfettiConfig({
-                title: "PERFECT!",
-                subtitle: `You've mastered ${queue.length} words.`,
                 variant: 'green',
                 showParticles: true
             });
@@ -468,10 +487,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             if (progress >= 0.33 && !milestonesReached.current.has('1/3')) {
                 milestonesReached.current.add('1/3');
                 setConfettiConfig({
-                    title: "KEEP IT UP!",
-                    subtitle: "1/3 done! Keep the momentum.",
                     variant: 'blue',
-                    showParticles: false
+                    showParticles: true
                 });
                 setShowConfetti(true);
             } 
@@ -479,10 +496,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             else if (progress >= 0.66 && !milestonesReached.current.has('2/3')) {
                 milestonesReached.current.add('2/3');
                 setConfettiConfig({
-                    title: "ALMOST THERE!",
-                    subtitle: "2/3 complete. Stay focused.",
                     variant: 'purple',
-                    showParticles: false
+                    showParticles: true
                 });
                 setShowConfetti(true);
             }
@@ -542,20 +557,36 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   if (isFinished) {
       const correctCount = results.filter(r => r.correct).length;
+      const score = Math.round((correctCount / queue.length) * 100);
+      
+      const getEmoji = (s: number) => {
+          if (s === 100) return '🏆';
+          if (s >= 80) return '🔥';
+          if (s >= 60) return '⭐';
+          if (s >= 40) return '💪';
+          return '📚';
+      };
+
       return (
-        <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white">
-          <h2 className="text-4xl font-bold mb-4">Test Complete!</h2>
-          <div className="text-6xl font-black text-blue-500 mb-8">
-            {Math.round((correctCount / queue.length) * 100)}%
+        <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white animate-in fade-in duration-700">
+          <Confetti showParticles={true} variant={score >= 80 ? 'purple' : 'blue'} />
+          
+          <div className="text-8xl mb-6 animate-bounce">
+              {getEmoji(score)}
           </div>
-          <p className="text-gray-400 mb-8">
+
+          <h2 className="text-4xl font-headline mb-4 tracking-tighter uppercase">Test Complete!</h2>
+          <div className={`text-7xl font-black mb-8 ${score >= 80 ? 'text-electric-green' : score >= 60 ? 'text-electric-blue' : 'text-orange-500'}`}>
+            {score}%
+          </div>
+          <p className="text-gray-400 mb-8 font-mono">
             Correct: {correctCount} / {queue.length} | Time: {elapsedTime}s
           </p>
           <button 
             onClick={() => onComplete(results)}
-            className="px-8 py-3 bg-white text-black rounded-full font-bold hover:bg-gray-200 transition-colors"
+            className="px-12 py-4 bg-white text-black rounded-2xl font-headline text-xl hover:bg-electric-blue hover:text-white transition-all transform hover:scale-105 active:scale-95 shadow-xl"
           >
-            FINISH
+            RESTORE SYSTEM
           </button>
         </div>
       );
@@ -567,26 +598,62 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     return (
         <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white">
             <div className="max-w-md w-full text-center">
-                <div className="w-24 h-24 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto mb-8 border border-blue-500/20">
-                    <svg className="w-12 h-12 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <div className="w-36 h-36 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8 border border-white/10 overflow-hidden group">
+                    <img 
+                      src={`/monsterImages/M${new Date().getDay()}.png`} 
+                      alt="Monster" 
+                      className="w-32 h-32 object-contain transition-transform duration-500 group-hover:scale-110"
+                    />
                 </div>
                 <h2 className="text-4xl font-headline mb-4 tracking-tight uppercase">Ready to Vibe?</h2>
-                <p className="text-gray-400 mb-6 font-body leading-relaxed">
-                    You're about to test <span className="text-white font-bold">{queue.length} words</span>. 
+                <p className="text-gray-400 mb-2 font-body leading-relaxed">
+                    You're about to test <span className="text-white font-bold">{isSelectionConfirmed ? queue.length : Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} words</span>. 
+                </p>
+                <p className="text-xs text-gray-500 mb-8 font-body">
                     Listen carefully to the audio and spell the word correctly.
                 </p>
+
+                {/* Coverage Slider */}
+                <div className="mb-10 w-full max-w-xs mx-auto text-left">
+                    <div className="flex justify-between items-end mb-3">
+                        <span className="text-[10px] font-mono text-gray-500 uppercase tracking-[0.2em]">Test Coverage</span>
+                        <span className="text-lg font-headline text-blue-500 leading-none">
+                            {tempCoverage}% <span className="text-xs text-gray-500 font-mono ml-1">({Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} words)</span>
+                        </span>
+                    </div>
+                    <input 
+                        type="range" 
+                        min="1" 
+                        max="100" 
+                        value={tempCoverage} 
+                        onChange={(e) => setTempCoverage(parseInt(e.target.value))}
+                        onMouseUp={() => {
+                            setCoverage(tempCoverage);
+                            setIsSelectionConfirmed(true);
+                        }}
+                        onTouchEnd={() => {
+                            setCoverage(tempCoverage);
+                            setIsSelectionConfirmed(true);
+                        }}
+                        className="w-full h-1 bg-gray-800 rounded-full appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 transition-all transition-thumb mb-2"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-gray-600">
+                        <span>LITE</span>
+                        <span>FULL COLLECTION</span>
+                    </div>
+                </div>
 
                 {/* Loading Progress Bar */}
                 <div className="mb-10 w-full max-w-xs mx-auto">
                     <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden mb-2">
                          <div 
-                            className={`h-full transition-all duration-300 ${isResourcesLoaded ? 'bg-green-500' : 'bg-blue-500'}`}
-                            style={{ width: `${(loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100}%` }}
+                            className={`h-full transition-all duration-300 ${!isSelectionConfirmed ? 'bg-gray-700' : isResourcesLoaded ? 'bg-green-500' : 'bg-blue-500'}`}
+                            style={{ width: `${!isSelectionConfirmed ? 0 : (loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100}%` }}
                          />
                     </div>
                     <div className="flex justify-between text-xs font-mono text-gray-500">
-                      <span>{isResourcesLoaded ? 'READY' : 'LOADING RESOURCES...'}</span>
-                      <span>{Math.round((loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100)}%</span>
+                      <span>{!isSelectionConfirmed ? 'IDLE' : isResourcesLoaded ? 'READY' : 'LOADING RESOURCES...'}</span>
+                      <span>{!isSelectionConfirmed ? '0%' : Math.round((loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100) + '%'}</span>
                     </div>
 
                     {isResourcesLoaded && missingResources.images > 0 && (
@@ -605,16 +672,25 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <div className="flex flex-col gap-4">
                     <button 
                         onClick={() => {
-                            setIsStarted(true);
-                            setStartTime(Date.now());
+                            if (!isSelectionConfirmed) {
+                                setCoverage(tempCoverage);
+                                setIsSelectionConfirmed(true);
+                            } else {
+                                setIsStarted(true);
+                                setStartTime(Date.now());
+                            }
                         }}
-                        disabled={!isResourcesLoaded}
+                        disabled={isSelectionConfirmed && !isResourcesLoaded}
                         className={`w-full px-8 py-4 text-black rounded-2xl font-headline text-xl transition-all transform duration-300
-                            ${isResourcesLoaded 
+                            ${(!isSelectionConfirmed || isResourcesLoaded)
                                 ? 'bg-blue-500 hover:bg-blue-400 hover:scale-[1.02] active:scale-95 shadow-[0_0_20px_rgba(59,130,246,0.3)] cursor-pointer' 
                                 : 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50'}`}
                     >
-                        {isResourcesLoaded ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') : 'PLEASE WAIT...'}
+                        {!isSelectionConfirmed 
+                            ? 'PREPARE NEURAL LINK' 
+                            : isResourcesLoaded 
+                                ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') 
+                                : 'SYNCING...'}
                     </button>
                     <button 
                         onClick={onCancel}
@@ -684,7 +760,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
               <div className="absolute inset-x-0 bottom-0 p-8 text-center">
                   {isRevealed && (
                       <div className="animate-in slide-in-from-bottom-2 duration-300">
-                          <span className="text-4xl font-black tracking-[0.2em] uppercase text-blue-500 block mb-2">
+                          <span className={`text-4xl font-black tracking-[0.2em] uppercase block mb-2 ${feedback === 'CORRECT' ? 'text-electric-green' : 'text-red-500'}`}>
                               {currentWord.text}
                           </span>
                           <div className="inline-block px-3 py-1 bg-white/10 backdrop-blur-md rounded-lg text-gray-400 font-mono text-xs border border-white/5">

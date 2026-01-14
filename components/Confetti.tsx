@@ -9,8 +9,8 @@ interface ConfettiProps {
 }
 
 export const Confetti: React.FC<ConfettiProps> = ({ 
-  title = "PERFECT!", 
-  subtitle = "You've mastered this batch.",
+  title, 
+  subtitle,
   variant = 'green',
   showParticles = true
 }) => {
@@ -79,14 +79,16 @@ export const Confetti: React.FC<ConfettiProps> = ({
       `}</style>
       
       {/* Central Message Glow */}
-      <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-[2px]">
-        <div className="text-center animate-in zoom-in fade-in duration-700">
-           <h1 className={`font-headline text-8xl md:text-9xl ${titleColor} tracking-tighter`} style={{ filter: `drop-shadow(0 0 30px ${dropShadowColor})` }}>
-             {title}
-           </h1>
-           <p className="font-serif text-3xl text-white italic mt-4 opacity-80">{subtitle}</p>
+      {title && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-center animate-in zoom-in fade-in duration-700">
+            <h1 className={`font-headline text-8xl md:text-9xl ${titleColor} tracking-tighter`} style={{ filter: `drop-shadow(0 0 30px ${dropShadowColor})` }}>
+              {title}
+            </h1>
+            {subtitle && <p className="font-serif text-3xl text-white italic mt-4 opacity-80">{subtitle}</p>}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

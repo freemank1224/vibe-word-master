@@ -79,6 +79,16 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
         .animate-shake {
           animation: shake 0.2s ease-in-out 0s 2;
         }
+        .status-correct {
+          color: #2EE67C !important;
+          border-color: #2EE67C !important;
+          filter: drop-shadow(0 0 15px rgba(46, 230, 124, 0.4));
+        }
+        .status-wrong {
+          color: #ef4444 !important;
+          border-color: #ef4444 !important;
+          filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.4));
+        }
       `}</style>
       {/* Hidden element to measure text width for adaptive resizing */}
       <span 
@@ -113,11 +123,11 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           readOnly={disabled}
           spellCheck="true"
           style={{ width: inputWidth, maxWidth: 'calc(100vw - 6rem)' }}
-          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-all placeholder:text-mid-charcoal/30 ${
+          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-all placeholder:text-mid-charcoal/30 focus:ring-0 ${
             status === 'correct' 
-              ? 'border-electric-green text-electric-green scale-105' 
+              ? 'status-correct scale-105' 
               : status === 'wrong' 
-              ? 'border-red-500 text-red-500 animate-shake' 
+              ? 'status-wrong animate-shake' 
               : 'border-mid-charcoal focus:border-electric-blue text-white'
           }`}
           autoFocus
