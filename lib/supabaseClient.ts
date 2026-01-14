@@ -32,6 +32,14 @@ if (!isSupabaseConfigured) {
   console.warn("Please open lib/supabaseClient.ts and fill in HARDCODED_SUPABASE_URL and HARDCODED_SUPABASE_ANON_KEY");
 }
 
+// Validate Key Format (Supabase keys are usually JWTs starting with eyJ)
+if (isSupabaseConfigured && !supabaseAnonKey.startsWith('eyJ')) {
+    console.error("CRITICAL CONFIGURATION ERROR: The Supabase Anon Key seems invalid.");
+    console.error("It should start with 'eyJ...' (JWT format).");
+    console.error("Current key starts with:", supabaseAnonKey.substring(0, 15) + "...");
+    console.error("Please check your Supabase Project Settings -> API.");
+}
+
 // Fallback to prevent crash on initialization, but requests will fail if config is invalid
 const url = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
 const key = isSupabaseConfigured ? supabaseAnonKey : 'placeholder';

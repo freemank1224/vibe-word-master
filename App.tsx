@@ -13,6 +13,8 @@ import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedba
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
+import { generateImagesForMissingWords } from './services/imageGenerationTask';
+
 
 // Define Test Configuration State
 interface TestConfig {
@@ -109,6 +111,38 @@ const App: React.FC = () => {
     setUnlockedAchievements(new Set());
     setAchievementQueue([]);
   };
+
+  // Background Task: Auto-generate images for words missing them
+  useEffect(() => {
+    if (!session?.user?.id) return;
+
+    const runTask = () => {
+      // Run the generation task. This is async but we don't await it here as it runs in background.
+      generateImagesForMissingWords(session.user.id, (wordId, imagePath) => {
+        // Optimistically update local state so user sees images appear in real-time
+        setWords(prevWords => prevWords.map(w => {
+          if (w.id === wordId) {
+            return { ...w, image_path: imagePath, image_url: getImageUrl(imagePath) };
+          }
+          return w;
+        }));
+      }).catch(err => {
+        console.error("Background image generation task failed", err);
+      });
+    };
+
+    // Initial check after 10 seconds to allow initial load to settle
+    const initialTimer = setTimeout(runTask, 10000);
+
+    // Then check periodically (e.g. every 5 minutes)
+    const intervalTimer = setInterval(runTask, 5 * 60 * 1000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(intervalTimer);
+    };
+  }, [session?.user?.id]);
+
 
   // Achievement Reconciliation (Phase 1: Silent Sync on Load)
   useEffect(() => {

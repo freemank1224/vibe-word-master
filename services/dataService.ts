@@ -56,6 +56,7 @@ export const fetchUserData = async (userId: string) => {
     
   if (sessionsError) {
       console.error("Supabase Error fetching sessions:", sessionsError.message);
+      throw new Error(`Failed to load sessions: ${sessionsError.message}`);
   }
 
   // Fetch Words (Filtered: Not deleted)
@@ -67,6 +68,7 @@ export const fetchUserData = async (userId: string) => {
 
   if (wordsError) {
       console.error("Supabase Error fetching words:", wordsError.message);
+      throw new Error(`Failed to load words: ${wordsError.message}`);
   }
 
   // Map DB structure to App Interface
@@ -264,7 +266,7 @@ export const fetchUserStats = async (userId: string) => {
         
     if (error) {
         console.error("Error fetching daily stats:", error.message);
-        return [];
+        throw new Error(`Failed to load stats: ${error.message}`);
     }
     return data || [];
 };
@@ -434,7 +436,7 @@ export const fetchUserAchievements = async (userId: string): Promise<string[]> =
 
   if (error) {
     console.error('Error fetching achievements:', error);
-    return [];
+    throw new Error(`Failed to load achievements: ${error.message}`);
   }
 
   return data.map(row => row.achievement_id);
@@ -452,3 +454,19 @@ export const saveUserAchievement = async (userId: string, achievementId: string)
     console.error('Error saving achievement:', error);
   }
 };
+
+export const getWordsMissingImage = async (userId: string) => {
+  const { data, error } = await supabase
+      .from('words')
+      .select('*')
+      .eq('user_id', userId)
+      .or('deleted.eq.false,deleted.is.null')
+      .is('image_path', null);
+
+  if (error) {
+      console.error("Error fetching words missing images:", error.message);
+      return [];
+  }
+  return data || [];
+};
+
