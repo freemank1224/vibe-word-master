@@ -10,6 +10,7 @@ import TestModeV2 from './components/TestModeV2';
 import { aiService } from './services/ai';
 import { fetchDictionaryData } from './services/dictionaryService';
 import { playDing, playBuzzer } from './utils/audioFeedback';
+import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 
 // Define Test Configuration State
 interface TestConfig {
@@ -786,28 +787,7 @@ const Dashboard: React.FC<{
       <div className="lg:col-span-4 space-y-8">
         <CalendarView stats={stats} />
         
-        <div className="bg-light-charcoal p-6 rounded-2xl border border-mid-charcoal">
-          <h3 className="font-headline text-xl text-electric-blue mb-4 tracking-widest uppercase">Global Impact</h3>
-          <div className="space-y-6">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-electric-blue/10 rounded-lg text-electric-blue">
-                <span className="material-symbols-outlined">school</span>
-              </div>
-              <div>
-                <p className="text-xs text-text-dark uppercase font-bold">Accuracy</p>
-                <p className="text-2xl font-mono text-white">
-                    {totalCorrect} / {totalAll}
-                </p>
-              </div>
-            </div>
-            <div className="w-full bg-dark-charcoal rounded-full h-2">
-                <div 
-                    className="bg-electric-blue h-2 rounded-full shadow-[0_0_10px_rgba(0,240,255,0.5)]" 
-                    style={{ width: `${accuracy}%` }}
-                ></div>
-            </div>
-          </div>
-        </div>
+        <AchievementsPanel words={words} sessions={sessions} />
 
         {/* Word Library Card */}
         <div 
