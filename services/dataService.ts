@@ -425,3 +425,30 @@ export const deleteSessions = async (userId: string, sessionIds: string[]) => {
       throw sessionError;
   }
 };
+
+export const fetchUserAchievements = async (userId: string): Promise<string[]> => {
+  const { data, error } = await supabase
+    .from('user_achievements')
+    .select('achievement_id')
+    .eq('user_id', userId);
+
+  if (error) {
+    console.error('Error fetching achievements:', error);
+    return [];
+  }
+
+  return data.map(row => row.achievement_id);
+};
+
+export const saveUserAchievement = async (userId: string, achievementId: string): Promise<void> => {
+  const { error } = await supabase
+    .from('user_achievements')
+    .upsert(
+      { user_id: userId, achievement_id: achievementId },
+      { onConflict: 'user_id, achievement_id', ignoreDuplicates: true }
+    );
+
+  if (error) {
+    console.error('Error saving achievement:', error);
+  }
+};

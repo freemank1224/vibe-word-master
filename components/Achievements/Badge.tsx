@@ -1,5 +1,6 @@
 import React from 'react';
 import { Achievement, AchievementStatus } from '../../services/achievementService';
+import { ACHIEVEMENT_ICONS } from './AchievementIcons';
 
 interface BadgeProps {
   achievement: Achievement;
@@ -12,18 +13,20 @@ export const Badge: React.FC<BadgeProps> = ({ achievement, status }) => {
   // Calculate percentage for progress bar, capped at 100
   const percentage = Math.min(100, Math.max(0, (status.currentProgress / achievement.maxProgress) * 100));
 
+  const Icon = ACHIEVEMENT_ICONS[achievement.id] || achievement.emoji;
+
   return (
     <div className="relative group flex flex-col items-center">
-      {/* Badge Circle */}
+      {/* Badge Container */}
       <div 
         className={`
-          w-14 h-14 md:w-16 md:h-16 rounded-full flex items-center justify-center text-2xl md:text-3xl border-2 transition-all duration-300 cursor-help select-none
+          w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center p-2 text-2xl md:text-3xl border-2 transition-all duration-300 cursor-help select-none overflow-hidden
           ${unlocked 
             ? 'bg-electric-blue/10 border-electric-blue text-white shadow-[0_0_15px_rgba(0,240,255,0.3)] scale-100 hover:scale-110' 
-            : 'bg-dark-charcoal border-mid-charcoal text-gray-600 grayscale opacity-60'}
+            : 'bg-dark-charcoal border-mid-charcoal text-gray-600 grayscale opacity-40'}
         `}
       >
-        {achievement.emoji}
+        {Icon}
       </div>
 
       {/* Tooltip Popup */}

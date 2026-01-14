@@ -24,36 +24,36 @@ export const ACHIEVEMENTS: Achievement[] = [
   {
     id: 'p_consistency',
     title: 'Consistency',
-    description: 'Maintain a 3-day learning streak',
+    description: 'Maintain a 7-day learning streak',
     category: 'PROCESS',
-    maxProgress: 3,
+    maxProgress: 7,
     emoji: '🔥',
     imagePrompt: 'A small but bright orange flame burning steadily on a stone torch holder. Warm glow, dark background.'
   },
   {
     id: 'p_dedication',
     title: 'Dedication',
-    description: 'Maintain a 7-day learning streak',
+    description: 'Maintain a 30-day learning streak',
     category: 'PROCESS',
-    maxProgress: 7,
+    maxProgress: 30,
     emoji: '🌊',
     imagePrompt: 'A stylized blue ocean wave cresting, representing the rhythmic power of habit. Dynamic motion, deep blue tones.'
   },
   {
     id: 'p_hoarder',
     title: 'Word Hoarder',
-    description: 'Add 50 words to your collection',
+    description: 'Add 100 words to your collection',
     category: 'PROCESS',
-    maxProgress: 50,
+    maxProgress: 100,
     emoji: '🎒',
     imagePrompt: 'An adventurous leather traveler\'s backpack overflowing with glowing magical scrolls. Fantasy style.'
   },
   {
     id: 'p_builder',
     title: 'Library Builder',
-    description: 'Collect 200 words',
+    description: 'Collect 1000 words',
     category: 'PROCESS',
-    maxProgress: 200,
+    maxProgress: 1000,
     emoji: '🏰',
     imagePrompt: 'A towering stone library turret with a golden light shining from the high arched window. Mysterious and grand.'
   },

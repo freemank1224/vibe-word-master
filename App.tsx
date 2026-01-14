@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement } from './services/dataService';
 import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
@@ -9,8 +9,10 @@ import { Confetti } from './components/Confetti';
 import TestModeV2 from './components/TestModeV2';
 import { aiService } from './services/ai';
 import { fetchDictionaryData } from './services/dictionaryService';
-import { playDing, playBuzzer } from './utils/audioFeedback';
+import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
+import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
+import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
 
 // Define Test Configuration State
 interface TestConfig {
@@ -41,6 +43,11 @@ const App: React.FC = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [idsToDelete, setIdsToDelete] = useState<string[]>([]);
   
+  // Achievement State
+  const [unlockedAchievements, setUnlockedAchievements] = useState<Set<string>>(new Set());
+  const [achievementQueue, setAchievementQueue] = useState<Achievement[]>([]);
+  const [isReconciled, setIsReconciled] = useState(false);
+  
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
   const visibleWords = useMemo(() => words.filter(w => !w.deleted), [words]);
@@ -69,11 +76,15 @@ const App: React.FC = () => {
       setDataError(null);
       Promise.all([
           fetchUserData(session.user.id),
-          fetchUserStats(session.user.id)
+          fetchUserStats(session.user.id),
+          fetchUserAchievements(session.user.id)
       ])
-        .then(([{ sessions, words }, stats]) => {
+        .then(([{ sessions, words }, stats, achievementIds]) => {
           setSessions(sessions);
           setWords(words);
+          
+          // Initialize Achievements (DB Load)
+          setUnlockedAchievements(new Set(achievementIds));
           
           // Map DB daily_stats array to Record<string, DayStats>
           const statsMap: Record<string, DayStats> = {};
@@ -95,7 +106,95 @@ const App: React.FC = () => {
     setWords([]);
     setSessions([]);
     setDailyStats({});
+    setUnlockedAchievements(new Set());
+    setAchievementQueue([]);
   };
+
+  // Achievement Reconciliation (Phase 1: Silent Sync on Load)
+  useEffect(() => {
+    // Only run this once when data is loaded and we haven't reconciled yet
+    if (loadingData || isReconciled) return;
+
+    // We also need to make sure we actually have loaded data. 
+    // If sessions/words are empty but loadingData is false, it might mean empty account OR failed load.
+    // But assuming successful empty load is fine, reconciliation is fast.
+    
+    // NOTE: This runs even if sessions/words are emptySets, which is correct (clears nothing, adds nothing).
+
+    const currentCalculated = calculateAchievements(words, sessions);
+    const missingInDb: string[] = [];
+    const newUnlockedSet = new Set(unlockedAchievements);
+
+    currentCalculated.forEach(status => {
+        // If logic says unlocked, but State/DB doesn't know about it
+        if (status.unlocked && !unlockedAchievements.has(status.id)) {
+            missingInDb.push(status.id);
+            newUnlockedSet.add(status.id);
+        }
+    });
+
+    if (missingInDb.length > 0) {
+        console.log("Phase 1: Reconciling missing achievements (silent sync):", missingInDb);
+        
+        // 1. Update local state immediately so Phase 2 doesn't see them as "new" events
+        setUnlockedAchievements(newUnlockedSet);
+
+        // 2. Sync to DB silently (fire and forget)
+        if (session?.user?.id) {
+            console.log("Phase 1: Saving to DB for user:", session.user.id);
+            missingInDb.forEach(id => {
+                saveUserAchievement(session.user.id, id).then(() => console.log(`Saved achievement ${id}`));
+            });
+        } else {
+            console.error("Phase 1: Cannot save, no user session");
+        }
+    }
+
+    // Mark as reconciled so we can start listening for REAL new events
+    setIsReconciled(true);
+    
+  }, [loadingData, isReconciled, words, sessions, unlockedAchievements, session]);
+
+
+  // Reset reconciliation status when reloading data to prevent "Stale State" bugs
+  useEffect(() => {
+    if (loadingData) {
+      setIsReconciled(false);
+    }
+  }, [loadingData]);
+
+  // Achievement Tracking (Phase 2: Live Events)
+  useEffect(() => {
+    // Block until reconciliation is complete to avoid "double-counting" historical achievements
+    if (loadingData || !isReconciled) return;
+
+    const currentStatuses = calculateAchievements(words, sessions);
+
+    // Check for NEW unlocks only (compare with what we already have in state)
+    // Since we are Reconciled, any difference here is a GENUINE new event.
+    currentStatuses.forEach(status => {
+        if (status.unlocked && !unlockedAchievements.has(status.id)) {
+            const ach = ACHIEVEMENTS.find(a => a.id === status.id);
+            if (ach) {
+                // 1. Add to queue (Celebration!)
+                setAchievementQueue(prev => [...prev, ach]);
+                playAchievementUnlock();
+
+                // 2. Update local state
+                setUnlockedAchievements(prev => {
+                    const next = new Set(prev);
+                    next.add(status.id);
+                    return next;
+                });
+                
+                // 3. Persist to DB
+                if (session?.user?.id) {
+                    saveUserAchievement(session.user.id, status.id);
+                }
+            }
+        }
+    });
+  }, [words, sessions, loadingData, unlockedAchievements, session, isReconciled]);
 
   // Derived Stats (Merged: DB History + Live Local Updates)
   // We use the DB loaded stats as base.
@@ -499,6 +598,14 @@ const App: React.FC = () => {
                 </div>
             </div>
         )}
+        
+        {/* Achievement Unlock Modal */}
+        {achievementQueue.length > 0 && (
+            <AchievementUnlockModal 
+                achievement={achievementQueue[0]} 
+                onClose={() => setAchievementQueue(prev => prev.slice(1))} 
+            />
+        )}
       </main>
 
       <footer className="py-6 text-center text-text-dark text-sm border-t border-mid-charcoal bg-dark-charcoal">
@@ -640,7 +747,7 @@ const Dashboard: React.FC<{
 
   const totalCorrect = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.correct, 0);
   const totalAll = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.total, 0);
-  const accuracy = (totalAll as number) > 0 ? (totalCorrect / totalAll) * 100 : 0;
+  const accuracy = (totalAll as number) > 0 ? ((totalCorrect as number) / (totalAll as number)) * 100 : 0;
 
   return (
     <div className="grid lg:grid-cols-12 gap-8 items-start animate-in fade-in slide-in-from-bottom-4 duration-700">

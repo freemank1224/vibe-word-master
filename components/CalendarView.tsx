@@ -88,8 +88,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
       </div>
       
       <div className="flex-1 grid grid-cols-7 gap-3 h-full">
-        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => (
-          <div key={d} className="text-center text-text-dark text-xs font-black mb-2 opacity-50">{d}</div>
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+          <div key={`${d}-${i}`} className="text-center text-text-dark text-xs font-black mb-2 opacity-50">{d}</div>
         ))}
         
         {blanks.map(i => <div key={`b-${i}`} className="aspect-square"></div>)}
