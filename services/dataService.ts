@@ -46,22 +46,24 @@ export const getImageUrl = (path: string | null | undefined): string | null => {
 };
 
 export const fetchUserData = async (userId: string) => {
-  // Fetch Sessions
+  // Fetch Sessions (Filtered: Not deleted)
   const { data: sessionsData, error: sessionsError } = await supabase
     .from('sessions')
     .select('*')
     .eq('user_id', userId)
+    .or('deleted.eq.false,deleted.is.null') // Ensure we only get active sessions
     .order('created_at', { ascending: false });
     
   if (sessionsError) {
       console.error("Supabase Error fetching sessions:", sessionsError.message);
   }
 
-  // Fetch Words
+  // Fetch Words (Filtered: Not deleted)
   const { data: wordsData, error: wordsError } = await supabase
     .from('words')
     .select('*')
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .or('deleted.eq.false,deleted.is.null'); // Ensure we only get active words
 
   if (wordsError) {
       console.error("Supabase Error fetching words:", wordsError.message);
@@ -83,7 +85,7 @@ export const fetchUserData = async (userId: string) => {
       targetCount: s.target_count,
       deleted: s.deleted || false
     };
-  });
+  }).filter(s => s.wordCount > 0); // Remove sessions that have no active words (Zombies)
 
   const words: WordEntry[] = (wordsData || []).map((w: any) => ({
     id: w.id,
