@@ -80,7 +80,8 @@ export const fetchUserData = async (userId: string) => {
       id: s.id,
       timestamp: Math.max(new Date(s.created_at).getTime(), lastWordTime),
       wordCount: sessionWords.length,
-      targetCount: s.target_count
+      targetCount: s.target_count,
+      deleted: s.deleted || false
     };
   });
 
@@ -99,7 +100,8 @@ export const fetchUserData = async (userId: string) => {
     phonetic: w.phonetic || null,
     audio_url: w.audio_url || null,
     definition_cn: w.definition_cn || null,
-    definition_en: w.definition_en || null
+    definition_en: w.definition_en || null,
+    deleted: w.deleted || false
   }));
 
   return { sessions, words };
@@ -251,6 +253,25 @@ export const modifySession = async (
     return { newWordsData };
 };
 
+// V2 Stats with Frozen History & Daily Buffer
+export const fetchUserStats = async (userId: string) => {
+    const { data, error } = await supabase
+        .from('daily_stats')
+        .select('*')
+        .eq('user_id', userId);
+        
+    if (error) {
+        console.error("Error fetching daily stats:", error.message);
+        return [];
+    }
+    return data || [];
+};
+
+export const syncDailyStats = async () => {
+    const { error } = await supabase.rpc('sync_todays_stats'); 
+    if (error) console.error("Error syncing daily stats:", error.message);
+};
+
 export const updateWordStatus = async (wordId: string, correct: boolean) => {
   const { error } = await supabase
     .from('words')
@@ -262,6 +283,9 @@ export const updateWordStatus = async (wordId: string, correct: boolean) => {
     .eq('id', wordId);
     
   if (error) console.error("Error updating word status:", error.message);
+  
+  // Sync stats (Fire & Forget)
+  syncDailyStats();
 };
 
 export const updateWordStatusV2 = async (
@@ -308,6 +332,9 @@ export const updateWordStatusV2 = async (
     .eq('id', wordId);
     
   if (error) console.error("Error updating word status V2:", error.message);
+  
+  // Sync stats (Fire & Forget)
+  syncDailyStats();
 };
 
 export const updateWordImage = async (wordId: string, imagePath: string) => {
@@ -367,4 +394,32 @@ export const generateSRSQueue = (
     });
 
     return finalQueue;
+};
+
+export const deleteSessions = async (userId: string, sessionIds: string[]) => {
+  if (!sessionIds || sessionIds.length === 0) return;
+
+  // 1. Soft Delete words
+  const { error: wordsError } = await supabase
+      .from('words')
+      .update({ deleted: true })
+      .in('session_id', sessionIds)
+      .eq('user_id', userId);
+
+  if (wordsError) {
+      console.error("Error deleting session words:", wordsError.message);
+      throw wordsError;
+  }
+
+  // 2. Soft Delete sessions
+  const { error: sessionError } = await supabase
+      .from('sessions')
+      .update({ deleted: true })
+      .in('id', sessionIds)
+      .eq('user_id', userId);
+
+  if (sessionError) {
+      console.error("Error deleting sessions:", sessionError.message);
+      throw sessionError;
+  }
 };

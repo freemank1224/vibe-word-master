@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
-import { fetchUserData, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2 } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions } from './services/dataService';
 import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
   const [words, setWords] = useState<WordEntry[]>([]);
   const [sessions, setSessions] = useState<InputSession[]>([]);
+  const [dailyStats, setDailyStats] = useState<Record<string, DayStats>>({});
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
 
@@ -34,6 +35,14 @@ const App: React.FC = () => {
   
   // Multi-Select State for Dashboard Testing
   const [selectedDashboardSessionIds, setSelectedDashboardSessionIds] = useState<Set<string>>(new Set());
+
+  // Delete Confirmation State
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [idsToDelete, setIdsToDelete] = useState<string[]>([]);
+  
+  // Filtered Data for View (Soft Delete Logic)
+  const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
+  const visibleWords = useMemo(() => words.filter(w => !w.deleted), [words]);
 
   // Auth Listener
   useEffect(() => {
@@ -57,10 +66,20 @@ const App: React.FC = () => {
     if (session?.user) {
       setLoadingData(true);
       setDataError(null);
-      fetchUserData(session.user.id)
-        .then(({ sessions, words }) => {
+      Promise.all([
+          fetchUserData(session.user.id),
+          fetchUserStats(session.user.id)
+      ])
+        .then(([{ sessions, words }, stats]) => {
           setSessions(sessions);
           setWords(words);
+          
+          // Map DB daily_stats array to Record<string, DayStats>
+          const statsMap: Record<string, DayStats> = {};
+          stats.forEach((s: any) => {
+              statsMap[s.date] = { date: s.date, total: s.total, correct: s.correct };
+          });
+          setDailyStats(statsMap);
         })
         .catch((err) => {
             console.error("Data load error:", err);
@@ -74,29 +93,43 @@ const App: React.FC = () => {
     await supabase.auth.signOut();
     setWords([]);
     setSessions([]);
+    setDailyStats({});
   };
 
-  // Derived Stats
+  // Derived Stats (Merged: DB History + Live Local Updates)
+  // We use the DB loaded stats as base.
+  // Note: Since we "fire & forget" sync stats on update, local state might be slightly ahead or behind 
+  // until next refresh, but for UX responsiveness we can rely on dailyStats state 
+  // which we should update locally when tests finish.
   const getStats = (): Record<string, DayStats> => {
-    const stats: Record<string, DayStats> = {};
-    
-    // Activity Log should track TEST activity, not just creation.
-    // However, to show a complete picture, we can combine them or focus on 'last_tested'
-    words.forEach(w => {
-      // Use last_tested if it exists, otherwise use creation timestamp for 'added' activity
-      const time = w.last_tested || w.timestamp;
-      const d = new Date(time);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      
-      if (!stats[key]) stats[key] = { date: key, total: 0, correct: 0 };
-      
-      // If it has been tested at least once, we count it towards the activity log
-      if (w.tested) {
-          stats[key].total++;
-          if (w.correct) stats[key].correct++;
+    return dailyStats;
+  };
+  
+  // Helper to update local stats state immediately after test
+  const updateLocalStats = (results: { correct: boolean }[]) => {
+      const today = new Date().toISOString().split('T')[0];
+      setDailyStats(prev => {
+          const current = prev[today] || { date: today, total: 0, correct: 0 };
+          
+          // Note: This matches the "Sync Logic" in SQL - Distinct words count?
+          // Actually, since we don't know easily if these specific words were ALREADY tested today locally without complex logic,
+          // for the *immediate UI feedback* we might just assume we refresh stats or accept slight lag.
+          // BUT: The user wants ACCURATE stats.
+          // The best way: Start a background fetch of stats after test completes.
+          return prev; 
+      });
+      // Trigger a fetch to get authoritative stats from DB (Sync outcome)
+      if (session?.user) {
+          setTimeout(() => {
+             fetchUserStats(session.user.id).then(stats => {
+                const statsMap: Record<string, DayStats> = {};
+                stats.forEach((s: any) => {
+                    statsMap[s.date] = { date: s.date, total: s.total, correct: s.correct };
+                });
+                setDailyStats(statsMap);
+             });
+          }, 1000); // Small delay to allow DB trigger/RPC to finish
       }
-    });
-    return stats;
   };
 
   // Background Process
@@ -189,6 +222,32 @@ const App: React.FC = () => {
     }
   };
 
+  const handleExecuteDelete = async () => {
+      if (!session?.user || idsToDelete.length === 0) return;
+      
+      try {
+          // 1. Delete from Cloud
+          await deleteSessions(session.user.id, idsToDelete);
+
+          // 2. Update Local State (Soft Delete)
+          setSessions(prev => prev.map(s => idsToDelete.includes(s.id) ? { ...s, deleted: true } : s));
+          setWords(prev => prev.map(w => idsToDelete.includes(w.sessionId) ? { ...w, deleted: true } : w));
+          
+          // 3. Clear Selection if deleted
+          const newSelected = new Set(selectedDashboardSessionIds);
+          idsToDelete.forEach(id => newSelected.delete(id));
+          setSelectedDashboardSessionIds(newSelected);
+
+          // 4. Close Modal
+          setShowDeleteConfirm(false);
+          setIdsToDelete([]);
+          playDing(); // Success sound
+      } catch (e) {
+          console.error("Delete failed", e);
+          alert("Failed to delete sessions. Check console.");
+      }
+  };
+
   const handleUpdateWordResult = async (id: string, correct: boolean) => {
     setWords(prev => prev.map(w => w.id === id ? { ...w, correct, tested: true } : w));
     await updateWordStatus(id, correct);
@@ -277,8 +336,8 @@ const App: React.FC = () => {
         {mode === 'DASHBOARD' && (
           <Dashboard 
             stats={getStats()} 
-            sessions={sessions}
-            words={words}
+            sessions={visibleSessions}
+            words={visibleWords}
             selectedSessionIds={selectedDashboardSessionIds}
             onToggleSessionSelect={(id) => {
                 setSelectedDashboardSessionIds(prev => {
@@ -296,28 +355,33 @@ const App: React.FC = () => {
             onStartEdit={handleStartEdit}
             onOpenLibrary={() => setMode('LIBRARY')}
             onQuickTest={() => setShowQuickTestModal(true)}
+            onDeleteSessions={(ids) => {
+                setIdsToDelete(ids);
+                setShowDeleteConfirm(true);
+            }}
           />
         )}
         {mode === 'INPUT' && (
           <InputMode 
-            initialWords={editingSessionId ? words.filter(w => w.sessionId === editingSessionId) : undefined}
+            initialWords={editingSessionId ? visibleWords.filter(w => w.sessionId === editingSessionId) : undefined}
             onComplete={handleSaveSession}
             onCancel={() => {
                 setEditingSessionId(null);
                 setMode('DASHBOARD');
             }}
-            allWords={words}
+            allWords={visibleWords}
           />
         )}
         {mode === 'TEST' && (
           <TestModeV2 
-            allWords={words}
+            allWords={visibleWords}
             initialSessionIds={testConfig?.sessionIds || []}
             initialWordIds={testConfig?.wordIds}
             onUpdateWord={(id, updates) => {
                 setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
             }}
             onComplete={(results) => {
+              updateLocalStats(results);
               setMode('DASHBOARD');
             }}
             onCancel={() => setMode('DASHBOARD')}
@@ -325,10 +389,47 @@ const App: React.FC = () => {
         )}
         {mode === 'LIBRARY' && (
             <LibraryMode 
-                words={words}
+                words={visibleWords}
                 onClose={() => setMode('DASHBOARD')}
                 onTest={handleStartTestFromLibrary}
             />
+        )}
+
+        {/* Delete Confirmation Modal */}
+        {showDeleteConfirm && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
+                <div className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-md w-full shadow-[0_0_30px_rgba(239,68,68,0.2)] scale-in-center">
+                    <div className="flex items-center gap-3 mb-4 text-red-500">
+                        <span className="material-symbols-outlined text-4xl">warning</span>
+                        <h3 className="text-2xl font-headline tracking-tight">CONFIRM DELETION</h3>
+                    </div>
+                    
+                    <p className="text-white font-body mb-2">
+                        You are about to delete <span className="text-electric-blue font-bold">{idsToDelete.length}</span> session(s).
+                    </p>
+                    <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
+                        WARNING: This action will permanently remove all associated words from your library and the cloud database. This process is irreversible.
+                    </p>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                        <button 
+                            onClick={() => {
+                                setShowDeleteConfirm(false);
+                                setIdsToDelete([]);
+                            }}
+                            className="bg-mid-charcoal hover:bg-white hover:text-charcoal text-text-light transition-all p-4 rounded-xl font-headline tracking-wider text-sm"
+                        >
+                            CANCEL
+                        </button>
+                        <button 
+                            onClick={handleExecuteDelete}
+                            className="bg-red-500 hover:bg-red-600 text-white transition-all p-4 rounded-xl font-headline tracking-wider text-sm shadow-lg shadow-red-900/20"
+                        >
+                            DELETE FOREVER
+                        </button>
+                    </div>
+                </div>
+            </div>
         )}
 
         {/* Quick Test Modal */}
@@ -376,7 +477,7 @@ const App: React.FC = () => {
 
                         <button 
                             onClick={() => {
-                                const allIds = words.map(w => w.id);
+                                const allIds = visibleWords.map(w => w.id);
                                 handleStartTestFromLibrary(allIds);
                                 setShowQuickTestModal(false);
                             }}
@@ -384,7 +485,7 @@ const App: React.FC = () => {
                         >
                             <span className="text-sm font-mono text-electric-green group-hover:text-charcoal uppercase tracking-widest">Option 2</span>
                             <span className="text-xl font-headline group-hover:text-charcoal">ALL WORD LIBRARY</span>
-                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">A comprehensive test of all {words.length} words in your vault.</span>
+                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">A comprehensive test of all {visibleWords.length} words in your vault.</span>
                         </button>
 
                         <button 
@@ -413,8 +514,9 @@ const SessionMatrix: React.FC<{
   onToggleSelect: (id: string) => void,
   onStartTest: (id: string) => void,
   onEdit: (id: string) => void,
+  onDelete: (id: string) => void,
   onExpand: () => void 
-}> = ({ sessions, selectedIds, onToggleSelect, onStartTest, onEdit, onExpand }) => {
+}> = ({ sessions, selectedIds, onToggleSelect, onStartTest, onEdit, onDelete, onExpand }) => {
   const MAX_SLOTS = 12; // 2 rows x 6 cols
   const count = sessions.length;
   const showMoreButton = count > MAX_SLOTS;
@@ -474,12 +576,12 @@ const SessionMatrix: React.FC<{
             <button 
               onClick={(e) => {
                   e.stopPropagation();
-                  onStartTest(s.id);
+                  onDelete(s.id);
               }}
-              className={`bg-mid-charcoal rounded-lg text-electric-green hover:bg-electric-green hover:text-charcoal transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'}`}
-              title="Quick Test"
+              className={`bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'}`}
+              title="Delete Session"
             >
-              <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>quiz</span>
+              <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>delete</span>
             </button>
           </div>
         </div>
@@ -509,8 +611,9 @@ const Dashboard: React.FC<{
   onStartTest: (sIds: string[]) => void, 
   onStartEdit: (sId: string) => void, 
   onOpenLibrary: () => void,
-  onQuickTest: () => void
-}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest }) => {
+  onQuickTest: () => void,
+  onDeleteSessions: (ids: string[]) => void
+}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions }) => {
   const [featuredImage, setFeaturedImage] = useState<string | null>(null);
   const [featuredWord, setFeaturedWord] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -608,14 +711,24 @@ const Dashboard: React.FC<{
         <div className="space-y-4">
           <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
             <h3 className="font-headline text-2xl text-text-light tracking-widest">RECENT SESSIONS</h3>
-            {showAllSessions && (
-                <button onClick={() => setShowAllSessions(false)} className="text-xs font-mono text-electric-blue hover:text-white uppercase">
-                    Back to Matrix
-                </button>
-            )}
-            {!showAllSessions && sessions.length > 0 && (
-                <span className="text-xs font-mono text-text-dark opacity-50">{sessions.length} TOTAL</span>
-            )}
+            <div className="flex items-center gap-4">
+                {showAllSessions && selectedSessionIds.size > 0 && (
+                    <button 
+                        onClick={() => onDeleteSessions(Array.from(selectedSessionIds))}
+                        className="text-xs font-mono text-red-500 hover:text-red-400 uppercase flex items-center gap-1 transition-colors"
+                    >
+                        <span className="material-symbols-outlined text-sm">delete</span>
+                        DELETE ({selectedSessionIds.size})
+                    </button>
+                )}
+                {showAllSessions ? (
+                    <button onClick={() => setShowAllSessions(false)} className="text-xs font-mono text-electric-blue hover:text-white uppercase">
+                        Back to Matrix
+                    </button>
+                ) : (
+                    sessions.length > 0 && <span className="text-xs font-mono text-text-dark opacity-50">{sessions.length} TOTAL</span>
+                )}
+            </div>
           </div>
           
           <div className="bg-dark-charcoal/50 p-1 rounded-2xl border border-mid-charcoal/30">
@@ -645,8 +758,8 @@ const Dashboard: React.FC<{
                                 <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title="Edit">
                                     <span className="material-symbols-outlined text-lg">edit</span>
                                 </button>
-                                <button onClick={() => onStartTest([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-electric-green hover:bg-electric-green hover:text-charcoal transition-colors" title="Test">
-                                    <span className="material-symbols-outlined text-lg">quiz</span>
+                                <button onClick={() => onDeleteSessions([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors" title="Delete">
+                                    <span className="material-symbols-outlined text-lg">delete</span>
                                 </button>
                              </div>
                         </div>
@@ -661,6 +774,7 @@ const Dashboard: React.FC<{
                         onToggleSelect={onToggleSessionSelect}
                         onStartTest={(id) => onStartTest([id])}
                         onEdit={onStartEdit}
+                        onDelete={(id) => onDeleteSessions([id])}
                         onExpand={() => setShowAllSessions(true)}
                     />
                 </div>

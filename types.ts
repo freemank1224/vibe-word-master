@@ -16,6 +16,7 @@ export interface WordEntry {
   audio_url: string | null;
   definition_cn: string | null;
   definition_en: string | null;
+  deleted?: boolean;
 }
 
 export interface InputSession {
@@ -23,6 +24,7 @@ export interface InputSession {
   timestamp: number;
   wordCount: number;
   targetCount: number;
+  deleted?: boolean;
 }
 
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';
