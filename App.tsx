@@ -899,7 +899,7 @@ const Dashboard: React.FC<{
         </div>
       </div>
 
-      <div className="lg:col-span-4 flex flex-col gap-8">
+      <div className="lg:col-span-4 flex flex-col gap-4">
         <CalendarView stats={stats} />
         
         <AchievementsPanel words={words} sessions={sessions} className="flex-1" />
@@ -909,9 +909,6 @@ const Dashboard: React.FC<{
             onClick={onOpenLibrary}
             className="flex-1 bg-light-charcoal py-4 px-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden flex flex-col justify-center min-h-[130px]"
         >
-            <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-30 transition-opacity">
-                <span className="material-symbols-outlined text-7xl text-white">local_library</span>
-            </div>
             <h3 className="font-headline text-xl text-text-light mb-0.5 tracking-widest uppercase group-hover:text-electric-blue transition-colors">Word Library</h3>
             <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70">Browse and manage your full collection alphabetically.</p>
             
