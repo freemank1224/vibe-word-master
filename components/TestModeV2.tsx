@@ -592,8 +592,6 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       );
   }
 
-  if (!currentWord) return null;
-
   if (!isStarted) {
     return (
         <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white">
@@ -703,6 +701,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         </div>
     );
   }
+
+  if (!currentWord) return null;
 
   return (
     <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
