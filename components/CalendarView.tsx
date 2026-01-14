@@ -146,9 +146,6 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                 <span className="text-[10px] font-mono text-text-dark uppercase">Elite</span>
             </div>
         </div>
-        <div className="text-[10px] font-mono text-text-dark opacity-50 uppercase tracking-widest">
-            {monthNames[month]} Snapshot
-        </div>
       </div>
     </div>
   );

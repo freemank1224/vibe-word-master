@@ -6,9 +6,10 @@ import { Badge } from './Badge';
 interface AchievementsPanelProps {
   words: WordEntry[];
   sessions: InputSession[];
+  className?: string;
 }
 
-export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions }) => {
+export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions, className = "" }) => {
   const [expanded, setExpanded] = useState(false);
 
   const stats = useMemo(() => calculateAchievements(words, sessions), [words, sessions]);
@@ -24,16 +25,27 @@ export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, ses
   const totalCount = stats.length;
 
   return (
-    <div className="bg-light-charcoal p-6 rounded-2xl border border-mid-charcoal hover:border-mid-charcoal/80 transition-colors">
+    <div className={`bg-light-charcoal p-6 rounded-2xl border border-mid-charcoal hover:border-mid-charcoal/80 transition-colors flex flex-col ${className}`}>
       <div className="flex justify-between items-center mb-6">
-        <h3 className="font-headline text-xl text-electric-blue tracking-widest uppercase">Achievements</h3>
-        <div className="text-xs font-mono bg-dark-charcoal px-3 py-1 rounded-full border border-mid-charcoal/50">
-            <span className="text-electric-blue font-bold">{unlockedCount}</span>
-            <span className="text-text-dark"> / {totalCount}</span>
+        <div className="flex flex-col">
+            <h3 className="font-headline text-xl text-electric-blue tracking-widest uppercase">Achievements</h3>
+            <div className="text-[10px] font-mono text-text-dark uppercase mt-1">
+                <span className="text-electric-blue font-bold">{unlockedCount}</span>
+                <span> / {totalCount} UNLOCKED</span>
+            </div>
         </div>
+        <button 
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 text-text-dark hover:text-electric-blue transition-all text-[10px] uppercase font-bold tracking-wider py-1 px-2 bg-dark-charcoal rounded-md border border-mid-charcoal/50"
+        >
+            <span>{expanded ? 'Less' : 'All'}</span>
+            <span className={`material-symbols-outlined text-sm transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}>
+                expand_more
+            </span>
+        </button>
       </div>
 
-      <div className="grid grid-cols-5 gap-2 md:gap-4 justify-items-center">
+      <div className="grid grid-cols-5 gap-2 md:gap-4 justify-items-center flex-1 items-center">
         {visibleBadges.map((badge) => (
             <Badge 
                 key={badge.definition.id} 
@@ -42,18 +54,6 @@ export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, ses
             />
         ))}
       </div>
-
-      <button 
-        onClick={() => setExpanded(!expanded)}
-        className="w-full mt-6 group flex items-center justify-center gap-2 text-text-dark hover:text-electric-blue transition-colors text-xs uppercase font-bold tracking-wider py-2"
-      >
-        <span className="group-hover:tracking-widest transition-all duration-300">
-            {expanded ? 'Show Less' : 'View All Badges'}
-        </span>
-        <span className={`material-symbols-outlined text-base transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}>
-            expand_more
-        </span>
-      </button>
     </div>
   );
 };

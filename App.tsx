@@ -419,7 +419,7 @@ const App: React.FC = () => {
       <header className="h-16 border-b border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md sticky top-0 z-50 px-6 flex items-center justify-between">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => { setMode('DASHBOARD'); setEditingSessionId(null); setTestConfig(null); }}>
           <span className="material-symbols-outlined text-electric-green text-3xl">bolt</span>
-          <h1 className="font-headline text-2xl tracking-tighter text-electric-blue">VOCAB VIBE</h1>
+          <h1 className="font-headline text-2xl tracking-tighter text-electric-blue">VOCAB MONSTER</h1>
         </div>
         <div className="flex items-center gap-4">
           <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-dark">
@@ -609,7 +609,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="py-6 text-center text-text-dark text-sm border-t border-mid-charcoal bg-dark-charcoal">
-        <p>&copy; 2024 VOCABVIBE MASTER - CLOUD SYNCED</p>
+        <p>&copy; 2024 VOCAB MONSTER - CLOUD SYNCED</p>
       </footer>
     </div>
   );
@@ -750,7 +750,7 @@ const Dashboard: React.FC<{
   const accuracy = (totalAll as number) > 0 ? ((totalCorrect as number) / (totalAll as number)) * 100 : 0;
 
   return (
-    <div className="grid lg:grid-cols-12 gap-8 items-start animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="grid lg:grid-cols-12 gap-8 items-stretch animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="lg:col-span-8 flex flex-col gap-10">
         <div className="flex flex-col md:flex-row items-center gap-10">
           
@@ -899,32 +899,32 @@ const Dashboard: React.FC<{
         </div>
       </div>
 
-      <div className="lg:col-span-4 space-y-8">
+      <div className="lg:col-span-4 flex flex-col gap-8">
         <CalendarView stats={stats} />
         
-        <AchievementsPanel words={words} sessions={sessions} />
+        <AchievementsPanel words={words} sessions={sessions} className="flex-1" />
 
         {/* Word Library Card */}
         <div 
             onClick={onOpenLibrary}
-            className="bg-light-charcoal p-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden"
+            className="flex-1 bg-light-charcoal py-4 px-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden flex flex-col justify-center min-h-[130px]"
         >
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                <span className="material-symbols-outlined text-9xl text-white">local_library</span>
+            <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-30 transition-opacity">
+                <span className="material-symbols-outlined text-7xl text-white">local_library</span>
             </div>
-            <h3 className="font-headline text-xl text-text-light mb-2 tracking-widest uppercase group-hover:text-electric-blue transition-colors">Word Library</h3>
-            <p className="text-text-dark text-sm mb-6 relative z-10">Access your entire collection sorted alphabetically. Select specific ranges to reinforce memory.</p>
+            <h3 className="font-headline text-xl text-text-light mb-0.5 tracking-widest uppercase group-hover:text-electric-blue transition-colors">Word Library</h3>
+            <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70">Browse and manage your full collection alphabetically.</p>
             
-            <div className="flex items-center gap-3 relative z-10">
-                <div className="bg-dark-charcoal p-3 rounded-lg border border-mid-charcoal group-hover:border-electric-blue/50 transition-colors">
-                    <span className="font-mono text-electric-blue font-bold text-xl">{words.length}</span>
+            <div className="flex items-center justify-between relative z-10 pr-1">
+                <div className="flex items-center gap-3">
+                    <div className="bg-dark-charcoal p-1.5 rounded-lg border border-mid-charcoal group-hover:border-electric-blue/50 transition-colors">
+                        <span className="font-mono text-electric-blue font-bold text-lg">{words.length}</span>
+                    </div>
+                    <span className="font-mono text-[9px] text-text-dark uppercase tracking-tighter">Total Entries</span>
                 </div>
-                <span className="font-mono text-xs text-text-dark uppercase">Total Entries</span>
-            </div>
-            
-            <div className="mt-6 flex items-center gap-2 text-electric-blue font-mono text-xs uppercase tracking-widest group-hover:translate-x-2 transition-transform relative z-10">
-                <span>Open Archive</span>
-                <span className="material-symbols-outlined text-sm">arrow_forward</span>
+                <div className="bg-electric-blue/20 p-1 rounded-full text-electric-blue group-hover:bg-electric-blue group-hover:text-charcoal transition-all">
+                    <span className="material-symbols-outlined text-xl">arrow_forward</span>
+                </div>
             </div>
         </div>
       </div>
