@@ -44,8 +44,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
         setShowConfetti(false);
         await new Promise(r => timeoutId = setTimeout(r, 1000));
 
-        // Type "VIBE"
-        const word1 = "VIBE";
+        // Type "NICE"
+        const word1 = "NICE";
         for (let i = 0; i <= word1.length; i++) {
           if (!mounted) return;
           setDemoWord(word1.slice(0, i));
@@ -98,17 +98,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
     <div className="min-h-screen bg-charcoal text-white flex flex-col items-center justify-center relative overflow-hidden">
         <style>{`
           @keyframes breathe {
-            0%, 100% { opacity: 0.2; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(1.1); }
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+          }
+          @keyframes rotate-bg {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
           }
           .animate-breathe {
-            animation: breathe 6s ease-in-out infinite;
+            animation: breathe 8s ease-in-out infinite;
+          }
+          .animate-rotate-bg {
+            animation: rotate-bg 30s linear infinite;
           }
         `}</style>
 
-        {/* Background Decorations */}
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-electric-purple/20 blur-[120px] rounded-full pointer-events-none animate-breathe" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-electric-blue/20 blur-[120px] rounded-full pointer-events-none animate-breathe" style={{ animationDelay: '3s' }} />
+        {/* Background Decorations - Rotating Container */}
+        <div className="absolute top-1/2 left-1/2 w-[150vw] h-[150vw] md:w-[120vmax] md:h-[120vmax] pointer-events-none animate-rotate-bg z-0">
+            {/* Purple Blob - Top Left */}
+            <div className="absolute top-[5%] left-[5%] w-[45%] h-[45%] bg-electric-purple/40 blur-[150px] rounded-full animate-breathe" />
+            
+            {/* Blue Blob - Bottom Right */}
+            <div className="absolute bottom-[5%] right-[5%] w-[45%] h-[45%] bg-electric-blue/40 blur-[150px] rounded-full animate-breathe" style={{ animationDelay: '-4s' }} />
+        </div>
 
         <div className="w-full max-w-5xl px-6 relative z-10 grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
             
@@ -119,8 +131,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">
-                    LEVEL UP <br/>
-                    <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">YOUR VIBE</span>
+                    PICK UP <br/>
+                    <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">LEVEL UP</span>
                 </h1>
                 
                 <p className="font-body text-gray-400 text-lg md:text-xl max-w-md mx-auto md:mx-0 leading-relaxed">
@@ -197,7 +209,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 
                 {/* Decorative Elements around phone */}
                 <div className="absolute -bottom-12 -left-12 text-electric-purple/20 font-headline text-9xl -z-10 select-none">
-                    VIBE
+                    
                 </div>
             </div>
         </div>
