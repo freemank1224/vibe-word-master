@@ -15,6 +15,7 @@ import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/ach
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
 import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
+import { LandingPage } from './components/LandingPage';
 
 
 // Define Test Configuration State
@@ -25,6 +26,7 @@ interface TestConfig {
 
 const App: React.FC = () => {
   const [session, setSession] = useState<any>(null);
+  const [showLanding, setShowLanding] = useState(true);
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
   const [words, setWords] = useState<WordEntry[]>([]);
   const [sessions, setSessions] = useState<InputSession[]>([]);
@@ -424,6 +426,9 @@ const App: React.FC = () => {
   }
 
   if (!session) {
+    if (showLanding) {
+      return <LandingPage onStart={() => setShowLanding(false)} />;
+    }
     return <Auth />;
   }
 
