@@ -131,12 +131,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">
-                    PICK UP <br/>
+                    GET UP & <br/>
                     <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">LEVEL UP</span>
                 </h1>
                 
                 <p className="font-body text-gray-400 text-lg md:text-xl max-w-md mx-auto md:mx-0 leading-relaxed">
-                    Master vocabulary with style. Collect monsters, earn badges, and turn your daily learning into an addictive cyberpunk adventure.
+                    Enhance your typing skills. 
+                    Master your vocabulary. 
+                    Earn badges and turn your daily learning into an addictive adventure.
                 </p>
 
                 <div className="pt-4">
