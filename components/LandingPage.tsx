@@ -10,6 +10,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
   const [demoWord, setDemoWord] = useState('');
   const [demoStatus, setDemoStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
   const [showConfetti, setShowConfetti] = useState(false);
+  
+  // Mascot & Theme Logic
+  const getMascotTheme = () => {
+    // 0 = Sunday, 1 = Monday, etc.
+    const day = new Date().getDay();
+    // Fallback mapping if explicit colors needed per mascot
+    const themes = [
+        { src: '/monsterImages/M0.png', color: '#FF5722', glow: 'rgba(255, 87, 34, 0.6)' }, // Sun (Red/Orange)
+        { src: '/monsterImages/M1.png', color: '#00F0FF', glow: 'rgba(0, 240, 255, 0.6)' }, // Mon (Electric Blue)
+        { src: '/monsterImages/M2.png', color: '#2EE67C', glow: 'rgba(46, 230, 124, 0.6)' }, // Tue (Green)
+        { src: '/monsterImages/M3.png', color: '#BB00FF', glow: 'rgba(187, 0, 255, 0.6)' }, // Wed (Purple)
+        { src: '/monsterImages/M4.png', color: '#FFD700', glow: 'rgba(255, 215, 0, 0.6)' }, // Thu (Gold)
+        { src: '/monsterImages/M5.png', color: '#00E676', glow: 'rgba(0, 230, 118, 0.6)' }, // Fri (Bright Green)
+        { src: '/monsterImages/M6.png', color: '#FF4081', glow: 'rgba(255, 64, 129, 0.6)' }, // Sat (Pink)
+    ];
+    return themes[day] || themes[0];
+  };
+
+  const currentTheme = getMascotTheme();
 
   useEffect(() => {
     let mounted = true;
@@ -77,9 +96,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
   return (
     <div className="min-h-screen bg-charcoal text-white flex flex-col items-center justify-center relative overflow-hidden">
+        <style>{`
+          @keyframes breathe {
+            0%, 100% { opacity: 0.2; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.1); }
+          }
+          .animate-breathe {
+            animation: breathe 6s ease-in-out infinite;
+          }
+        `}</style>
+
         {/* Background Decorations */}
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-electric-purple/20 blur-[120px] rounded-full pointer-events-none" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-electric-blue/20 blur-[120px] rounded-full pointer-events-none" />
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-electric-purple/20 blur-[120px] rounded-full pointer-events-none animate-breathe" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-electric-blue/20 blur-[120px] rounded-full pointer-events-none animate-breathe" style={{ animationDelay: '3s' }} />
 
         <div className="w-full max-w-5xl px-6 relative z-10 grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
             
@@ -120,9 +149,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                  {/* Mascot Floating */}
                 <div className="absolute -top-24 -right-12 w-48 h-48 md:w-64 md:h-64 z-20 animate-bounce" style={{ animationDuration: '3s' }}>
                     <img 
-                        src="/monsterImages/M3.png" 
+                        src={currentTheme.src} 
                         alt="Mascot" 
-                        className="w-full h-full object-contain drop-shadow-[0_0_25px_rgba(46,230,124,0.4)]"
+                        className="w-full h-full object-contain transition-all duration-500"
+                        style={{ filter: `drop-shadow(0 0 25px ${currentTheme.glow})` }}
                     />
                 </div>
 
@@ -139,13 +169,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                              <div className="font-headline text-3xl text-white">TYPE THE WORD</div>
                         </div>
 
-                        <div className="pointer-events-none">
-                            <LargeWordInput 
-                                value={demoWord}
-                                onChange={() => {}}
-                                status={demoStatus}
-                                placeholder="TYPE HERE..."
-                            />
+                        <div className="pointer-events-none flex justify-center w-full overflow-hidden">
+                             {/* Container to constrain width */}
+                             <div className="w-[85%] max-w-full"> 
+                                <LargeWordInput 
+                                    value={demoWord}
+                                    onChange={() => {}}
+                                    status={demoStatus}
+                                    placeholder="TYPE HERE..."
+                                />
+                             </div>
                         </div>
 
                         <div className="flex justify-center gap-2 pt-4">
