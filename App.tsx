@@ -14,6 +14,7 @@ import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
 import { generateImagesForMissingWords } from './services/imageGenerationTask';
+import { AccountPanel } from './components/AccountPanel';
 
 
 // Define Test Configuration State
@@ -49,6 +50,7 @@ const App: React.FC = () => {
   const [unlockedAchievements, setUnlockedAchievements] = useState<Set<string>>(new Set());
   const [achievementQueue, setAchievementQueue] = useState<Achievement[]>([]);
   const [isReconciled, setIsReconciled] = useState(false);
+  const [showAccountPanel, setShowAccountPanel] = useState(false);
   
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
@@ -456,9 +458,12 @@ const App: React.FC = () => {
           <h1 className="font-headline text-2xl tracking-tighter text-electric-blue">VOCAB MONSTER</h1>
         </div>
         <div className="flex items-center gap-4">
-          <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-dark">
-            <span className="material-symbols-outlined text-sm">cloud_done</span>
-            <span>{session.user.email}</span>
+          <div 
+            className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-dark cursor-pointer hover:text-white transition-colors group"
+            onClick={() => setShowAccountPanel(true)}
+          >
+            <span className="material-symbols-outlined text-sm group-hover:text-electric-blue transition-colors">cloud_done</span>
+            <span className="group-hover:underline underline-offset-4">{session.user.email}</span>
           </div>
           <button onClick={handleLogout} className="p-2 text-text-light hover:text-red-400 transition-colors" title="Logout">
             <span className="material-symbols-outlined">logout</span>
@@ -645,6 +650,19 @@ const App: React.FC = () => {
       <footer className="py-6 text-center text-text-dark text-sm border-t border-mid-charcoal bg-dark-charcoal">
         <p>&copy; 2024 VOCAB MONSTER - CLOUD SYNCED</p>
       </footer>
+
+      {showAccountPanel && session && (
+        <AccountPanel 
+          user={session.user}
+          words={visibleWords}
+          sessions={visibleSessions}
+          onClose={() => setShowAccountPanel(false)}
+          onLogout={() => {
+              handleLogout();
+              setShowAccountPanel(false);
+          }}
+        />
+      )}
     </div>
   );
 };
