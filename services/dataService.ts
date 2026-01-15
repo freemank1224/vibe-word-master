@@ -1,22 +1,17 @@
 
 import { supabase } from '../lib/supabaseClient';
 import { WordEntry, InputSession } from '../types';
+import { compressToWebP } from '../utils/imageUtils';
 
 // Helper to upload Base64 image to Supabase Storage
 export const uploadImage = async (base64Data: string, userId: string): Promise<string | null> => {
   try {
-    // 1. Convert Base64 to Blob
-    const base64Content = base64Data.split(',')[1];
-    const byteCharacters = atob(base64Content);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: 'image/png' });
+    // 1. Compress and convert to WebP
+    // We target 1024x1024 max as it's a good balance of clarity and size
+    const blob = await compressToWebP(base64Data, 1024, 1024, 0.8);
 
-    // 2. Generate path
-    const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).substring(7)}.png`;
+    // 2. Generate path (using .webp extension)
+    const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).substring(7)}.webp`;
     
     // 3. Upload
     const { data, error } = await supabase.storage

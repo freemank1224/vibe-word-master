@@ -794,7 +794,7 @@ const Dashboard: React.FC<{
         } else {
             setIsGenerating(true);
             const img = await aiService.generateImageHint(randomWord.text);
-            setFeaturedImage(img || '/publicImages/ALL.png');
+            setFeaturedImage(img || '/publicImages/ALL.webp');
             setIsGenerating(false);
         }
       }
@@ -830,7 +830,7 @@ const Dashboard: React.FC<{
                 </>
               ) : (
                 <>
-                  <img src="/publicImages/ALL.png" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <img src="/publicImages/ALL.webp" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
                   <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80"></div>
                 </>
               )}
@@ -840,7 +840,7 @@ const Dashboard: React.FC<{
           <div 
             className="text-center md:text-left flex-1 order-first md:order-last relative"
             style={{
-              backgroundImage: `url(/monsterImages/M${new Date().getDay()}.png)`,
+              backgroundImage: `url(/monsterImages/M${new Date().getDay()}.webp)`,
               backgroundRepeat: 'no-repeat',
               backgroundPosition: 'right top',
               backgroundSize: 'auto 65%',

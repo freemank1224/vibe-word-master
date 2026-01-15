@@ -598,7 +598,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             <div className="max-w-md w-full text-center">
                 <div className="w-36 h-36 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8 border border-white/10 overflow-hidden group">
                     <img 
-                      src={`/monsterImages/M${new Date().getDay()}.png`} 
+                      src={`/monsterImages/M${new Date().getDay()}.webp`} 
                       alt="Monster" 
                       className="w-32 h-32 object-contain transition-transform duration-500 group-hover:scale-110"
                     />

@@ -17,13 +17,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
     const day = new Date().getDay();
     // Fallback mapping if explicit colors needed per mascot
     const themes = [
-        { src: '/monsterImages/M0.png', color: '#FF5722', glow: 'rgba(255, 87, 34, 0.6)' }, // Sun (Red/Orange)
-        { src: '/monsterImages/M1.png', color: '#00F0FF', glow: 'rgba(0, 240, 255, 0.6)' }, // Mon (Electric Blue)
-        { src: '/monsterImages/M2.png', color: '#2EE67C', glow: 'rgba(46, 230, 124, 0.6)' }, // Tue (Green)
-        { src: '/monsterImages/M3.png', color: '#BB00FF', glow: 'rgba(187, 0, 255, 0.6)' }, // Wed (Purple)
-        { src: '/monsterImages/M4.png', color: '#FFD700', glow: 'rgba(255, 215, 0, 0.6)' }, // Thu (Gold)
-        { src: '/monsterImages/M5.png', color: '#00E676', glow: 'rgba(0, 230, 118, 0.6)' }, // Fri (Bright Green)
-        { src: '/monsterImages/M6.png', color: '#FF4081', glow: 'rgba(255, 64, 129, 0.6)' }, // Sat (Pink)
+        { src: '/monsterImages/M0.webp', color: '#FF5722', glow: 'rgba(255, 87, 34, 0.6)' }, // Sun (Red/Orange)
+        { src: '/monsterImages/M1.webp', color: '#00F0FF', glow: 'rgba(0, 240, 255, 0.6)' }, // Mon (Electric Blue)
+        { src: '/monsterImages/M2.webp', color: '#2EE67C', glow: 'rgba(46, 230, 124, 0.6)' }, // Tue (Green)
+        { src: '/monsterImages/M3.webp', color: '#BB00FF', glow: 'rgba(187, 0, 255, 0.6)' }, // Wed (Purple)
+        { src: '/monsterImages/M4.webp', color: '#FFD700', glow: 'rgba(255, 215, 0, 0.6)' }, // Thu (Gold)
+        { src: '/monsterImages/M5.webp', color: '#00E676', glow: 'rgba(0, 230, 118, 0.6)' }, // Fri (Bright Green)
+        { src: '/monsterImages/M6.webp', color: '#FF4081', glow: 'rgba(255, 64, 129, 0.6)' }, // Sat (Pink)
     ];
     return themes[day] || themes[0];
   };

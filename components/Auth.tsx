@@ -13,13 +13,13 @@ export const Auth: React.FC = () => {
   const getMascotTheme = () => {
     const day = new Date().getDay();
     const themes = [
-        { src: '/monsterImages/M0.png' },
-        { src: '/monsterImages/M1.png' },
-        { src: '/monsterImages/M2.png' },
-        { src: '/monsterImages/M3.png' },
-        { src: '/monsterImages/M4.png' },
-        { src: '/monsterImages/M5.png' },
-        { src: '/monsterImages/M6.png' },
+        { src: '/monsterImages/M0.webp' },
+        { src: '/monsterImages/M1.webp' },
+        { src: '/monsterImages/M2.webp' },
+        { src: '/monsterImages/M3.webp' },
+        { src: '/monsterImages/M4.webp' },
+        { src: '/monsterImages/M5.webp' },
+        { src: '/monsterImages/M6.webp' },
     ];
     return themes[day] || themes[0];
   };
