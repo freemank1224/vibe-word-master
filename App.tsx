@@ -794,7 +794,7 @@ const Dashboard: React.FC<{
         } else {
             setIsGenerating(true);
             const img = await aiService.generateImageHint(randomWord.text);
-            setFeaturedImage(img);
+            setFeaturedImage(img || '/publicImages/ALL.png');
             setIsGenerating(false);
         }
       }
@@ -829,9 +829,10 @@ const Dashboard: React.FC<{
                   </div>
                 </>
               ) : (
-                <div className="p-8 text-center text-text-dark border-2 border-dashed border-mid-charcoal rounded-2xl m-4 h-full flex items-center">
-                   <p className="font-mono text-xs">Add words to see AI-generated visual highlights here.</p>
-                </div>
+                <>
+                  <img src="/publicImages/ALL.png" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80"></div>
+                </>
               )}
             </div>
           </div>

@@ -131,7 +131,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">
-                    GET UP & <br/>
+                    BUILD UP <br/>
                     <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">LEVEL UP</span>
                 </h1>
                 
