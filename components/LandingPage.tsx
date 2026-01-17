@@ -127,7 +127,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
             {/* Left Content */}
             <div className="space-y-8 text-center md:text-left">
                 <div className="inline-block px-4 py-1.5 rounded-full border border-electric-blue/30 bg-electric-blue/10 text-electric-blue font-mono text-sm tracking-wider mb-2 animate-pulse">
-                    VOCAB MASTER V2.0
+                    VOCAB MONSTER V1.1
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">

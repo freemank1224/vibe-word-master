@@ -199,13 +199,6 @@ const App: React.FC = () => {
   }, [loadingData, isReconciled, words, sessions, unlockedAchievements, session]);
 
 
-  // Reset reconciliation status when reloading data to prevent "Stale State" bugs
-  useEffect(() => {
-    if (loadingData) {
-      setIsReconciled(false);
-    }
-  }, [loadingData]);
-
   // Achievement Tracking (Phase 2: Live Events)
   useEffect(() => {
     // Block until reconciliation is complete to avoid "double-counting" historical achievements
