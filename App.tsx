@@ -324,32 +324,56 @@ const App: React.FC = () => {
     if (!session?.user) return;
     
     try {
-      let wordsToProcess = [];
+      const idsToProcess = new Set<string>();
 
       if (editingSessionId) {
         // UPDATE EXISTING SESSION
         // Words without IDs are new additions
         const addedWords = wordList.filter(w => !w.id); 
-        console.log("Modifying session:", editingSessionId, "Added:", addedWords.length, "Deleted:", deletedIds.length);
         
-        const { newWordsData } = await modifySession(session.user.id, editingSessionId, addedWords, deletedIds);
-        wordsToProcess = newWordsData;
+        // Words WITH IDs are existing words, check for updates
+        const existingWordsInput = wordList.filter(w => !!w.id);
+        const originalSessionWords = words.filter(w => w.sessionId === editingSessionId);
+        
+        const updatedWords = existingWordsInput.filter(w => {
+             // Find original to compare
+             const original = originalSessionWords.find(ow => ow.id === w.id);
+             if (!original) return false;
+
+             // Check if text changed or if new image provided (imageBase64)
+             // Note: client side 'imageBase64' presence indicates a new image upload intention
+             const textChanged = w.text.trim() !== original.text.trim();
+             const hasNewImage = !!w.imageBase64;
+             
+             return textChanged || hasNewImage;
+        }).map(w => ({
+            id: w.id!,
+            text: w.text,
+            imageBase64: w.imageBase64
+        }));
+
+        const { newWordsData } = await modifySession(session.user.id, editingSessionId, addedWords, deletedIds, updatedWords);
+        
+        newWordsData.forEach((w: any) => idsToProcess.add(w.id));
+        updatedWords.forEach(w => idsToProcess.add(w.id));
+
       } else {
         // CREATE NEW SESSION
         const { wordsData } = await saveSessionData(session.user.id, wordList.length, wordList);
-        wordsToProcess = wordsData;
+        wordsData.forEach((w: any) => idsToProcess.add(w.id));
       }
       
       // RELOAD DATA IMMEDIATELY (Blocking)
       // This ensures that when we switch to dashboard, the data is FRESH.
-      const { sessions: updatedSessions, words: updatedWords } = await fetchUserData(session.user.id);
-      setSessions(updatedSessions);
-      setWords(updatedWords);
+      const { sessions: dashboardSessions, words: dashboardWords } = await fetchUserData(session.user.id);
+      setSessions(dashboardSessions);
+      setWords(dashboardWords);
 
       setMode('DASHBOARD');
       setEditingSessionId(null);
 
       // Trigger Background Process
+      const wordsToProcess = dashboardWords.filter(w => idsToProcess.has(w.id));
       processBackgroundData(session.user.id, wordsToProcess);
       
     } catch (e) {

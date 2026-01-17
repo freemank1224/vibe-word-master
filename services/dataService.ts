@@ -179,7 +179,8 @@ export const modifySession = async (
   userId: string,
   sessionId: string,
   addedWords: { text: string, imageBase64?: string }[],
-  removedWordIds: string[]
+  removedWordIds: string[],
+  updatedWords: { id: string, text: string, imageBase64?: string }[] = []
 ) => {
     // 1. Delete Removed Words (Soft Delete)
     if (removedWordIds.length > 0) {
@@ -222,6 +223,33 @@ export const modifySession = async (
             throw insError;
         }
         if (data) newWordsData.push(...data);
+    }
+
+    // 2.5 Update Existing Words
+    if (updatedWords && updatedWords.length > 0) {
+        console.log(`Updating ${updatedWords.length} existing words...`);
+        for (const w of updatedWords) {
+            const updates: any = { text: w.text };
+            
+            // Only update image if a new one is provided (base64)
+            if (w.imageBase64) {
+                const imagePath = await uploadImage(w.imageBase64, userId);
+                if (imagePath) {
+                    updates.image_path = imagePath;
+                }
+            }
+
+            const { error: upError } = await supabase
+                .from('words')
+                .update(updates)
+                .eq('id', w.id)
+                .eq('user_id', userId);
+
+            if (upError) {
+                console.error(`Error updating word ${w.id}:`, upError.message);
+                throw upError;
+            }
+        }
     }
 
     // 3. Update Session Count & Modification Time - Recalculate accurately
