@@ -1385,12 +1385,34 @@ const InputMode: React.FC<{
   const playWordAudio = async (text: string) => {
       if (playingAudio) return;
       setPlayingAudio(text);
+
+      // 1. Try Dictionary API (Human Audio)
+      try {
+          const dictData = await fetchDictionaryData(text);
+          if (dictData?.audioUrl) {
+               await new Promise<void>((resolve, reject) => {
+                   const audio = new Audio(dictData.audioUrl);
+                   audio.onended = () => resolve();
+                   audio.onerror = () => reject(new Error("Audio load failed"));
+                   audio.play().catch(reject);
+               });
+               setPlayingAudio(null);
+               return; 
+          }
+      } catch (e) {
+          console.warn("Dictionary audio unavailable, falling back to system TTS", e);
+      }
+
+      // 2. Fallback to System/AI TTS
       try {
           const audio = await aiService.generateSpeech(text);
           if (audio) {
             if (typeof audio === 'string') {
                 const u = new SpeechSynthesisUtterance(audio);
+                u.onend = () => setPlayingAudio(null);
+                u.onerror = () => setPlayingAudio(null);
                 window.speechSynthesis.speak(u);
+                return;
             } else {
                 const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
                 const source = ctx.createBufferSource();
