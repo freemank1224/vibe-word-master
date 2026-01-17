@@ -1324,8 +1324,28 @@ const InputMode: React.FC<{
 
   // Bug Fix: Delete Confirmation
   const [wordToDelete, setWordToDelete] = useState<{ index: number, item: any } | null>(null);
+  
+  // Bug Fix: Unsaved Changes Warning
+  const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Track if there are unsaved changes
+  const hasUnsavedChanges = () => {
+    // New words added (comparing length with initial words)
+    const newWordsCount = currentWords.filter(w => !w.id).length;
+    // Words deleted from initial set (via deletedIds or onDeleteWord immediate sync)
+    const deletedCount = initialWords.length - currentWords.filter(w => w.id).length;
+    return newWordsCount > 0 || deletedCount > 0;
+  };
+
+  const handleCancelClick = () => {
+    if (hasUnsavedChanges()) {
+      setShowUnsavedWarning(true);
+    } else {
+      onCancel();
+    }
+  };
 
   const playWordAudio = async (text: string) => {
       if (playingAudio) return;
@@ -1526,7 +1546,7 @@ const InputMode: React.FC<{
         setInputValue(extracted);
       } else {
         alert("Could not extract word from image.");
-      }
+      }handleCancelClick
       setIsProcessing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
@@ -1546,7 +1566,7 @@ const InputMode: React.FC<{
     <div className="max-w-4xl mx-auto space-y-12 py-10 animate-in fade-in duration-500 relative">
       <div className="w-full flex items-center justify-between px-2">
          <button 
-            onClick={onCancel} 
+            onClick={handleCancelClick} 
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-light-charcoal border border-mid-charcoal text-text-light hover:text-white hover:border-electric-blue transition-all group"
          >
             <span className="material-symbols-outlined group-hover:-translate-x-1 transition-transform">arrow_back</span>
@@ -1763,6 +1783,55 @@ const InputMode: React.FC<{
                         className="flex-1 py-3 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors font-headline tracking-wider text-sm shadow-lg"
                     >
                         DELETE
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* Unsaved Changes Warning Modal */}
+      {showUnsavedWarning && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] flex items-center justify-center p-6 animate-in fade-in duration-300">
+            <div className="bg-light-charcoal border border-electric-blue/50 rounded-3xl p-8 max-w-[500px] w-full shadow-[0_0_30px_rgba(0,240,255,0.2)] scale-in-center">
+                <div className="flex items-center gap-3 mb-4">
+                    <span className="material-symbols-outlined text-4xl text-electric-blue">warning</span>
+                    <h3 className="text-2xl font-headline text-white tracking-tight">UNSAVED CHANGES</h3>
+                </div>
+                
+                <p className="text-text-light mb-2 text-sm leading-relaxed">
+                    You have unsaved changes in this session. What would you like to do?
+                </p>
+                <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
+                    {currentWords.filter(w => !w.id).length > 0 && `${currentWords.filter(w => !w.id).length} new word(s) added. `}
+                    {(initialWords.length - currentWords.filter(w => w.id).length) > 0 && `${initialWords.length - currentWords.filter(w => w.id).length} word(s) removed.`}
+                </p>
+                
+                <div className="grid gap-3">
+                    <button 
+                        onClick={async () => {
+                            setShowUnsavedWarning(false);
+                            await handleSubmitSession();
+                        }}
+                        disabled={!!targetWord}
+                        className="w-full py-4 rounded-xl bg-electric-green text-charcoal hover:bg-white transition-all font-headline tracking-wider text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                        <span className="material-symbols-outlined">save</span>
+                        {targetWord ? "FINISH WORD FIRST" : "SAVE & UPDATE"}
+                    </button>
+                    <button 
+                        onClick={() => {
+                            setShowUnsavedWarning(false);
+                            onCancel();
+                        }}
+                        className="w-full py-4 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-all font-headline tracking-wider shadow-lg"
+                    >
+                        DISCARD CHANGES
+                    </button>
+                    <button 
+                        onClick={() => setShowUnsavedWarning(false)}
+                        className="w-full py-3 rounded-xl bg-mid-charcoal text-text-light hover:bg-white hover:text-charcoal transition-colors font-mono text-xs uppercase tracking-widest"
+                    >
+                        CANCEL (KEEP EDITING)
                     </button>
                 </div>
             </div>
