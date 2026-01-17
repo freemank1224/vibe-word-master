@@ -779,28 +779,51 @@ const Dashboard: React.FC<{
   onQuickTest: () => void,
   onDeleteSessions: (ids: string[]) => void
 }> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions }) => {
-  const [featuredImage, setFeaturedImage] = useState<string | null>(null);
-  const [featuredWord, setFeaturedWord] = useState<string | null>(null);
+  const [carouselIndex, setCarouselIndex] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showAllSessions, setShowAllSessions] = useState(false);
 
+  // Filter words that already have images for the carousel
+  const wordsWithImages = useMemo(() => words.filter(w => w.image_url), [words]);
+
+  // 1. Auto-rotation logic (5 seconds)
   useEffect(() => {
-    const generateFeature = async () => {
-      if (words.length > 0 && !featuredImage) {
+    if (wordsWithImages.length <= 1) return;
+
+    const timer = setInterval(() => {
+      setCarouselIndex(prev => (prev + 1) % wordsWithImages.length);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [wordsWithImages.length]);
+
+  // 2. Initial Generation Logic (Fallback if no images exist)
+  useEffect(() => {
+    const triggerInitialGen = async () => {
+      if (words.length > 0 && wordsWithImages.length === 0 && !isGenerating) {
         const randomWord = words[Math.floor(Math.random() * words.length)];
-        setFeaturedWord(randomWord.text);
-        if (randomWord.image_url) {
-            setFeaturedImage(randomWord.image_url);
-        } else {
-            setIsGenerating(true);
-            const img = await aiService.generateImageHint(randomWord.text);
-            setFeaturedImage(img || '/publicImages/ALL.webp');
+        setIsGenerating(true);
+        try {
+            // Note: generateImagesForMissingWords also runs in background in App,
+            // but this ensures the featured area doesn't stay empty on first login.
+            await aiService.generateImageHint(randomWord.text);
+            // Words will update via the background task in App
+        } catch (e) {
+            console.warn("Initial featured generation failed", e);
+        } finally {
             setIsGenerating(false);
         }
       }
     };
-    generateFeature();
-  }, [words, featuredImage]);
+    triggerInitialGen();
+  }, [words, wordsWithImages.length, isGenerating]);
+
+  // Reset index if it goes out of sync with library updates
+  useEffect(() => {
+    if (carouselIndex >= wordsWithImages.length && wordsWithImages.length > 0) {
+      setCarouselIndex(0);
+    }
+  }, [wordsWithImages.length, carouselIndex]);
 
   const totalCorrect = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.correct, 0);
   const totalAll = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.total, 0);
@@ -815,24 +838,33 @@ const Dashboard: React.FC<{
             <div className="absolute -inset-1 bg-gradient-to-r from-electric-blue to-electric-purple rounded-3xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative w-full h-full bg-light-charcoal rounded-3xl border border-mid-charcoal overflow-hidden flex flex-col items-center justify-center">
               {isGenerating ? (
-                <div className="flex flex-col items-center gap-4 p-8 text-center">
-                  <span className="material-symbols-outlined text-5xl text-electric-blue animate-pulse">auto_awesome</span>
+                <div className="flex flex-col items-center gap-4 p-8 text-center animate-pulse">
+                  <span className="material-symbols-outlined text-5xl text-electric-blue">auto_awesome</span>
                   <p className="font-mono text-[10px] text-text-dark uppercase tracking-widest">Visualizing...</p>
                 </div>
-              ) : featuredImage ? (
-                <>
-                  <img src={featuredImage} alt="Featured Word AI" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80"></div>
-                  <div className="absolute bottom-4 left-4 right-4">
-                    <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1">Featured</p>
-                    <p className="font-serif text-2xl text-white italic capitalize">{featuredWord}</p>
+              ) : wordsWithImages.length > 0 ? (
+                <div key={wordsWithImages[carouselIndex].id} className="w-full h-full relative animate-in fade-in duration-1000">
+                  <img 
+                    src={wordsWithImages[carouselIndex].image_url!} 
+                    alt={wordsWithImages[carouselIndex].text} 
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" 
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80 shadow-[inset_0_-40px_60px_rgba(0,0,0,0.5)]"></div>
+                  <div className="absolute bottom-4 left-4 right-4 z-10 animate-in slide-in-from-bottom-2 fade-in duration-700 delay-150">
+                    <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1 drop-shadow-sm">Featured</p>
+                    <p className="font-serif text-2xl text-white italic capitalize drop-shadow-lg">{wordsWithImages[carouselIndex].text}</p>
+                    <div className="flex gap-1 mt-3">
+                        {wordsWithImages.map((_, idx) => (
+                            <div key={idx} className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20'}`} />
+                        ))}
+                    </div>
                   </div>
-                </>
+                </div>
               ) : (
-                <>
+                <div className="w-full h-full relative animate-in fade-in duration-700">
                   <img src="/publicImages/ALL.webp" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
                   <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80"></div>
-                </>
+                </div>
               )}
             </div>
           </div>
