@@ -17,7 +17,6 @@ import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
-import { DictionaryImporter } from './components/DictionaryImporter';
 
 
 // Define Test Configuration State
@@ -1060,7 +1059,7 @@ const LibraryMode: React.FC<{
 }> = ({ words, onClose, onTest, userId, onRefresh }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectedLibraries, setSelectedLibraries] = useState<Set<string>>(new Set(['Custom']));
-    const [isImporterOpen, setIsImporterOpen] = useState(false);
+
     
     const [searchTerm, setSearchTerm] = useState('');
     const [randomCount, setRandomCount] = useState<string>('10');
@@ -1196,6 +1195,10 @@ const LibraryMode: React.FC<{
                     selectedLibraries={selectedLibraries}
                     onChange={setSelectedLibraries}
                     availableLibraries={availableLibraries}
+                    userId={userId || ''}
+                    onImportComplete={() => {
+                        if (onRefresh) onRefresh();
+                    }}
                 />
 
                 <div className="bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg flex-1 flex flex-col">
@@ -1246,28 +1249,7 @@ const LibraryMode: React.FC<{
                     </div>
                 </div>
 
-                {userId && (
-                    <div className="mt-4">
-                        <button 
-                            onClick={() => setIsImporterOpen(!isImporterOpen)}
-                            className="w-full text-xs text-mid-grey hover:text-white flex items-center gap-2 justify-center py-2 border border-transparent hover:border-mid-charcoal rounded transition-colors"
-                        >
-                            <span className="material-symbols-outlined text-sm">settings_ethernet</span>
-                            {isImporterOpen ? 'Hide Dictionary Manager' : 'Manage Dictionaries'}
-                        </button>
-                        
-                        {isImporterOpen && (
-                            <div className="animate-in fade-in slide-in-from-top-2">
-                                <DictionaryImporter 
-                                    userId={userId} 
-                                    onImportComplete={() => {
-                                        if (onRefresh) onRefresh();
-                                    }} 
-                                />
-                            </div>
-                        )}
-                    </div>
-                )}
+
             </div>
 
             {/* Main Content */}
