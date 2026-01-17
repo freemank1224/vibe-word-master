@@ -179,11 +179,11 @@ export const modifySession = async (
   addedWords: { text: string, imageBase64?: string }[],
   removedWordIds: string[]
 ) => {
-    // 1. Delete Removed Words
+    // 1. Delete Removed Words (Soft Delete)
     if (removedWordIds.length > 0) {
         const { error: delError } = await supabase
             .from('words')
-            .delete()
+            .update({ deleted: true })
             .in('id', removedWordIds);
         
         if (delError) {
@@ -227,7 +227,8 @@ export const modifySession = async (
         .from('words')
         .select('*', { count: 'exact', head: true })
         .eq('session_id', sessionId)
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .or('deleted.eq.false,deleted.is.null'); // Ensure we ignore deleted words
 
     if (countError) {
         console.error("Error counting words:", countError.message);
