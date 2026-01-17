@@ -552,6 +552,7 @@ const App: React.FC = () => {
         {mode === 'INPUT' && (
           <InputMode 
             initialWords={editingSessionId ? visibleWords.filter(w => w.sessionId === editingSessionId) : undefined}
+            currentLibrary={editingSessionId ? (sessions.find(s => s.id === editingSessionId)?.libraryTag || 'Custom') : 'Custom'}
             onComplete={handleSaveSession}
             onCancel={() => {
                 setEditingSessionId(null);
@@ -753,48 +754,59 @@ const SessionMatrix: React.FC<{
       {visibleSessions.map(s => (
         <div 
           key={s.id} 
-          className={`bg-light-charcoal rounded-xl border group transition-all flex flex-col justify-between overflow-hidden relative shadow-lg ${selectedIds.has(s.id) ? 'border-electric-green ring-1 ring-electric-green' : 'border-mid-charcoal hover:border-electric-blue'}`}
-          style={{ padding: isHighDensity ? '0.75rem' : '1.5rem' }}
+          className={`bg-light-charcoal rounded-xl border group transition-all flex flex-col overflow-hidden relative shadow-lg ${selectedIds.has(s.id) ? 'border-electric-green ring-1 ring-electric-green' : 'border-mid-charcoal hover:border-electric-blue'}`}
         >
-          <div className="flex justify-between items-start mb-2 z-10">
-            <span className={`font-mono text-text-dark truncate ${isHighDensity ? 'text-[10px]' : 'text-xs'}`}>
-                {new Date(s.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}
-            </span>
-            {/* CHECKBOX for Multi-Select */}
-            <div className="flex items-center">
-                <input 
-                    type="checkbox" 
-                    checked={selectedIds.has(s.id)}
-                    onChange={(e) => {
-                        e.stopPropagation();
-                        onToggleSelect(s.id);
-                    }}
-                    className="w-5 h-5 rounded border-mid-charcoal text-electric-green focus:ring-offset-0 focus:ring-0 bg-dark-charcoal cursor-pointer z-20"
-                />
+          {/* Library Banner at Top */}
+          {s.libraryTag && s.libraryTag !== 'Custom' && (
+            <div className={`w-full bg-gradient-to-r from-electric-blue/20 to-electric-blue/5 border-b border-electric-blue/30 flex items-center justify-center ${isHighDensity ? 'py-1' : 'py-1.5'}`}>
+              <span className={`font-mono font-bold text-electric-blue uppercase tracking-widest ${isHighDensity ? 'text-[8px]' : 'text-[10px]'}`}>
+                {s.libraryTag}
+              </span>
             </div>
-          </div>
+          )}
           
-          <div className="flex justify-between items-end z-10">
-            <div className="cursor-pointer" onClick={() => onEdit(s.id)} title="Click to Edit Words">
-              <p className={`font-headline text-white group-hover:text-electric-blue leading-none transition-colors ${isHighDensity ? 'text-xl' : 'text-5xl'}`}>
-                {s.wordCount} <span className={`text-text-dark font-body font-normal ${isHighDensity ? 'text-[10px]' : 'text-sm'}`}>WORDS</span>
-              </p>
-              <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                 <span className="material-symbols-outlined text-[10px] text-electric-blue">edit</span>
-                 <span className="text-[10px] text-electric-blue uppercase">Edit</span>
+          {/* Main Content */}
+          <div className={`flex flex-col justify-between flex-1 ${isHighDensity ? 'p-3' : 'p-6'}`}>
+            <div className="flex justify-between items-start mb-2 z-10">
+              <span className={`font-mono text-text-dark truncate ${isHighDensity ? 'text-[10px]' : 'text-xs'}`}>
+                  {new Date(s.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}
+              </span>
+              {/* CHECKBOX for Multi-Select */}
+              <div className="flex items-center">
+                  <input 
+                      type="checkbox" 
+                      checked={selectedIds.has(s.id)}
+                      onChange={(e) => {
+                          e.stopPropagation();
+                          onToggleSelect(s.id);
+                      }}
+                      className="w-5 h-5 rounded border-mid-charcoal text-electric-green focus:ring-offset-0 focus:ring-0 bg-dark-charcoal cursor-pointer z-20"
+                  />
               </div>
-            </div>
+              </div>
             
-            <button 
-              onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(s.id);
-              }}
-              className={`bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'}`}
-              title="Delete Session"
-            >
-              <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>delete</span>
-            </button>
+            <div className="flex justify-between items-end z-10">
+              <div className="cursor-pointer" onClick={() => onEdit(s.id)} title="Click to Edit Words">
+                <p className={`font-headline text-white group-hover:text-electric-blue leading-none transition-colors ${isHighDensity ? 'text-xl' : 'text-5xl'}`}>
+                  {s.wordCount} <span className={`text-text-dark font-body font-normal ${isHighDensity ? 'text-[10px]' : 'text-sm'}`}>WORDS</span>
+                </p>
+                <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                   <span className="material-symbols-outlined text-[10px] text-electric-blue">edit</span>
+                   <span className="text-[10px] text-electric-blue uppercase">Edit</span>
+                </div>
+              </div>
+              
+              <button 
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(s.id);
+                }}
+                className={`bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'}`}
+                title="Delete Session"
+              >
+                <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>delete</span>
+              </button>
+            </div>
           </div>
         </div>
       ))}
@@ -1075,9 +1087,32 @@ const LibraryMode: React.FC<{
     onRefresh?: () => void;
 }> = ({ words, onClose, onTest, userId, onRefresh }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [selectedLibraries, setSelectedLibraries] = useState<Set<string>>(new Set(['Custom']));
-
     
+    // Persist library selection to localStorage
+    const [selectedLibraries, setSelectedLibraries] = useState<Set<string>>(() => {
+        try {
+            const saved = localStorage.getItem('vibe-word-master-selected-libraries');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    return new Set(parsed);
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load saved library selection:', e);
+        }
+        return new Set(['Custom']);
+    });
+
+    // Save library selection whenever it changes
+    useEffect(() => {
+        try {
+            localStorage.setItem('vibe-word-master-selected-libraries', JSON.stringify(Array.from(selectedLibraries)));
+        } catch (e) {
+            console.error('Failed to save library selection:', e);
+        }
+    }, [selectedLibraries]);
+
     const [searchTerm, setSearchTerm] = useState('');
     const [randomCount, setRandomCount] = useState<string>('10');
     const [isMouseDown, setIsMouseDown] = useState(false);
@@ -1355,11 +1390,12 @@ const LibraryMode: React.FC<{
 // --- Input Mode Component ---
 const InputMode: React.FC<{ 
   initialWords?: WordEntry[],
+  currentLibrary: string, // The library tag of the session being edited (or 'Custom' for new sessions)
   onComplete: (words: { id?: string, text: string, imageBase64?: string }[], deletedIds: string[]) => void,
   onCancel: () => void,
   onDeleteWord?: (id: string) => Promise<void>,
   allWords: WordEntry[]
-}> = ({ initialWords = [], onComplete, onCancel, onDeleteWord, allWords }) => {
+}> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords }) => {
   const [currentWords, setCurrentWords] = useState<{ id?: string, text: string, imageBase64?: string }[]>(
     initialWords.map(w => ({ id: w.id, text: w.text }))
   );
@@ -1464,16 +1500,20 @@ const InputMode: React.FC<{
 
     // --- PHASE 1: New Word Validation ---
     if (!targetWord) {
-      // Local Check
+      // Local Check: Check within current session's word list
       if (currentWords.some(w => w.text.toLowerCase() === trimmed.toLowerCase())) {
-          setErrorMsg(`"${trimmed}" is already in the list.`);
+          setErrorMsg(`"${trimmed}" is already in this session.`);
           playBuzzer();
           return;
       }
-      // Global Check
-      const isGlobalDuplicate = allWords.some(w => w.text.toLowerCase() === trimmed.toLowerCase());
-      if (isGlobalDuplicate) {
-          setErrorMsg(`"${trimmed}" already exists in your library.`);
+      
+      // Library-level Check: Check if word exists in the SAME library
+      const existsInSameLibrary = allWords.some(w => 
+        w.text.toLowerCase() === trimmed.toLowerCase() && 
+        w.tags?.includes(currentLibrary)
+      );
+      if (existsInSameLibrary) {
+          setErrorMsg(`"${trimmed}" already exists in ${currentLibrary} library.`);
           playBuzzer();
           return;
       }

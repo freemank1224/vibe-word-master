@@ -26,6 +26,7 @@ export interface InputSession {
   wordCount: number;
   targetCount: number;
   deleted?: boolean;
+  libraryTag?: string; // Which library this session belongs to (Custom, CET-4, etc.)
 }
 
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';

@@ -54,23 +54,59 @@ export const fetchUserData = async (userId: string) => {
       throw new Error(`Failed to load sessions: ${sessionsError.message}`);
   }
 
-  // Fetch Words (Filtered: Not deleted)
-  const { data: wordsData, error: wordsError } = await supabase
-    .from('words')
-    .select('*')
-    .eq('user_id', userId)
-    .or('deleted.eq.false,deleted.is.null'); // Ensure we only get active words
+  // Fetch Words (Filtered: Not deleted) - with pagination to handle > 1000 words
+  const wordsData: any[] = [];
+  let page = 0;
+  const PAGE_SIZE = 1000;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const from = page * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    
+    const { data: pageData, error: wordsError } = await supabase
+      .from('words')
+      .select('*')
+      .eq('user_id', userId)
+      .or('deleted.eq.false,deleted.is.null')
+      .range(from, to);
 
-  if (wordsError) {
+    if (wordsError) {
       console.error("Supabase Error fetching words:", wordsError.message);
       throw new Error(`Failed to load words: ${wordsError.message}`);
+    }
+    
+    if (!pageData || pageData.length === 0) {
+      hasMore = false;
+    } else {
+      wordsData.push(...pageData);
+      hasMore = pageData.length === PAGE_SIZE;
+      page++;
+    }
   }
+  
+  console.log(`[fetchUserData] Loaded ${wordsData.length} words for user`);
 
   // Map DB structure to App Interface
   // Note: We calculate wordCount and timestamp dynamically based on the actual words fetched
   // to ensure the UI always reflects the latest activity, regardless of stale metadata.
   const sessions: InputSession[] = (sessionsData || []).map((s: any) => {
-    const sessionWords = (wordsData || []).filter((w: any) => w.session_id === s.id);
+    const libraryTag = s.library_tag || 'Custom';
+    
+    // For library sessions (non-Custom), count words by tags to match LibraryMode filtering
+    // For Custom sessions, count words by session_id
+    let sessionWords: any[];
+    if (libraryTag !== 'Custom') {
+      // Count all words that have this library tag
+      sessionWords = (wordsData || []).filter((w: any) => {
+        const tags = w.tags && w.tags.length > 0 ? w.tags : ['Custom'];
+        return tags.includes(libraryTag);
+      });
+    } else {
+      // Custom session: count by session_id
+      sessionWords = (wordsData || []).filter((w: any) => w.session_id === s.id);
+    }
+    
     const lastWordTime = sessionWords.length > 0 
       ? Math.max(...sessionWords.map(w => new Date(w.created_at).getTime()))
       : 0;
@@ -80,7 +116,8 @@ export const fetchUserData = async (userId: string) => {
       timestamp: Math.max(new Date(s.created_at).getTime(), lastWordTime),
       wordCount: sessionWords.length,
       targetCount: s.target_count,
-      deleted: s.deleted || false
+      deleted: s.deleted || false,
+      libraryTag
     };
   }).filter(s => s.wordCount > 0); // Remove sessions that have no active words (Zombies)
 
@@ -110,7 +147,8 @@ export const fetchUserData = async (userId: string) => {
 export const saveSessionData = async (
   userId: string, 
   targetCount: number, 
-  wordList: { text: string, imageBase64?: string }[]
+  wordList: { text: string, imageBase64?: string }[],
+  libraryTag: string = 'Custom'
 ) => {
   // 1. Create Session
   const { data: sessionData, error: sessionError } = await supabase
@@ -118,7 +156,8 @@ export const saveSessionData = async (
     .insert({
       user_id: userId,
       word_count: wordList.length,
-      target_count: targetCount
+      target_count: targetCount,
+      library_tag: libraryTag
     })
     .select()
     .single();
@@ -142,7 +181,7 @@ export const saveSessionData = async (
       session_id: sessionData.id,
       text: w.text,
       image_path: imagePath,
-      tags: ['Custom']
+      tags: [libraryTag]
     });
   }
 
@@ -182,6 +221,15 @@ export const modifySession = async (
   removedWordIds: string[],
   updatedWords: { id: string, text: string, imageBase64?: string }[] = []
 ) => {
+    // Get session's library_tag - words added to this session belong to its library
+    const { data: sessionInfo } = await supabase
+        .from('sessions')
+        .select('library_tag')
+        .eq('id', sessionId)
+        .single();
+    
+    const libraryTag = sessionInfo?.library_tag || 'Custom';
+    
     // 1. Delete Removed Words (Soft Delete)
     if (removedWordIds.length > 0) {
         const { error: delError } = await supabase
@@ -195,7 +243,7 @@ export const modifySession = async (
         }
     }
 
-    // 2. Add New Words
+    // 2. Add New Words - they belong to the session's library
     const newWordsData: any[] = [];
     if (addedWords.length > 0) {
         const wordsPayload = [];
@@ -209,7 +257,7 @@ export const modifySession = async (
                 session_id: sessionId,
                 text: w.text,
                 image_path: imagePath,
-                tags: ['Custom']
+                tags: [libraryTag]
             });
         }
         
@@ -225,6 +273,7 @@ export const modifySession = async (
         if (data) newWordsData.push(...data);
     }
 
+    // 2.5 Update Existing Words
     // 2.5 Update Existing Words
     if (updatedWords && updatedWords.length > 0) {
         console.log(`Updating ${updatedWords.length} existing words...`);
@@ -430,7 +479,21 @@ export const generateSRSQueue = (
 export const deleteSessions = async (userId: string, sessionIds: string[]) => {
   if (!sessionIds || sessionIds.length === 0) return;
 
-  // 1. Soft Delete words
+  // First, get the library tags of sessions being deleted
+  const { data: sessionsToDelete } = await supabase
+    .from('sessions')
+    .select('id, library_tag')
+    .in('id', sessionIds)
+    .eq('user_id', userId);
+
+  const libraryTagsToClean = new Set<string>();
+  sessionsToDelete?.forEach(s => {
+    if (s.library_tag && s.library_tag !== 'Custom') {
+      libraryTagsToClean.add(s.library_tag);
+    }
+  });
+
+  // 1. Soft Delete words that belong to these sessions
   const { error: wordsError } = await supabase
       .from('words')
       .update({ deleted: true })
@@ -452,6 +515,43 @@ export const deleteSessions = async (userId: string, sessionIds: string[]) => {
   if (sessionError) {
       console.error("Error deleting sessions:", sessionError.message);
       throw sessionError;
+  }
+
+  // 3. Clean up library tags from words in OTHER sessions
+  // When deleting a library session (e.g., CET-6), we need to remove the CET-6 tag
+  // from all words that have it, not just the words in the deleted session
+  if (libraryTagsToClean.size > 0) {
+    console.log('[deleteSessions] Cleaning library tags:', Array.from(libraryTagsToClean));
+    
+    for (const tag of libraryTagsToClean) {
+      // Find all words with this tag (not deleted)
+      const { data: wordsWithTag } = await supabase
+        .from('words')
+        .select('id, tags')
+        .eq('user_id', userId)
+        .or('deleted.eq.false,deleted.is.null')
+        .contains('tags', [tag]);
+
+      if (wordsWithTag && wordsWithTag.length > 0) {
+        // Update each word to remove the tag
+        const updates = wordsWithTag.map(w => ({
+          id: w.id,
+          tags: (w.tags || []).filter((t: string) => t !== tag)
+        }));
+
+        // Batch update
+        for (const update of updates) {
+          // Ensure at least 'Custom' tag remains
+          const newTags = update.tags.length > 0 ? update.tags : ['Custom'];
+          await supabase
+            .from('words')
+            .update({ tags: newTags })
+            .eq('id', update.id);
+        }
+
+        console.log(`[deleteSessions] Removed tag '${tag}' from ${updates.length} words`);
+      }
+    }
   }
 };
 
@@ -499,16 +599,17 @@ export const getWordsMissingImage = async (userId: string) => {
 
 
 export const importDictionaryWords = async (userId: string, words: string[], tag: string) => {
-  // 1. Get or allow creation of a "Library Session"
-  // We attempt to reuse a generic "Library Imports" session to avoid spamming the session list.
-  // We identify it by target_count = -999 (Internal Convention)
+  // 1. Get or create a library-specific session
+  // Each library (CET-4, CET-6, TOEFL, etc.) gets its own session
+  // This allows proper organization and library-specific deduplication
   let sessionId: string;
   
   const { data: existingSessions } = await supabase
     .from('sessions')
     .select('id')
     .eq('user_id', userId)
-    .eq('target_count', -999)
+    .eq('library_tag', tag)
+    .or('deleted.eq.false,deleted.is.null') // Only active sessions
     .limit(1);
 
   if (existingSessions && existingSessions.length > 0) {
@@ -519,7 +620,8 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
         .insert({
             user_id: userId,
             word_count: 0,
-            target_count: -999 
+            target_count: -999,
+            library_tag: tag
         })
         .select()
         .single();
@@ -528,15 +630,40 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
      sessionId = newSession.id;
   }
 
-  // 2. Fetch all existing words for deduplication and tagging
-  const { data: userWords } = await supabase
-    .from('words')
-    .select('id, text, tags')
-    .eq('user_id', userId);
-    
+  // 2. Fetch all existing ACTIVE words for deduplication and tagging
+  // IMPORTANT: Supabase has a default limit of 1000 rows, so we need to paginate
   const wordMap = new Map<string, { id: string, tags: string[] }>();
-  // Use lowercase for matching
-  userWords?.forEach((w: any) => wordMap.set(w.text.toLowerCase().trim(), { id: w.id, tags: w.tags || [] }));
+  
+  let page = 0;
+  const PAGE_SIZE = 1000;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const from = page * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    
+    const { data: userWords, error: fetchError } = await supabase
+      .from('words')
+      .select('id, text, tags')
+      .eq('user_id', userId)
+      .or('deleted.eq.false,deleted.is.null')
+      .range(from, to);
+    
+    if (fetchError) {
+      console.error('[importDictionaryWords] Error fetching words page:', fetchError);
+      break;
+    }
+    
+    if (!userWords || userWords.length === 0) {
+      hasMore = false;
+    } else {
+      userWords.forEach((w: any) => wordMap.set(w.text.toLowerCase().trim(), { id: w.id, tags: w.tags || [] }));
+      hasMore = userWords.length === PAGE_SIZE;
+      page++;
+    }
+  }
+  
+  console.log(`[importDictionaryWords] Loaded ${wordMap.size} existing words for deduplication`);
   
   const updates: any[] = [];
   const inserts: any[] = [];
@@ -575,40 +702,263 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
     }
   }
 
-  // 3. Process Inserts (Efficient Bulk Insert)
+  console.log(`[importDictionaryWords] ${tag}: ${words.length} input words, ${inserts.length} to insert, ${updates.length} to update tags, ${words.length - inserts.length - updates.length} already complete`);
+
+  // 3. Process Inserts (Batch Insert with smaller chunks to avoid limits)
+  let insertedCount = 0;
   if (inserts.length > 0) {
-      const CHUNK_SIZE = 100;
-       for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
+      const CHUNK_SIZE = 500; // Smaller batch size to avoid Supabase limits
+      for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
           const chunk = inserts.slice(i, i + CHUNK_SIZE);
           const { error } = await supabase.from('words').insert(chunk);
-          if (error) console.error("Error inserting chunk:", error);
+          
+          if (error) {
+            console.error(`[importDictionaryWords] Error inserting chunk ${Math.floor(i / CHUNK_SIZE) + 1}:`, error);
+            // Don't throw, continue with next batch
+          } else {
+            insertedCount += chunk.length;
+            console.log(`[importDictionaryWords] ✓ Inserted batch ${Math.floor(i / CHUNK_SIZE) + 1}: ${chunk.length} words (total: ${insertedCount}/${inserts.length})`);
+          }
+      }
+      console.log(`[importDictionaryWords] ✅ Completed: Inserted ${insertedCount}/${inserts.length} new words for ${tag}`);
+  }
+  
+  // 4. Process Updates (Batch update tags)
+  let updatedCount = 0;
+  if (updates.length > 0) {
+      const UPDATE_BATCH_SIZE = 100;
+      for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
+          const chunk = updates.slice(i, i + UPDATE_BATCH_SIZE);
+          
+          // Update in parallel within batch
+          const results = await Promise.allSettled(
+            chunk.map(u => 
+              supabase.from('words').update({ tags: u.tags }).eq('id', u.id)
+            )
+          );
+          
+          const successful = results.filter(r => r.status === 'fulfilled').length;
+          updatedCount += successful;
+          console.log(`[importDictionaryWords] ✓ Updated batch ${Math.floor(i / UPDATE_BATCH_SIZE) + 1}: ${successful}/${chunk.length} words (total: ${updatedCount}/${updates.length})`);
+      }
+      console.log(`[importDictionaryWords] ✅ Completed: Updated tags for ${updatedCount}/${updates.length} existing words for ${tag}`);
+  }
+  
+  return { updated: updatedCount, inserted: insertedCount };
+};
+
+/**
+ * Dictionary configuration - uses local pre-cleaned wordlist files
+ * These files are stored in /public/dictionaries/wordlists/ as "gold standard"
+ * Format: one word per line, lowercase, sorted, deduplicated
+ */
+export const DICTIONARY_CONFIG = [
+  { name: 'Primary School (小学)', localPath: '/dictionaries/wordlists/primary.txt', tag: 'Primary', wordCount: 439 },
+  { name: 'Junior High (初中)', localPath: '/dictionaries/wordlists/junior.txt', tag: 'Junior', wordCount: 1887 },
+  { name: 'Senior High (高中)', localPath: '/dictionaries/wordlists/senior.txt', tag: 'Senior', wordCount: 3429 },
+  { name: 'CET-4 (四级)', localPath: '/dictionaries/wordlists/cet4.txt', tag: 'CET-4', wordCount: 4551 },
+  { name: 'CET-6 (六级)', localPath: '/dictionaries/wordlists/cet6.txt', tag: 'CET-6', wordCount: 2219 },
+];
+
+/**
+ * Parse pre-cleaned word list (one word per line, already lowercase)
+ */
+const parseCleanWordList = (text: string): string[] => {
+  return text.split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+};
+
+/**
+ * Fetch word list from local file
+ */
+export const fetchLocalWordList = async (localPath: string): Promise<string[]> => {
+  try {
+    const response = await fetch(localPath);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch local wordlist: ${response.status}`);
+    }
+    const text = await response.text();
+    return parseCleanWordList(text);
+  } catch (error) {
+    console.error(`[fetchLocalWordList] Error fetching ${localPath}:`, error);
+    return [];
+  }
+};
+
+/**
+ * Library verification result
+ */
+export interface LibraryVerificationResult {
+  tag: string;
+  name: string;
+  isComplete: boolean;
+  userWordCount: number;       // How many words user has with this tag
+  sourceWordCount: number;     // How many words in source
+  completionRate: number;      // Percentage (0-100)
+  missingWords: string[];      // Sample of missing words (max 10)
+  status: 'complete' | 'incomplete' | 'empty' | 'error';
+}
+
+/**
+ * Verify library completeness by comparing with local gold standard
+ * This performs a full comparison with the pre-cleaned word list
+ */
+export const verifyLibraryCompleteness = async (
+  userId: string, 
+  tag: string
+): Promise<LibraryVerificationResult> => {
+  const config = DICTIONARY_CONFIG.find(d => d.tag === tag);
+  
+  if (!config) {
+    return {
+      tag,
+      name: tag,
+      isComplete: false,
+      userWordCount: 0,
+      sourceWordCount: 0,
+      completionRate: 0,
+      missingWords: [],
+      status: 'error'
+    };
+  }
+
+  try {
+    // 1. Fetch source word list from local gold standard file
+    const sourceWords = await fetchLocalWordList(config.localPath);
+    if (sourceWords.length === 0) {
+      throw new Error(`Failed to load local wordlist: ${config.localPath}`);
+    }
+    const sourceWordSet = new Set(sourceWords);
+    
+    // 2. Fetch user's words with this tag (with pagination to handle > 1000 words)
+    const userWords: any[] = [];
+    let page = 0;
+    const PAGE_SIZE = 1000;
+    let hasMore = true;
+    
+    while (hasMore) {
+      const from = page * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      
+      const { data: pageData, error } = await supabase
+        .from('words')
+        .select('text, tags')
+        .eq('user_id', userId)
+        .or('deleted.eq.false,deleted.is.null')
+        .contains('tags', [tag])
+        .range(from, to);
+
+      if (error) {
+        throw error;
       }
       
-      // Update session count (increment)
-      // Note: This is an approximation if we have multiple imports.
-      // Accurate way: Count words where session_id = sessionId
-      /*
-      const { count } = await supabase
-        .from('words')
-        .select('*', { count: 'exact', head: true })
-        .eq('session_id', sessionId);
-        
-      await supabase.from('sessions').update({ word_count: count }).eq('id', sessionId);
-      */
-  }
-  
-  // 4. Process Updates (Less Efficient - Row by Row)
-  // Since specific RPC for tagging isn't set up, we iterate.
-  // Limiting concurrency to avoid overwhelming connection.
-  if (updates.length > 0) {
-      const CONCURRENCY = 10;
-      for (let i = 0; i < updates.length; i += CONCURRENCY) {
-          const chunk = updates.slice(i, i + CONCURRENCY);
-          await Promise.all(chunk.map(u => 
-              supabase.from('words').update({ tags: u.tags }).eq('id', u.id)
-          ));
+      if (!pageData || pageData.length === 0) {
+        hasMore = false;
+      } else {
+        userWords.push(...pageData);
+        hasMore = pageData.length === PAGE_SIZE;
+        page++;
       }
+    }
+    const userWordSet = new Set(userWords.map((w: any) => w.text.toLowerCase().trim()));
+    
+    // 3. Calculate missing words
+    const missingWords: string[] = [];
+    for (const sourceWord of sourceWords) {
+      if (!userWordSet.has(sourceWord)) {
+        missingWords.push(sourceWord);
+        if (missingWords.length >= 10) break; // Only sample first 10
+      }
+    }
+
+    // 4. Calculate completion rate
+    const matchedCount = sourceWords.filter(w => userWordSet.has(w)).length;
+    const completionRate = sourceWords.length > 0 
+      ? Math.round((matchedCount / sourceWords.length) * 100) 
+      : 0;
+
+    // Library is considered "complete" if 95%+ of source words exist
+    const COMPLETENESS_THRESHOLD = 95;
+    const isComplete = completionRate >= COMPLETENESS_THRESHOLD;
+
+    console.log(`[verifyLibraryCompleteness] ${tag}: ${matchedCount}/${sourceWords.length} = ${completionRate}%`);
+
+    return {
+      tag,
+      name: config.name,
+      isComplete,
+      userWordCount: userWords.length,
+      sourceWordCount: sourceWords.length,
+      completionRate,
+      missingWords,
+      status: userWords.length === 0 ? 'empty' : (isComplete ? 'complete' : 'incomplete')
+    };
+
+  } catch (error: any) {
+    console.error(`[verifyLibraryCompleteness] Error for ${tag}:`, error);
+    return {
+      tag,
+      name: config.name,
+      isComplete: false,
+      userWordCount: 0,
+      sourceWordCount: 0,
+      completionRate: 0,
+      missingWords: [],
+      status: 'error'
+    };
+  }
+};
+
+/**
+ * Verify all libraries at once
+ */
+export const verifyAllLibraries = async (userId: string): Promise<Record<string, LibraryVerificationResult>> => {
+  const results: Record<string, LibraryVerificationResult> = {};
+  
+  // Verify all dictionaries in parallel
+  const verifications = await Promise.all(
+    DICTIONARY_CONFIG.map(config => verifyLibraryCompleteness(userId, config.tag))
+  );
+  
+  verifications.forEach(result => {
+    results[result.tag] = result;
+  });
+  
+  return results;
+};
+
+/**
+ * Simple verification - just counts words (fast, no network)
+ * Returns a map of library tags to their word counts
+ */
+export const verifyLibraryStatus = async (userId: string, libraryTags: string[]): Promise<Record<string, number>> => {
+  const result: Record<string, number> = {};
+  
+  // Query all words for this user with the specified tags
+  const { data: words, error } = await supabase
+    .from('words')
+    .select('tags')
+    .eq('user_id', userId)
+    .or('deleted.eq.false,deleted.is.null');
+  
+  if (error) {
+    console.error("Error verifying library status:", error.message);
+    return result;
   }
   
-  return { updated: updates.length, inserted: inserts.length };
+  // Initialize all tags to 0
+  libraryTags.forEach(tag => result[tag] = 0);
+  
+  // Count words per tag
+  words?.forEach((w: any) => {
+    const tags = w.tags || ['Custom'];
+    tags.forEach((tag: string) => {
+      if (libraryTags.includes(tag)) {
+        result[tag] = (result[tag] || 0) + 1;
+      }
+    });
+  });
+  
+  return result;
 };
