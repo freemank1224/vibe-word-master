@@ -391,6 +391,28 @@ const App: React.FC = () => {
     await updateWordStatus(id, correct);
   };
 
+  const handleInputModeDeleteWord = async (wordId: string) => {
+      if (!session?.user) return;
+      try {
+          if (editingSessionId) {
+             console.log("Deleting individual word:", wordId);
+             await modifySession(session.user.id, editingSessionId, [], [wordId]);
+             
+             // Update local state immediately
+             setWords(prev => prev.filter(w => w.id !== wordId));
+             setSessions(prev => prev.map(s => 
+                 s.id === editingSessionId 
+                 ? { ...s, wordCount: Math.max(0, s.wordCount - 1) } 
+                 : s
+             ));
+             playDing();
+          }
+      } catch (e) {
+          console.error("Delete individual word failed", e);
+          alert("Failed to delete word.");
+      }
+  };
+
   const handleStartEdit = (sessionId: string) => {
     setEditingSessionId(sessionId);
     setMode('INPUT');
@@ -513,6 +535,7 @@ const App: React.FC = () => {
                 setEditingSessionId(null);
                 setMode('DASHBOARD');
             }}
+            onDeleteWord={handleInputModeDeleteWord}
             allWords={visibleWords}
           />
         )}
@@ -1275,38 +1298,79 @@ const InputMode: React.FC<{
   initialWords?: WordEntry[],
   onComplete: (words: { id?: string, text: string, imageBase64?: string }[], deletedIds: string[]) => void,
   onCancel: () => void,
+  onDeleteWord?: (id: string) => Promise<void>,
   allWords: WordEntry[]
-}> = ({ initialWords = [], onComplete, onCancel, allWords }) => {
+}> = ({ initialWords = [], onComplete, onCancel, onDeleteWord, allWords }) => {
   const [currentWords, setCurrentWords] = useState<{ id?: string, text: string, imageBase64?: string }[]>(
     initialWords.map(w => ({ id: w.id, text: w.text }))
   );
+  // We don't use deletedIds for batch delete anymore based on new requirements, 
+  // but keeping it empty for compatibility with onComplete refactoring if needed.
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [serviceErrorWord, setServiceErrorWord] = useState<string | null>(null);
+  
+  // Feature 1: Drill Logic
+  const [targetWord, setTargetWord] = useState<string | null>(null);
+  const [repeatCount, setRepeatCount] = useState<number>(3);
+  const [drillProgress, setDrillProgress] = useState<number>(0);
+  const [inputStatus, setInputStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
+
+  // Feature 2: Audio
+  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+
+  // Bug Fix: Delete Confirmation
+  const [wordToDelete, setWordToDelete] = useState<{ index: number, item: any } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleAdd = async () => {
+  const playWordAudio = async (text: string) => {
+      if (playingAudio) return;
+      setPlayingAudio(text);
+      try {
+          const audio = await aiService.generateSpeech(text);
+          if (audio) {
+            if (typeof audio === 'string') {
+                const u = new SpeechSynthesisUtterance(audio);
+                window.speechSynthesis.speak(u);
+            } else {
+                const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const source = ctx.createBufferSource();
+                source.buffer = audio;
+                source.connect(ctx.destination);
+                source.start(0);
+                source.onended = () => setPlayingAudio(null);
+                // Fallback for cleanup
+                setTimeout(() => setPlayingAudio(null), audio.duration * 1000 + 500);
+                return;
+            }
+          }
+      } catch (e) {
+          console.error("Audio error", e);
+      }
+      setPlayingAudio(null);
+  };
+
+  const handleInputEnter = async () => {
     setErrorMsg(null);
     setServiceErrorWord(null);
+    setInputStatus('idle');
     const trimmed = inputValue.trim();
-    if (trimmed) {
-      // Local Check: Check duplicate in current session list
+    if (!trimmed) return;
+
+    // --- PHASE 1: New Word Validation ---
+    if (!targetWord) {
+      // Local Check
       if (currentWords.some(w => w.text.toLowerCase() === trimmed.toLowerCase())) {
           setErrorMsg(`"${trimmed}" is already in the list.`);
           playBuzzer();
           return;
       }
-
-      // Global Check: Check duplicate in entire library
-      // Exclude words marked for deletion in this session to allow re-adding
-      const isGlobalDuplicate = allWords.some(w => 
-        w.text.toLowerCase() === trimmed.toLowerCase() && 
-        !deletedIds.includes(w.id)
-      );
-
+      // Global Check
+      const isGlobalDuplicate = allWords.some(w => w.text.toLowerCase() === trimmed.toLowerCase());
       if (isGlobalDuplicate) {
           setErrorMsg(`"${trimmed}" already exists in your library.`);
           playBuzzer();
@@ -1329,35 +1393,102 @@ const InputMode: React.FC<{
         return;
       }
 
-      const newEntry = { text: trimmed, imageBase64: undefined };
-      setCurrentWords([...currentWords, newEntry]);
-      setInputValue('');
+      // Start Drill
+      setTargetWord(trimmed);
+      setDrillProgress(1); // First input counts as 1
+      setInputValue(''); 
+      setInputStatus('correct');
       playDing();
+      playWordAudio(trimmed);
+      
+      // If repeat count is 1, we are done immediately
+      if (repeatCount === 1) {
+          finishAddingWord(trimmed);
+      }
+      return;
     }
+
+    // --- PHASE 2: Drill Repetition ---
+    if (targetWord) {
+        if (trimmed.toLowerCase() === targetWord.toLowerCase()) {
+            // Correct
+            const newProgress = drillProgress + 1;
+            setDrillProgress(newProgress);
+            setInputValue('');
+            setInputStatus('correct');
+            playDing();
+            
+            if (newProgress >= repeatCount) {
+                finishAddingWord(targetWord);
+            }
+        } else {
+            // Wrong
+            setInputStatus('wrong');
+            playBuzzer();
+            setInputValue(''); // Clear to force retype
+            setErrorMsg(`Type "${targetWord}" again!`);
+        }
+    }
+  };
+
+  const finishAddingWord = (text: string) => {
+      const newEntry = { text: text, imageBase64: undefined };
+      setCurrentWords(prev => [...prev, newEntry]);
+      setTargetWord(null);
+      setDrillProgress(0);
+      setInputValue('');
+      setTimeout(() => setInputStatus('idle'), 1000);
+      playDing(); // Double ding for completion?
   };
 
   const handleManualAdd = () => {
     if (serviceErrorWord) {
-      const newEntry = { text: serviceErrorWord, imageBase64: undefined };
-      setCurrentWords([...currentWords, newEntry]);
-      setInputValue('');
-      setServiceErrorWord(null);
-      playDing();
+       // Start drill with unvalidated word
+       setTargetWord(serviceErrorWord);
+       setDrillProgress(1);
+       setInputValue('');
+       setServiceErrorWord(null);
+       playDing();
+       if (repeatCount === 1) finishAddingWord(serviceErrorWord);
     }
   };
 
-  const handleRemove = (index: number) => {
-    const wordToRemove = currentWords[index];
-    if (wordToRemove.id) {
-        setDeletedIds(prev => [...prev, wordToRemove.id!]);
-    }
-    const newWords = [...currentWords];
-    newWords.splice(index, 1);
-    setCurrentWords(newWords);
+  const initiateDelete = (index: number) => {
+      setWordToDelete({ index, item: currentWords[index] });
+  };
+
+  const confirmDelete = async () => {
+      if (!wordToDelete) return;
+
+      // New word (not saved yet)
+      if (!wordToDelete.item.id) {
+          const newWords = [...currentWords];
+          newWords.splice(wordToDelete.index, 1);
+          setCurrentWords(newWords);
+          setWordToDelete(null);
+      } else {
+          // Existing word - Immediate server sync requested
+          if (onDeleteWord) {
+              await onDeleteWord(wordToDelete.item.id);
+              // Local update happens via prop update or manual splice if parent doesn't auto-refresh input list
+              // Since we passed `initialWords`, `currentWords` is separate state. We must update it.
+              const newWords = [...currentWords];
+              newWords.splice(wordToDelete.index, 1);
+              setCurrentWords(newWords);
+          } else {
+              // Fallback to old behavior if prop missing
+              setDeletedIds(prev => [...prev, wordToDelete.item.id!]);
+              const newWords = [...currentWords];
+              newWords.splice(wordToDelete.index, 1);
+              setCurrentWords(newWords);
+          }
+          setWordToDelete(null);
+      }
   };
 
   const handleSubmitSession = async () => {
     setIsSaving(true);
+    // deletedIds should be empty if we exclusively use immediate delete, but passing it just in case
     await onComplete(currentWords, deletedIds);
   };
 
@@ -1375,6 +1506,7 @@ const InputMode: React.FC<{
       const text = event.results[0][0].transcript;
       setInputValue(text);
       setIsProcessing(false);
+      // Auto-submit if needed? No, let user confirm.
     };
     recognition.onerror = () => setIsProcessing(false);
     recognition.start();
@@ -1420,6 +1552,27 @@ const InputMode: React.FC<{
             <span className="material-symbols-outlined group-hover:-translate-x-1 transition-transform">arrow_back</span>
             <span className="font-mono text-xs uppercase tracking-wider">Dashboard</span>
          </button>
+         
+         {/* Repetition Setting */}
+         <div className="flex items-center gap-3 bg-light-charcoal border border-mid-charcoal px-4 py-2 rounded-full">
+            <span className="text-[10px] font-mono uppercase text-text-dark">Repetitions</span>
+            <div className="flex items-center gap-2">
+                <button 
+                    onClick={() => setRepeatCount(Math.max(1, repeatCount - 1))}
+                    className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
+                >
+                    -
+                </button>
+                <span className="font-mono text-electric-blue font-bold w-4 text-center">{repeatCount}</span>
+                <button 
+                    onClick={() => setRepeatCount(Math.min(10, repeatCount + 1))}
+                    className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
+                >
+                    +
+                </button>
+            </div>
+         </div>
+         
          {initialWords.length > 0 && (
              <span className="font-mono text-xs text-electric-blue border border-electric-blue/30 px-3 py-1 rounded-full uppercase tracking-wider">Editing Mode</span>
          )}
@@ -1433,19 +1586,50 @@ const InputMode: React.FC<{
         </div>
       </div>
 
-      <div className="relative">
+      <div className="relative flex flex-col items-center">
+        {/* Drill Indicators */}
+        <div className="flex gap-4 mb-4 h-8 items-end">
+            {targetWord && Array.from({ length: repeatCount }).map((_, i) => (
+                <div 
+                    key={i} 
+                    className={`
+                        w-4 h-4 rounded-full border-2 transition-all duration-300
+                        ${i < drillProgress 
+                            ? 'bg-electric-green border-electric-green shadow-[0_0_10px_rgba(46,230,124,0.5)] transform scale-125' 
+                            : 'bg-transparent border-mid-charcoal'
+                        }
+                    `}
+                />
+            ))}
+        </div>
+
         <LargeWordInput 
           value={inputValue} 
           onChange={(v) => {
             setInputValue(v);
-            if (errorMsg) setErrorMsg(null); 
+            if (errorMsg) setErrorMsg(null);
+            if (inputStatus !== 'idle') setInputStatus('idle');
           }} 
-          onEnter={handleAdd}
-          placeholder="TYPE WORD..."
+          onEnter={handleInputEnter}
+          placeholder={targetWord ? `TYPE "${targetWord}"` : "TYPE WORD..."}
           disabled={isProcessing}
+          status={inputStatus}
+          hintOverlay={targetWord ? undefined : undefined} 
         />
+        
+        {/* Drill Info Text */}
+        {targetWord && (
+            <div className="absolute top-0 right-0 transform translate-x-full pl-4 hidden md:block w-48">
+                 <div className="bg-light-charcoal/50 border border-electric-blue/30 p-4 rounded-2xl backdrop-blur-md">
+                     <p className="font-mono text-[10px] uppercase text-text-dark mb-1">Target</p>
+                     <p className="font-headline text-xl text-white truncate">{targetWord}</p>
+                     <p className="text-[10px] text-electric-blue mt-2">Type correctly {repeatCount} times to add.</p>
+                 </div>
+            </div>
+        )}
+
         {isProcessing && (
-          <div className="absolute inset-0 bg-charcoal/50 backdrop-blur-sm flex items-center justify-center rounded-xl z-10">
+          <div className="absolute inset-0 bg-charcoal/50 backdrop-blur-sm flex items-center justify-center rounded-xl z-10 h-64 md:h-80">
              <div className="flex items-center gap-3 text-electric-blue font-headline text-2xl animate-pulse">
                 <span className="material-symbols-outlined animate-spin">sync</span>
                 VALIDATING...
@@ -1454,7 +1638,7 @@ const InputMode: React.FC<{
         )}
         
         {errorMsg && (
-          <div className="absolute top-full left-0 right-0 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
+          <div className="absolute top-full text-center mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
             <div className="bg-red-600 border border-red-400 text-white px-6 py-3 rounded-xl flex items-center gap-3 shadow-[0_0_25px_rgba(220,38,38,0.4)]">
                <span className="material-symbols-outlined">report</span>
                <span className="font-mono font-bold tracking-tight">{errorMsg}</span>
@@ -1463,8 +1647,8 @@ const InputMode: React.FC<{
         )}
 
         {serviceErrorWord && (
-          <div className="absolute top-full left-0 right-0 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
-            <div className="bg-light-charcoal border-2 border-electric-purple text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(147,51,234,0.3)] max-w-md text-center">
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50 w-full max-w-md">
+            <div className="bg-light-charcoal border-2 border-electric-purple text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(147,51,234,0.3)] w-full text-center">
                <div className="flex items-center gap-3 text-electric-purple mb-1">
                   <span className="material-symbols-outlined text-3xl">cloud_off</span>
                   <span className="font-headline text-xl uppercase tracking-widest">Neural Link Offline</span>
@@ -1508,7 +1692,7 @@ const InputMode: React.FC<{
           <input type="file" ref={fileInputRef} onChange={handlePhotoInput} className="hidden" accept="image/*" />
         </button>
         <button 
-          onClick={handleAdd}
+          onClick={handleInputEnter}
           disabled={!inputValue.trim()}
           className="px-10 py-6 bg-mid-charcoal text-white font-headline text-3xl rounded-full hover:bg-electric-blue hover:text-charcoal transition-all disabled:opacity-50 disabled:hover:bg-mid-charcoal disabled:hover:text-white border-2 border-electric-blue"
         >
@@ -1524,11 +1708,20 @@ const InputMode: React.FC<{
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
             {currentWords.map((w, i) => (
-              <div key={i} className="group relative bg-light-charcoal p-4 rounded-xl border border-mid-charcoal text-center flex items-center justify-between hover:border-text-light transition-all">
-                <span className="font-mono text-electric-blue truncate flex-1 text-left">{w.text}</span>
+              <div key={i} className="group relative bg-light-charcoal p-3 rounded-xl border border-mid-charcoal text-center flex items-center justify-between hover:border-text-light transition-all">
+                <div className="flex items-center gap-2 overflow-hidden flex-1">
+                    <button 
+                        onClick={() => playWordAudio(w.text)}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-electric-blue hover:text-charcoal transition-colors ${playingAudio === w.text ? 'text-electric-green animate-pulse' : 'text-text-dark'}`}
+                    >
+                        <span className="material-symbols-outlined text-lg">volume_up</span>
+                    </button>
+                    <span className="font-mono text-electric-blue truncate">{w.text}</span>
+                </div>
                 <button 
-                    onClick={() => handleRemove(i)}
-                    className="ml-2 text-text-dark hover:text-red-500 transition-colors"
+                    onClick={() => initiateDelete(i)}
+                    className="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-red-500 hover:text-white transition-colors"
+                    title="Remove word"
                 >
                     <span className="material-symbols-outlined text-sm">close</span>
                 </button>
@@ -1541,13 +1734,40 @@ const InputMode: React.FC<{
       <div className="flex flex-col items-center gap-4 pt-4 pb-8">
         <button 
             onClick={handleSubmitSession}
-            disabled={currentWords.length === 0}
+            disabled={currentWords.length === 0 || !!targetWord}
             className={`w-full max-w-md py-6 rounded-2xl font-headline text-3xl transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:transform-none bg-mid-charcoal text-text-light hover:bg-electric-green hover:text-charcoal border-2 border-transparent hover:border-white`}
         >
             <span className="material-symbols-outlined text-4xl">check_circle</span>
-            {initialWords.length > 0 ? "UPDATE SESSION" : "FINISH & SAVE"}
+            {targetWord ? "FINISH WORD FIRST" : (initialWords.length > 0 ? "UPDATE SESSION" : "FINISH & SAVE")}
         </button>
       </div>
+
+      {/* Word Delete Confirmation Modal */}
+      {wordToDelete && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-6 animate-in fade-in duration-300">
+            <div className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-[400px] w-full shadow-[0_0_30px_rgba(239,68,68,0.2)] scale-in-center">
+                <h3 className="text-xl font-headline text-white mb-2">REMOVE WORD?</h3>
+                <p className="text-text-dark mb-6 text-sm">
+                    Are you sure you want to remove <span className="text-electric-blue font-bold">"{wordToDelete.item.text}"</span>?
+                    {wordToDelete.item.id && " This will permanently delete it from your library."}
+                </p>
+                <div className="flex gap-4">
+                    <button 
+                        onClick={() => setWordToDelete(null)}
+                        className="flex-1 py-3 rounded-xl bg-dark-charcoal text-text-light hover:bg-white hover:text-charcoal transition-colors font-mono text-xs uppercase"
+                    >
+                        Cancel
+                    </button>
+                    <button 
+                        onClick={confirmDelete}
+                        className="flex-1 py-3 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors font-headline tracking-wider text-sm shadow-lg"
+                    >
+                        DELETE
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
     </div>
   );
 };
