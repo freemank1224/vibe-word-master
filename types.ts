@@ -17,6 +17,7 @@ export interface WordEntry {
   definition_cn: string | null;
   definition_en: string | null;
   deleted?: boolean;
+  tags?: string[];
 }
 
 export interface InputSession {

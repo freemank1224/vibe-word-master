@@ -100,7 +100,8 @@ export const fetchUserData = async (userId: string) => {
     audio_url: w.audio_url || null,
     definition_cn: w.definition_cn || null,
     definition_en: w.definition_en || null,
-    deleted: w.deleted || false
+    deleted: w.deleted || false,
+    tags: w.tags || ['Custom']
   }));
 
   return { sessions, words };
@@ -141,6 +142,7 @@ export const saveSessionData = async (
       session_id: sessionData.id,
       text: w.text,
       image_path: imagePath,
+      tags: ['Custom']
     });
   }
 
@@ -205,7 +207,8 @@ export const modifySession = async (
                 user_id: userId,
                 session_id: sessionId,
                 text: w.text,
-                image_path: imagePath
+                image_path: imagePath,
+                tags: ['Custom']
             });
         }
         
@@ -466,3 +469,118 @@ export const getWordsMissingImage = async (userId: string) => {
   return data || [];
 };
 
+
+export const importDictionaryWords = async (userId: string, words: string[], tag: string) => {
+  // 1. Get or allow creation of a "Library Session"
+  // We attempt to reuse a generic "Library Imports" session to avoid spamming the session list.
+  // We identify it by target_count = -999 (Internal Convention)
+  let sessionId: string;
+  
+  const { data: existingSessions } = await supabase
+    .from('sessions')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('target_count', -999)
+    .limit(1);
+
+  if (existingSessions && existingSessions.length > 0) {
+     sessionId = existingSessions[0].id;
+  } else {
+     const { data: newSession, error } = await supabase
+        .from('sessions')
+        .insert({
+            user_id: userId,
+            word_count: 0,
+            target_count: -999 
+        })
+        .select()
+        .single();
+     
+     if (error) throw error;
+     sessionId = newSession.id;
+  }
+
+  // 2. Fetch all existing words for deduplication and tagging
+  const { data: userWords } = await supabase
+    .from('words')
+    .select('id, text, tags')
+    .eq('user_id', userId);
+    
+  const wordMap = new Map<string, { id: string, tags: string[] }>();
+  // Use lowercase for matching
+  userWords?.forEach((w: any) => wordMap.set(w.text.toLowerCase().trim(), { id: w.id, tags: w.tags || [] }));
+  
+  const updates: any[] = [];
+  const inserts: any[] = [];
+  const processedTexts = new Set<string>();
+
+  for (const w of words) {
+    const cleanText = w.trim();
+    if (!cleanText) continue;
+    
+    // Skip if we've already seen this word in this batch
+    const lowerText = cleanText.toLowerCase();
+    if (processedTexts.has(lowerText)) continue;
+    processedTexts.add(lowerText);
+    
+    if (wordMap.has(lowerText)) {
+      const existing = wordMap.get(lowerText)!;
+      // Only update if tag doesn't exist
+      if (!existing.tags.includes(tag)) {
+        updates.push({
+          id: existing.id,
+          tags: [...existing.tags, tag]
+        });
+      }
+    } else {
+      inserts.push({
+        user_id: userId,
+        session_id: sessionId,
+        text: cleanText, // Preserve case from list? Or lower?
+        // Most lists are lowercase, but some might be Capitalized. 
+        // We'll keep input case but use lower for comparison.
+        tags: [tag],
+        correct: false,
+        tested: false,
+        error_count: 0
+      });
+    }
+  }
+
+  // 3. Process Inserts (Efficient Bulk Insert)
+  if (inserts.length > 0) {
+      const CHUNK_SIZE = 100;
+       for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
+          const chunk = inserts.slice(i, i + CHUNK_SIZE);
+          const { error } = await supabase.from('words').insert(chunk);
+          if (error) console.error("Error inserting chunk:", error);
+      }
+      
+      // Update session count (increment)
+      // Note: This is an approximation if we have multiple imports.
+      // Accurate way: Count words where session_id = sessionId
+      /*
+      const { count } = await supabase
+        .from('words')
+        .select('*', { count: 'exact', head: true })
+        .eq('session_id', sessionId);
+        
+      await supabase.from('sessions').update({ word_count: count }).eq('id', sessionId);
+      */
+  }
+  
+  // 4. Process Updates (Less Efficient - Row by Row)
+  // Since specific RPC for tagging isn't set up, we iterate.
+  // Limiting concurrency to avoid overwhelming connection.
+  if (updates.length > 0) {
+      const CONCURRENCY = 10;
+      for (let i = 0; i < updates.length; i += CONCURRENCY) {
+          const chunk = updates.slice(i, i + CONCURRENCY);
+          await Promise.all(chunk.map(u => 
+              supabase.from('words').update({ tags: u.tags }).eq('id', u.id)
+          ));
+      }
+  }
+  
+  return { updated: updates.length, inserted: inserts.length };
+};

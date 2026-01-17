@@ -16,6 +16,8 @@ import { AchievementUnlockModal } from './components/Achievements/AchievementUnl
 import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
+import { LibrarySelector } from './components/LibrarySelector';
+import { DictionaryImporter } from './components/DictionaryImporter';
 
 
 // Define Test Configuration State
@@ -76,7 +78,7 @@ const App: React.FC = () => {
   }, []);
 
   // Fetch Data on Login
-  useEffect(() => {
+  const refreshData = useCallback(() => {
     if (session?.user) {
       setLoadingData(true);
       setDataError(null);
@@ -106,6 +108,10 @@ const App: React.FC = () => {
         .finally(() => setLoadingData(false));
     }
   }, [session]);
+
+  useEffect(() => {
+      refreshData();
+  }, [refreshData]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -559,6 +565,8 @@ const App: React.FC = () => {
                 words={visibleWords}
                 onClose={() => setMode('DASHBOARD')}
                 onTest={handleStartTestFromLibrary}
+                userId={session?.user?.id}
+                onRefresh={refreshData}
             />
         )}
 
@@ -1047,15 +1055,38 @@ const LibraryMode: React.FC<{
     words: WordEntry[];
     onClose: () => void;
     onTest: (ids: string[]) => void;
-}> = ({ words, onClose, onTest }) => {
+    userId?: string;
+    onRefresh?: () => void;
+}> = ({ words, onClose, onTest, userId, onRefresh }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [selectedLibraries, setSelectedLibraries] = useState<Set<string>>(new Set(['Custom']));
+    const [isImporterOpen, setIsImporterOpen] = useState(false);
+    
     const [searchTerm, setSearchTerm] = useState('');
     const [randomCount, setRandomCount] = useState<string>('10');
     const [isMouseDown, setIsMouseDown] = useState(false);
 
-    const sortedWords = useMemo(() => {
-        return [...words].sort((a, b) => a.text.localeCompare(b.text));
+    // Derived Libraries Option List
+    const availableLibraries = useMemo(() => {
+        const libs = new Set<string>();
+        libs.add('All');
+        libs.add('Custom'); // Always present
+        words.forEach(w => w.tags?.forEach(t => libs.add(t)));
+        return Array.from(libs).sort(); 
     }, [words]);
+
+    // Apply Filter based on Library Selection
+    const libraryFilteredWords = useMemo(() => {
+         if (selectedLibraries.has('All')) return words;
+         return words.filter(w => {
+             const tags = w.tags && w.tags.length > 0 ? w.tags : ['Custom'];
+             return tags.some(t => selectedLibraries.has(t));
+         });
+    }, [words, selectedLibraries]);
+
+    const sortedWords = useMemo(() => {
+        return [...libraryFilteredWords].sort((a, b) => a.text.localeCompare(b.text));
+    }, [libraryFilteredWords]);
 
     const filteredWords = sortedWords.filter(w => w.text.toLowerCase().includes(searchTerm.toLowerCase()));
 
@@ -1110,8 +1141,8 @@ const LibraryMode: React.FC<{
         const count = parseInt(randomCount);
         if (isNaN(count) || count <= 0) return;
         
-        // Shuffle all word IDs
-        const allIds = words.map(w => w.id);
+        // Shuffle current view (libraryFilteredWords)
+        const allIds = libraryFilteredWords.map(w => w.id);
         for (let i = allIds.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [allIds[i], allIds[j]] = [allIds[j], allIds[i]];
@@ -1124,7 +1155,7 @@ const LibraryMode: React.FC<{
     const clearSelection = () => setSelectedIds(new Set());
 
     return (
-        <div className="max-w-7xl mx-auto py-8 px-4 animate-in fade-in slide-in-from-bottom-4 duration-500 h-[calc(100vh-100px)] flex flex-col md:flex-row gap-6">
+        <div className="max-w-7xl mx-auto py-8 px-4 animate-in fade-in slide-in-from-bottom-4 duration-500 min-h-[calc(100vh-100px)] flex flex-col md:flex-row gap-6">
             
             {/* Sidebar Tools */}
             <div className="w-full md:w-80 flex flex-col gap-6 flex-shrink-0">
@@ -1134,7 +1165,7 @@ const LibraryMode: React.FC<{
                      </button>
                      <div>
                         <h2 className="font-headline text-3xl text-white tracking-wide">LIBRARY</h2>
-                        <p className="font-mono text-[10px] text-text-dark uppercase">{words.length} TOTAL WORDS</p>
+                        <p className="font-mono text-[10px] text-text-dark uppercase">{libraryFilteredWords.length} WORDS ({selectedLibraries.has('All') ? 'ALL' : Array.from(selectedLibraries).join('+')})</p>
                      </div>
                 </div>
 
@@ -1150,7 +1181,7 @@ const LibraryMode: React.FC<{
                             onChange={(e) => setRandomCount(e.target.value)}
                             className="w-20 bg-dark-charcoal border border-mid-charcoal rounded-lg px-3 py-2 text-white font-mono text-center focus:border-electric-blue outline-none"
                             min="1"
-                            max={words.length}
+                            max={libraryFilteredWords.length}
                         />
                         <button 
                             onClick={handleRandomSelect}
@@ -1160,6 +1191,12 @@ const LibraryMode: React.FC<{
                         </button>
                     </div>
                 </div>
+
+                <LibrarySelector 
+                    selectedLibraries={selectedLibraries}
+                    onChange={setSelectedLibraries}
+                    availableLibraries={availableLibraries}
+                />
 
                 <div className="bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg flex-1 flex flex-col">
                     <div className="flex justify-between items-center mb-4">
@@ -1208,10 +1245,33 @@ const LibraryMode: React.FC<{
                         })}
                     </div>
                 </div>
+
+                {userId && (
+                    <div className="mt-4">
+                        <button 
+                            onClick={() => setIsImporterOpen(!isImporterOpen)}
+                            className="w-full text-xs text-mid-grey hover:text-white flex items-center gap-2 justify-center py-2 border border-transparent hover:border-mid-charcoal rounded transition-colors"
+                        >
+                            <span className="material-symbols-outlined text-sm">settings_ethernet</span>
+                            {isImporterOpen ? 'Hide Dictionary Manager' : 'Manage Dictionaries'}
+                        </button>
+                        
+                        {isImporterOpen && (
+                            <div className="animate-in fade-in slide-in-from-top-2">
+                                <DictionaryImporter 
+                                    userId={userId} 
+                                    onImportComplete={() => {
+                                        if (onRefresh) onRefresh();
+                                    }} 
+                                />
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Main Content */}
-            <div className="flex-1 flex flex-col h-full bg-light-charcoal/50 rounded-2xl border border-mid-charcoal overflow-hidden relative">
+            <div className="flex-1 flex flex-col h-[calc(100vh-100px)] sticky top-[80px] bg-light-charcoal/50 rounded-2xl border border-mid-charcoal overflow-hidden relative">
                 {/* Action Bar */}
                 <div className="p-4 border-b border-mid-charcoal bg-light-charcoal flex flex-wrap gap-4 justify-between items-center z-20">
                     <div className="relative group w-full md:w-auto md:min-w-[300px]">
