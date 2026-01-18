@@ -41,17 +41,30 @@
             color: #E0E0E0;
         }
         ::-webkit-scrollbar {
-            width: 8px;
+            width: 6px;
+            height: 6px;
         }
         ::-webkit-scrollbar-track {
-            background: #1A1A2E;
+            background: transparent;
         }
         ::-webkit-scrollbar-thumb {
-            background: #3A3A52;
-            border-radius: 4px;
+            background: rgba(58, 58, 82, 0); /* 默认完全透明实现隐藏 */
+            border-radius: 10px;
+            transition: background 0.3s;
+        }
+        
+        /* 仅在鼠标悬停在滚动区域或滚动条时显示，且保持暗色低调 */
+        *:hover::-webkit-scrollbar-thumb {
+            background: rgba(58, 58, 82, 0.5);
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #00F0FF;
+            background: rgba(58, 58, 82, 0.8) !important;
+        }
+        
+        /* 针对 Firefox 的低调处理 */
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(58, 58, 82, 0.5) transparent;
         }
     </style>
 </head>

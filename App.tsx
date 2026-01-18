@@ -500,8 +500,34 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col font-body overflow-x-hidden">
-      <header className="h-16 border-b border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md sticky top-0 z-50 px-6 flex items-center justify-between">
+    <div className="min-h-screen flex flex-col font-body overflow-x-hidden relative bg-charcoal">
+        <style>{`
+          @keyframes breathe {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+          }
+          @keyframes rotate-bg {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+          }
+          .animate-breathe {
+            animation: breathe 8s ease-in-out infinite;
+          }
+          .animate-rotate-bg {
+            animation: rotate-bg 30s linear infinite;
+          }
+        `}</style>
+
+        {/* Background Decorations - Rotating Container */}
+        <div className="fixed top-1/2 left-1/2 w-[150vw] h-[150vw] md:w-[120vmax] md:h-[120vmax] pointer-events-none animate-rotate-bg z-0">
+            {/* Purple Blob - Top Left */}
+            <div className="absolute top-[5%] left-[5%] w-[45%] h-[45%] bg-electric-purple/40 blur-[150px] rounded-full animate-breathe" />
+            
+            {/* Blue Blob - Bottom Right */}
+            <div className="absolute bottom-[5%] right-[5%] w-[45%] h-[45%] bg-electric-blue/40 blur-[150px] rounded-full animate-breathe" style={{ animationDelay: '-4s' }} />
+        </div>
+
+      <header className="h-16 border-b border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md fixed top-0 left-0 right-0 z-50 px-6 flex items-center justify-between">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => { setMode('DASHBOARD'); setEditingSessionId(null); setTestConfig(null); }}>
           <span className="material-symbols-outlined text-electric-green text-3xl">bolt</span>
           <h1 className="font-headline text-2xl tracking-tighter text-electric-blue">VOCAB MONSTER</h1>
@@ -520,7 +546,7 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-1 p-4 md:p-8 max-w-[1400px] mx-auto w-full">
+      <main className="flex-1 p-4 md:p-8 pt-20 md:pt-24 pb-12 md:pb-16 max-w-[1400px] mx-auto w-full relative z-10">
         {mode === 'DASHBOARD' && (
           <Dashboard 
             stats={getStats()} 
@@ -700,7 +726,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <footer className="py-6 text-center text-text-dark text-sm border-t border-mid-charcoal bg-dark-charcoal">
+      <footer className="py-2 text-center text-text-dark text-[10px] border-t border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md fixed bottom-0 left-0 right-0 z-50">
         <p>&copy; 2024 VOCAB MONSTER - CLOUD SYNCED</p>
       </footer>
 
