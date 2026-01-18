@@ -568,7 +568,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       };
 
       return (
-        <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white animate-in fade-in duration-700">
+        <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white animate-in fade-in duration-700">
           <Confetti showParticles={true} variant={score >= 80 ? 'purple' : 'blue'} />
           
           <div className="text-8xl mb-6 animate-bounce">
@@ -594,7 +594,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   if (!isStarted) {
     return (
-        <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white">
+        <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white">
             <div className="max-w-md w-full text-center">
                 <div className="w-36 h-36 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8 border border-white/10 overflow-hidden group">
                     <img 
@@ -705,7 +705,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   if (!currentWord) return null;
 
   return (
-    <div className="fixed inset-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
+    <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
       {showConfetti && <Confetti {...confettiConfig} />}
       
       {/* Top Progress Bar */}
