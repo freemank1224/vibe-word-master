@@ -159,21 +159,23 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             await Promise.all(batch.map(async (word) => {
                 if (!isMountedRef.current) return;
                 try {
-                    // 1. Fetch Audio Data if missing in DB
+                    // 1. Fetch Audio Data if missing or low quality in DB
                     let audioUrl = word.audio_url;
-                    if (!audioUrl) {
+                    const isLowQuality = !audioUrl || (!audioUrl.includes('dictvoice') && !audioUrl.startsWith('blob:'));
+
+                    if (isLowQuality) {
                         try {
-                            const data = await fetchDictionaryData(word.text);
+                            const data = await fetchDictionaryData(word.text, word.language || 'en');
                             if (data?.audioUrl) {
                                 audioUrl = data.audioUrl;
                                 word.audio_url = audioUrl; // Update local reference
                                 if (data.phonetic) word.phonetic = data.phonetic;
                                 
-                                // Save to DB for future use
+                                // Save to DB for future use (Lazy update)
                                 updateWordMetadata(word.id, { 
                                     audio_url: audioUrl, 
-                                    phonetic: data.phonetic,
-                                    definition_en: data.definition_en 
+                                    phonetic: data.phonetic || word.phonetic || undefined,
+                                    definition_en: data.definition_en || word.definition_en || undefined
                                 });
                             }
                         } catch (e) { 

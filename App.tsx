@@ -294,19 +294,20 @@ const App: React.FC = () => {
 
         // 2. Process Dictionary Info (Phonetic, Audio, Definition)
         try {
-            const dict = await fetchDictionaryData(w.text);
+            const dict = await fetchDictionaryData(w.text, w.language || 'en');
             if (dict) {
                 await updateWordStatusV2(w.id, {
                     correct: w.correct || false,
                     phonetic: dict.phonetic,
                     audio_url: dict.audioUrl,
+                    language: w.language || 'en',
                     definition_en: dict.definition_en
                 });
                 
                 // Update local state if word still exists
                 setWords(prev => prev.map(word => 
                     word.id === w.id 
-                    ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, definition_en: dict.definition_en || null } 
+                    ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, language: w.language || 'en', definition_en: dict.definition_en || null } 
                     : word
                 ));
             }

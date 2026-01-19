@@ -5,37 +5,49 @@ export interface DictionaryData {
   definition_en?: string;
 }
 
-export const fetchDictionaryData = async (word: string): Promise<DictionaryData | null> => {
+/**
+ * Get a high-quality standard audio URL for a word.
+ * Defaults to Youdao API (US accent for English).
+ * @param word The word to get audio for
+ * @param lang Language code (default: 'en')
+ */
+export const getStandardAudioUrl = (word: string, lang: string = 'en'): string => {
+  const encodedWord = encodeURIComponent(word.toLowerCase());
+  // Youdao API: type=2 (US), type=1 (UK)
+  // le parameter: en (English), ja (Japanese), ko (Korean), etc.
+  if (lang === 'en') {
+    return `https://dict.youdao.com/dictvoice?audio=${encodedWord}&type=2`;
+  }
+  return `https://dict.youdao.com/dictvoice?audio=${encodedWord}&le=${lang}`;
+};
+
+export const fetchDictionaryData = async (word: string, lang: string = 'en'): Promise<DictionaryData | null> => {
   try {
     const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word.toLowerCase()}`);
-    if (!response.ok) return null;
+    
+    // We still want the high-quality audio even if dictionary API fails or doesn't have it
+    const standardAudioUrl = getStandardAudioUrl(word, lang);
+
+    if (!response.ok) {
+      // Return at least the standard audio if the rest fails
+      return {
+        audioUrl: standardAudioUrl
+      };
+    }
     
     const data = await response.json();
-    if (!Array.isArray(data) || data.length === 0) return null;
+    if (!Array.isArray(data) || data.length === 0) {
+      return { audioUrl: standardAudioUrl };
+    }
 
     const entry = data[0];
     
-    // Find phonetic and audio
+    // Find phonetic
     let phonetic = entry.phonetic;
-    let audioUrl = '';
 
-    if (entry.phonetics && entry.phonetics.length > 0) {
-      // Find the best audio match (prefer US, then any audio)
-      const phonetics = entry.phonetics;
-      
-      const usAudio = phonetics.find((p: any) => p.audio && p.audio.endsWith('-us.mp3'));
-      const ukAudio = phonetics.find((p: any) => p.audio && p.audio.endsWith('-uk.mp3'));
-      const anyAudio = phonetics.find((p: any) => p.audio && p.audio.length > 0);
-      
-      const bestMatch = usAudio || ukAudio || anyAudio;
-      
-      if (bestMatch) {
-        audioUrl = bestMatch.audio;
-        if (!phonetic) phonetic = bestMatch.text;
-      } else if (!phonetic) {
-        // Fallback to text only if no audio found
-        phonetic = phonetics[0].text;
-      }
+    if (!phonetic && entry.phonetics && entry.phonetics.length > 0) {
+      const phoneticEntry = entry.phonetics.find((p: any) => p.text && p.text.length > 0);
+      if (phoneticEntry) phonetic = phoneticEntry.text;
     }
 
     // Find first definition
@@ -49,11 +61,14 @@ export const fetchDictionaryData = async (word: string): Promise<DictionaryData 
 
     return {
       phonetic,
-      audioUrl,
+      audioUrl: standardAudioUrl, // Always use high quality standard audio
       definition_en
     };
   } catch (error) {
     console.error("Error fetching dictionary data:", error);
-    return null;
+    // Fallback to just the standard audio
+    return {
+      audioUrl: getStandardAudioUrl(word, lang)
+    };
   }
 };

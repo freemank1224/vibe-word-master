@@ -182,6 +182,7 @@ export const saveSessionData = async (
       session_id: sessionData.id,
       text: w.text,
       image_path: imagePath,
+      language: w.language || 'en',
       tags: [libraryTag]
     });
   }
@@ -377,6 +378,7 @@ export const updateWordStatusV2 = async (
     best_time_ms?: number,
     phonetic?: string,
     audio_url?: string,
+    language?: string,
     definition_cn?: string,
     definition_en?: string
   }
@@ -404,6 +406,7 @@ export const updateWordStatusV2 = async (
 
   if (updates.phonetic) payload.phonetic = updates.phonetic;
   if (updates.audio_url) payload.audio_url = updates.audio_url;
+  if (updates.language) payload.language = updates.language;
   if (updates.definition_cn) payload.definition_cn = updates.definition_cn;
   if (updates.definition_en) payload.definition_en = updates.definition_en;
 
@@ -435,7 +438,8 @@ export const updateWordImage = async (wordId: string, imagePath: string) => {
 export const updateWordMetadata = async (wordId: string, updates: { 
   audio_url?: string, 
   phonetic?: string,
-  definition_en?: string 
+  definition_en?: string,
+  language?: string
 }) => {
   const { error } = await supabase
     .from('words')

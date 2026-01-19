@@ -14,6 +14,7 @@ export interface WordEntry {
   last_tested: number | null;
   phonetic: string | null;
   audio_url: string | null;
+  language?: string | null; // e.g. 'en', 'ja', 'ko'
   definition_cn: string | null;
   definition_en: string | null;
   deleted?: boolean;
