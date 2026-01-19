@@ -125,7 +125,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
               : status === 'wrong' 
               ? 'status-wrong animate-shake' 
               : showWordBlocks 
-                ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white/50'
+                ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white'
                 : 'border-mid-charcoal focus:border-electric-blue text-white'
           }`}
           autoFocus
