@@ -1,7 +1,9 @@
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import { WordEntry, InputSession } from '../types';
 import { calculateAchievements, ACHIEVEMENTS } from '../services/achievementService';
 import { Badge } from './Achievements/Badge';
+import { cleanExistingWords, CleanupStats } from '../services/wordCleanupService';
+import { supabase } from '../lib/supabaseClient';
 
 interface AccountPanelProps {
   user: any;
@@ -11,7 +13,43 @@ interface AccountPanelProps {
   onLogout: () => void;
 }
 
+const IssueRow: React.FC<{ 
+    issue: { id: string, text: string }, 
+    onFix: (text: string) => void, 
+    onDelete: () => void 
+}> = ({ issue, onFix, onDelete }) => {
+    const [text, setText] = useState(issue.text);
+    return (
+        <div className="flex gap-2 items-center bg-dark-charcoal p-2 rounded-xl border border-mid-charcoal group">
+            <input 
+                type="text" 
+                value={text} 
+                onChange={(e) => setText(e.target.value)}
+                className="flex-1 bg-transparent border-none text-white font-mono text-sm focus:ring-0 p-1"
+            />
+            <button 
+                onClick={() => onFix(text)}
+                disabled={text === issue.text}
+                className="p-1.5 text-electric-green hover:bg-electric-green/10 rounded-lg disabled:opacity-20 transition-all"
+                title="Save Fix"
+            >
+                <span className="material-symbols-outlined text-lg">check</span>
+            </button>
+            <button 
+                onClick={onDelete}
+                className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
+                title="Remove Word"
+            >
+                <span className="material-symbols-outlined text-lg">delete</span>
+            </button>
+        </div>
+    );
+};
+
 export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, onClose, onLogout }) => {
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<CleanupStats | null>(null);
+
   useEffect(() => {
     // 锁定主页面滚动
     const originalStyle = window.getComputedStyle(document.body).overflow;
@@ -54,6 +92,59 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
       achievementStatuses
     };
   }, [words, sessions]);
+
+  const handleCleanup = async () => {
+    if (!user?.id || isCleaning) return;
+    
+    setIsCleaning(true);
+    setCleanupResult(null);
+    try {
+        const result = await cleanExistingWords(user.id);
+        setCleanupResult(result);
+        // We might want to refresh the data after cleanup
+        if (typeof window !== 'undefined') {
+            // Ideally we'd call refreshData from App.tsx, but since we're in a modal
+            // and don't have that prop, we can just suggest a reload or wait for next mount.
+            // For now, let's just show the result.
+        }
+    } catch (e) {
+        alert("Cleanup failed. Check console.");
+    } finally {
+        setIsCleaning(false);
+    }
+  };
+
+  const handleFixIssue = async (id: string, newText: string) => {
+    if (!newText.trim()) return;
+    try {
+        // Update text and reset metadata so it's re-fetched correctly
+        await supabase.from('words').update({ 
+            text: newText.trim(),
+            phonetic: null,
+            audio_url: null,
+            definition_en: null
+        }).eq('id', id);
+        
+        setCleanupResult(prev => prev ? {
+            ...prev,
+            issues: prev.issues.filter(i => i.id !== id)
+        } : null);
+    } catch (e) {
+        alert("Fix failed.");
+    }
+  };
+
+  const handleDeleteIssue = async (id: string) => {
+    try {
+        await supabase.from('words').update({ deleted: true }).eq('id', id);
+        setCleanupResult(prev => prev ? {
+            ...prev,
+            issues: prev.issues.filter(i => i.id !== id)
+        } : null);
+    } catch (e) {
+        alert("Delete failed.");
+    }
+  };
 
   const unlockedCount = stats.achievementStatuses.filter(s => s.unlocked).length;
 
@@ -122,7 +213,64 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                 </div>
              </div>
           </div>
+          {/* Word Library Cleanup Tool */}
+          <div className="space-y-4">
+             <div className="flex justify-between items-center">
+                <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Library Maintenance</h3>
+             </div>
+             <div className="bg-light-charcoal/30 p-6 rounded-3xl border border-mid-charcoal/50">
+                <p className="text-xs text-text-dark font-mono leading-relaxed mb-6">
+                    Scan your vocabulary for spelling errors and remove single-letter invalid entries.
+                </p>
+                
+                {cleanupResult ? (
+                    <div className="bg-dark-charcoal/80 p-4 rounded-2xl border border-electric-blue/30 mb-6 animate-in zoom-in-95 duration-300">
+                        <h4 className="text-[10px] font-mono text-electric-blue uppercase tracking-widest mb-3">Cleanup Report</h4>
+                        <div className="grid grid-cols-2 gap-y-3">
+                            <div className="text-white font-mono text-xs">Corrected:</div>
+                            <div className="text-electric-green font-mono text-xs font-bold text-right">{cleanupResult.corrected}</div>
+                            
+                            <div className="text-white font-mono text-xs">Invalid/Removed:</div>
+                            <div className="text-red-400 font-mono text-xs font-bold text-right">{cleanupResult.deletedSingleLetter}</div>
+                            
+                            <div className="text-white font-mono text-xs">Manual Review:</div>
+                            <div className="text-yellow-400 font-mono text-xs font-bold text-right">{cleanupResult.issues.length}</div>
 
+                            <div className="text-white font-mono text-xs">Processed:</div>
+                            <div className="text-text-dark font-mono text-xs text-right">{cleanupResult.totalProcessed}</div>
+                        </div>
+
+                        {cleanupResult.issues.length > 0 && (
+                            <div className="mt-6 space-y-3 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                                <p className="text-[10px] text-yellow-500/80 font-mono uppercase">Unresolved Words:</p>
+                                {cleanupResult.issues.map(issue => (
+                                    <IssueRow 
+                                        key={issue.id} 
+                                        issue={issue} 
+                                        onFix={(text) => handleFixIssue(issue.id, text)} 
+                                        onDelete={() => handleDeleteIssue(issue.id)} 
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                ) : null}
+
+                <button 
+                    onClick={handleCleanup}
+                    disabled={isCleaning}
+                    className={`w-full py-4 rounded-2xl font-headline tracking-widest transition-all flex items-center justify-center gap-3
+                        ${isCleaning 
+                            ? 'bg-mid-charcoal text-gray-500 cursor-not-allowed' 
+                            : 'bg-electric-blue/10 border border-electric-blue/30 text-electric-blue hover:bg-electric-blue hover:text-charcoal'}`}
+                >
+                    <span className={`material-symbols-outlined ${isCleaning ? 'animate-spin' : ''}`}>
+                        {isCleaning ? 'sync' : 'auto_fix_high'}
+                    </span>
+                    {isCleaning ? 'CLEANING MATRIX...' : 'RUN SPELL CHECK'}
+                </button>
+             </div>
+          </div>
           {/* 已解锁成就 */}
           <div>
             <div className="flex justify-between items-center mb-6">

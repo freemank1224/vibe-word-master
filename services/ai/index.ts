@@ -41,7 +41,7 @@ class AIServiceManager implements AIService {
     return provider.extractWordFromImage(base64Image, process.env.OCR_API_KEY, endpoint);
   }
 
-  async validateSpelling(word: string): Promise<SpellingResult> {
+  async validateSpelling(word: string, apiKey?: string, endpoint?: string, options?: { skipLLM?: boolean }): Promise<SpellingResult> {
     // 1. Try local validation first (browser-based/dictionary scheme)
     const localResult = await this.local.validateSpelling(word);
     if (localResult.found) {
@@ -52,12 +52,18 @@ class AIServiceManager implements AIService {
       };
     }
 
+    if (options?.skipLLM) {
+        return { isValid: false, found: false };
+    }
+
     // 2. Fallback to LLM if local check is inconclusive
     console.log(`Local validation miss for: "${word}", falling back to LLM...`);
     const providerType = process.env.SPELLING_CHECK_PROVIDER || 'gemini';
     const provider = this.getProvider(providerType);
-    const endpoint = process.env.SPELLING_CHECK_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
-    return provider.validateSpelling(word, process.env.SPELLING_CHECK_API_KEY, endpoint);
+    const resolvedEndpoint = endpoint || process.env.SPELLING_CHECK_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
+    const resolvedApiKey = apiKey || process.env.SPELLING_CHECK_API_KEY;
+
+    return provider.validateSpelling(word, resolvedApiKey, resolvedEndpoint);
   }
 }
 

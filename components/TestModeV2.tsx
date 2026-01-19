@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WordEntry, InputSession } from '../types';
-import { updateWordStatusV2 } from '../services/dataService';
+import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { fetchDictionaryData } from '../services/dictionaryService';
 import { aiService } from '../services/ai';
 import { playDing, playBuzzer } from '../utils/audioFeedback';
@@ -50,6 +50,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [isResourcesLoaded, setIsResourcesLoaded] = useState(false);
   const [missingResources, setMissingResources] = useState<{images: number, audio: number}>({ images: 0, audio: 0 });
   const resourceCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const objectUrlsRef = useRef<string[]>([]);
   const isMountedRef = useRef(true);
 
   // Lifecycle
@@ -148,94 +149,112 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         let missingImg = 0;
         let missingAud = 0;
         
-        // Parallel loading with concurrency limit could be better, but for <20 words, all-at-once is okay
-        const promises = queue.map(async (word) => {
-            if (!isMountedRef.current) return;
-            try {
-                // 1. Fetch Audio Data if missing
-                let audioUrl = word.audio_url;
-                if (!audioUrl) {
-                    try {
-                         // Quick check if we can get it
-                        const data = await fetchDictionaryData(word.text);
-                        if (data?.audioUrl) {
-                            audioUrl = data.audioUrl;
-                            word.audio_url = audioUrl; // Update local reference
-                        } else {
+        // Use a concurrency limit to avoid overwhelming the network/APIs
+        const batchSize = 2; // Reduced to 2 for even better stability on mobile/slow nets
+
+        for (let i = 0; i < queue.length; i += batchSize) {
+            if (!isMountedRef.current) break;
+            const batch = queue.slice(i, i + batchSize);
+            
+            await Promise.all(batch.map(async (word) => {
+                if (!isMountedRef.current) return;
+                try {
+                    // 1. Fetch Audio Data if missing in DB
+                    let audioUrl = word.audio_url;
+                    if (!audioUrl) {
+                        try {
+                            const data = await fetchDictionaryData(word.text);
+                            if (data?.audioUrl) {
+                                audioUrl = data.audioUrl;
+                                word.audio_url = audioUrl; // Update local reference
+                                if (data.phonetic) word.phonetic = data.phonetic;
+                                
+                                // Save to DB for future use
+                                updateWordMetadata(word.id, { 
+                                    audio_url: audioUrl, 
+                                    phonetic: data.phonetic,
+                                    definition_en: data.definition_en 
+                                });
+                            }
+                        } catch (e) { 
+                            console.warn("Dictionary fetch failed for", word.text);
+                        }
+                    }
+
+                    // 2. Preload Audio (with Blob for zero-lag and CORS fallback)
+                    if (audioUrl) {
+                        try {
+                            const audio = new Audio();
+                            audio.preload = 'auto';
+
+                            // Try to fetch as blob for true "offline" memory cache
+                            // This ensures the audio is 100% loaded before proceeding
+                            try {
+                                const response = await fetch(audioUrl, { mode: 'cors' });
+                                if (response.ok) {
+                                    const blob = await response.blob();
+                                    const objUrl = URL.createObjectURL(blob);
+                                    objectUrlsRef.current.push(objUrl);
+                                    audio.src = objUrl;
+                                } else {
+                                    audio.src = audioUrl; // Fallback to direct URL if fetch fails
+                                }
+                            } catch (corsErr) {
+                                // Fallback for CORS restricted URLs
+                                audio.src = audioUrl;
+                            }
+
+                            await new Promise<void>((resolve) => {
+                                const timeoutId = setTimeout(() => resolve(), 10000); // 10s for audio
+                                audio.oncanplaythrough = () => {
+                                    clearTimeout(timeoutId);
+                                    resolve();
+                                };
+                                audio.onerror = () => {
+                                    clearTimeout(timeoutId);
+                                    missingAud++;
+                                    resolve();
+                                };
+                                audio.load(); // Force load
+                            });
+                            resourceCacheRef.current.set(word.id, audio);
+                        } catch (e) {
                             missingAud++;
                         }
-                    } catch (e) { 
+                    } else {
                         missingAud++;
                     }
+
+                    // 3. Preload Image
+                    if (word.image_url) {
+                        await new Promise<void>((resolve) => {
+                             const img = new Image();
+                             const timeoutId = setTimeout(() => resolve(), 5000);
+                             img.onload = () => {
+                                 clearTimeout(timeoutId);
+                                 resolve();
+                             };
+                             img.onerror = () => {
+                                 clearTimeout(timeoutId);
+                                 missingImg++;
+                                 resolve();
+                             };
+                             img.src = word.image_url!;
+                        });
+                    } else {
+                        missingImg++;
+                    }
+
+                } catch (e) {
+                    console.warn("Resource load failed for", word.text);
+                } finally {
+                    if (isMountedRef.current) {
+                        completed++;
+                        setLoadingProgress({ current: completed, total: queue.length });
+                    }
                 }
-
-                // 2. Preload Audio
-                if (audioUrl) {
-                    await new Promise<void>((resolve) => {
-                        const audio = new Audio();
-                        audio.preload = 'auto'; 
-                        
-                        const timeoutId = setTimeout(() => {
-                           // If timeout, we resolve but it might be missing
-                           resolve();
-                        }, 8000); 
-                        
-                        audio.oncanplaythrough = () => {
-                            clearTimeout(timeoutId);
-                            resolve();
-                        };
-                        audio.onerror = () => {
-                            clearTimeout(timeoutId);
-                            missingAud++; // Mark as failed
-                            resolve();
-                        };
-                        audio.src = audioUrl!;
-                        resourceCacheRef.current.set(word.id, audio);
-                    });
-                } else {
-                    // Audio missing
-                    // We don't increment missingAud here again if we already did above
-                    // But if it was originally null and fetch failed, it is missing.
-                }
-
-                // 3. Preload Image - NOW WITH AWAIT
-                if (word.image_url) {
-                    await new Promise<void>((resolve) => {
-                         const img = new Image();
-                         // Timeout for image
-                         const timeoutId = setTimeout(() => {
-                            // Timeout = effectively missing for user experience
-                            // But we don't strictly count it as "error" unless we want to warn.
-                            // Let's count it potentially.
-                            resolve(); 
-                         }, 5000);
-
-                         img.onload = () => {
-                             clearTimeout(timeoutId);
-                             resolve();
-                         };
-                         img.onerror = () => {
-                             clearTimeout(timeoutId);
-                             missingImg++;
-                             resolve();
-                         };
-                         img.src = word.image_url!;
-                    });
-                } else {
-                    missingImg++;
-                }
-
-            } catch (e) {
-                console.warn("Resource load failed for", word.text);
-            } finally {
-                if (isMountedRef.current) {
-                    completed++;
-                    setLoadingProgress({ current: completed, total: queue.length });
-                }
-            }
-        });
-
-        await Promise.all(promises);
+            }));
+        }
         
         if (isMountedRef.current) {
             setMissingResources({ images: missingImg, audio: missingAud });
@@ -246,14 +265,24 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     loadResources();
 
     return () => {
-        // Cleanup cache on unmount or queue change
+        // 1. Stop and cleanup current audio elements
         resourceCacheRef.current.forEach(audio => {
-            audio.pause();
-            audio.src = "";
-            audio.removeAttribute('src'); // Detach
-            audio.load(); // Cancel download
+            try {
+                audio.pause();
+                audio.src = "";
+                audio.removeAttribute('src'); 
+                audio.load(); 
+            } catch (e) {}
         });
         resourceCacheRef.current.clear();
+
+        // 2. Revoke all object URLs to free memory
+        objectUrlsRef.current.forEach(url => {
+            try {
+                URL.revokeObjectURL(url);
+            } catch (e) {}
+        });
+        objectUrlsRef.current = [];
     };
   }, [queue]);
 
@@ -271,17 +300,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const currentWord = queue[currentIndex];
 
   const stopAudio = useCallback(() => {
-    // Stop any playing audio
-    if (activeWordIdRef.current) {
-        // Stop cached audio if playing
-        const cached = resourceCacheRef.current.get(activeWordIdRef.current);
-        if (cached) {
-            cached.pause();
-            cached.currentTime = 0;
-        }
-    }
+    // 1. Stop all cached audio elements to prevent overlaps during transitions
+    resourceCacheRef.current.forEach(audio => {
+        try {
+            audio.pause();
+            audio.currentTime = 0;
+        } catch (e) { /* ignore */ }
+    });
     
-    // Stop ad-hoc audio
+    // 2. Stop ad-hoc audio (TTS or non-cached)
     if (currentAudioSourceRef.current) {
         try {
             if (currentAudioSourceRef.current instanceof HTMLAudioElement) {
@@ -295,6 +322,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         }
         currentAudioSourceRef.current = null;
     }
+    
+    // 3. Stop System TTS
     window.speechSynthesis.cancel();
     setIsPlayingAudio(false);
   }, []);
@@ -313,6 +342,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     // 1. Mark this word as the intended target for audio
     activeWordIdRef.current = word.id;
     
+    // We already stop in the transition effect, but double-check here
+    // Note: Don't call stopAudio() here if it was already called to avoid redundant cycles
+    // but better safe than sorry.
     stopAudio();
     setIsPlayingAudio(true);
     
@@ -413,6 +445,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   useEffect(() => {
     // Auto-play audio when word changes IN SESSION
     if (currentWord && !isFinished && !isRevealed && feedback === 'NONE' && isStarted) {
+        // IMPORTANT: Stop any previous audio IMMEDIATELY when the word changes
+        // even before the 300ms delay to prevent hearing the wrong word.
+        stopAudio();
+        
         // Sync active ID immediately
         activeWordIdRef.current = currentWord.id;
         

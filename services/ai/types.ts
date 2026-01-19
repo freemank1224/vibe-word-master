@@ -27,7 +27,7 @@ export interface AIService {
   /**
    * Validates spelling and provides a suggestion if needed.
    */
-  validateSpelling(word: string, apiKey?: string, endpoint?: string): Promise<SpellingResult>;
+  validateSpelling(word: string, apiKey?: string, endpoint?: string, options?: { skipLLM?: boolean }): Promise<SpellingResult>;
 
   /**
    * Future STT interface (reserved but not activated as per request).

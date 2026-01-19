@@ -2,6 +2,7 @@
 import { supabase } from '../lib/supabaseClient';
 import { WordEntry, InputSession } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
+import { aiService } from './ai';
 
 // Helper to upload Base64 image to Supabase Storage
 export const uploadImage = async (base64Data: string, userId: string): Promise<string | null> => {
@@ -428,6 +429,22 @@ export const updateWordImage = async (wordId: string, imagePath: string) => {
   if (error) console.error("Error updating word image:", error.message);
 };
 
+/**
+ * Update word metadata like audio URL and phonetic transcription
+ */
+export const updateWordMetadata = async (wordId: string, updates: { 
+  audio_url?: string, 
+  phonetic?: string,
+  definition_en?: string 
+}) => {
+  const { error } = await supabase
+    .from('words')
+    .update(updates)
+    .eq('id', wordId);
+    
+  if (error) console.error("Error updating word metadata:", error.message);
+};
+
 export const generateSRSQueue = (
     allWords: WordEntry[],
     selectedWordIds: string[],
@@ -630,6 +647,31 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
      sessionId = newSession.id;
   }
 
+  // 1.5 Validate Words (Filter single letters and check spelling)
+  console.log(`[importDictionaryWords] Validating ${words.length} words...`);
+  const validatedWords: string[] = [];
+  for (const w of words) {
+    const cleanText = w.trim();
+    if (!cleanText) continue;
+
+    // Rule 1: Single letter words (except 'a', 'i')
+    if (cleanText.length < 2 && cleanText.toLowerCase() !== 'a' && cleanText.toLowerCase() !== 'i') continue;
+
+    // Rule 2: Spell check
+    // We use the local provider first via aiService
+    // Skip LLM for bulk imports to ensure speed and prevent API throttling
+    const result = await aiService.validateSpelling(cleanText, undefined, undefined, { skipLLM: true });
+    if (result.isValid) {
+        validatedWords.push(cleanText);
+    } else if (result.suggestion) {
+        // If it's a clear typo, use the suggestion
+        validatedWords.push(result.suggestion);
+    }
+  }
+  
+  // Use validated words instead of original words
+  const wordsToProcess = validatedWords;
+
   // 2. Fetch all existing ACTIVE words for deduplication and tagging
   // IMPORTANT: Supabase has a default limit of 1000 rows, so we need to paginate
   const wordMap = new Map<string, { id: string, tags: string[] }>();
@@ -669,7 +711,7 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
   const inserts: any[] = [];
   const processedTexts = new Set<string>();
 
-  for (const w of words) {
+  for (const w of wordsToProcess) {
     const cleanText = w.trim();
     if (!cleanText) continue;
     
