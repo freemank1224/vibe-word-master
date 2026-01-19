@@ -80,3 +80,60 @@ export const playBuzzer = () => {
   osc.stop(ctx.currentTime + 0.3);
 };
 
+export const playCheer = () => {
+  const ctx = getCtx();
+  const now = ctx.currentTime;
+  const duration = 2.5;
+
+  // 1. Crowd Roar (White noise with resonant filter)
+  const bufferSize = ctx.sampleRate * duration;
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+
+  const bandpass = ctx.createBiquadFilter();
+  bandpass.type = 'lowpass';
+  bandpass.frequency.setValueAtTime(800, now);
+  bandpass.frequency.exponentialRampToValueAtTime(1200, now + duration);
+  bandpass.Q.setValueAtTime(2, now);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.3, now + 0.1);
+  gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+  noise.connect(bandpass);
+  bandpass.connect(gain);
+  gain.connect(ctx.destination);
+
+  // 2. High-pitched whistles (Sine oscillators)
+  const whistles = [1200, 1500, 1800];
+  whistles.forEach((freq, idx) => {
+    const osc = ctx.createOscillator();
+    const wGain = ctx.createGain();
+    const wNow = now + 0.1 + idx * 0.2;
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, wNow);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.5, wNow + 0.5);
+
+    wGain.gain.setValueAtTime(0, wNow);
+    wGain.gain.linearRampToValueAtTime(0.05, wNow + 0.1);
+    wGain.gain.exponentialRampToValueAtTime(0.001, wNow + 0.6);
+
+    osc.connect(wGain);
+    wGain.connect(ctx.destination);
+
+    osc.start(wNow);
+    osc.stop(wNow + 0.6);
+  });
+
+  noise.start(now);
+  noise.stop(now + duration);
+};
+

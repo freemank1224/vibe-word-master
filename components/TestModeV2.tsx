@@ -4,7 +4,7 @@ import { WordEntry, InputSession } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { fetchDictionaryData } from '../services/dictionaryService';
 import { aiService } from '../services/ai';
-import { playDing, playBuzzer } from '../utils/audioFeedback';
+import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 
@@ -518,6 +518,13 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 showParticles: true
             });
             setShowConfetti(true);
+            
+            // If every word in the results was correct (plus the final one)
+            const allCorrectSoFar = newResults.every(r => r.correct);
+            if (allCorrectSoFar) {
+                // Perfect score cheer!
+                playCheer();
+            }
           } else if (queue.length >= 20) {
             // Milestone 1/3
             if (progress >= 0.33 && !milestonesReached.current.has('1/3')) {
