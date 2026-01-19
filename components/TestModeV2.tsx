@@ -33,7 +33,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState('');
   const [feedback, setFeedback] = useState<'NONE' | 'CORRECT' | 'WRONG'>('NONE');
-  const [hintLevel, setHintLevel] = useState(0); // 0: Audio only, 1: Burm Image, 2: Meaning
+  const [hintLevel, setHintLevel] = useState(0); // 0: Audio, 1: Letter Blocks, 2: Image + Meaning
   const [isRevealed, setIsRevealed] = useState(false);
   const [startTime, setStartTime] = useState<number>(0);
   const [results, setResults] = useState<{ id: string; correct: boolean }[]>([]);
@@ -791,7 +791,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                   <img 
                     src={currentWord.image_url} 
                     alt="Hint"
-                    className={`w-full h-full object-cover transition-all duration-700 ${hintLevel === 0 ? 'blur-3xl saturate-0 scale-110' : hintLevel === 1 ? 'blur-xl' : 'blur-0'}`}
+                    className={`w-full h-full object-cover transition-all duration-700 ${hintLevel < 2 ? 'blur-3xl saturate-0 scale-110' : 'blur-0'}`}
                   />
               ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-700 bg-[#0d0d0d]">
@@ -846,6 +846,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     onEnter={checkAnswer}
                     disabled={feedback === 'CORRECT' || isRevealed}
                     status={feedback === 'CORRECT' ? 'correct' : feedback === 'WRONG' ? 'wrong' : 'idle'}
+                    showWordBlocks={hintLevel >= 1}
+                    targetWord={currentWord.text}
                   />
               </div>
 

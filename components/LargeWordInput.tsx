@@ -9,6 +9,8 @@ interface LargeWordInputProps {
   disabled?: boolean;
   hintOverlay?: string; // Partial word hint
   status?: 'idle' | 'correct' | 'wrong';
+  showWordBlocks?: boolean;
+  targetWord?: string;
 }
 
 export const LargeWordInput: React.FC<LargeWordInputProps> = ({ 
@@ -18,7 +20,9 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   placeholder, 
   disabled,
   hintOverlay,
-  status = 'idle'
+  status = 'idle',
+  showWordBlocks = false,
+  targetWord = ''
 }) => {
   const [inputWidth, setInputWidth] = useState('400px');
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -100,14 +104,6 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
       </span>
 
       <div className="relative max-w-full flex justify-center h-full items-center">
-        {hintOverlay && (
-          <div 
-            className="absolute inset-0 flex items-center justify-center pointer-events-none font-serif text-6xl md:text-9xl text-electric-blue/20 tracking-widest whitespace-pre"
-            aria-hidden="true"
-          >
-            {hintOverlay}
-          </div>
-        )}
         <input
           ref={inputRef}
           type="text"
@@ -121,17 +117,63 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           }}
           placeholder={placeholder}
           readOnly={disabled}
-          spellCheck="true"
+          spellCheck="false"
           style={{ width: inputWidth, maxWidth: 'calc(100vw - 6rem)' }}
           className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-all placeholder:text-mid-charcoal/30 focus:ring-0 ${
             status === 'correct' 
               ? 'status-correct scale-105' 
               : status === 'wrong' 
               ? 'status-wrong animate-shake' 
-              : 'border-mid-charcoal focus:border-electric-blue text-white'
+              : showWordBlocks 
+                ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white/50'
+                : 'border-mid-charcoal focus:border-electric-blue text-white'
           }`}
           autoFocus
         />
+
+        {hintOverlay && (
+          <div 
+            className="absolute inset-0 flex items-center justify-center pointer-events-none font-serif text-6xl md:text-9xl text-electric-blue/20 tracking-widest whitespace-pre"
+            aria-hidden="true"
+          >
+            {hintOverlay}
+          </div>
+        )}
+
+        {/* Modern Segmented Indicators */}
+        {showWordBlocks && targetWord && (
+          <div 
+            className="absolute bottom-2 inset-x-0 flex justify-center items-center pointer-events-none"
+            aria-hidden="true"
+          >
+            <div 
+                className="flex gap-2 md:gap-4 px-4"
+                style={{ width: inputWidth, maxWidth: 'calc(100vw - 4rem)' }}
+            >
+                {targetWord.split('').map((char, i) => {
+                    const isInputReady = value.length > i;
+                    const isCorrect = isInputReady && value[i]?.toLowerCase() === targetWord[i]?.toLowerCase();
+                    
+                    return (
+                        <div 
+                            key={i}
+                            className={`h-1.5 md:h-2 flex-1 rounded-full transition-all duration-300 ${
+                                status === 'correct'
+                                ? 'bg-electric-green shadow-[0_0_15px_rgba(46,230,124,0.6)]'
+                                : status === 'wrong'
+                                ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
+                                : !isInputReady
+                                    ? 'bg-white/10'
+                                    : isCorrect 
+                                        ? 'bg-electric-green shadow-[0_0_10px_rgba(46,230,124,0.4)]'
+                                        : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
+                            }`}
+                        />
+                    );
+                })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
