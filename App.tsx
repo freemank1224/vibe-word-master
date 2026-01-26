@@ -243,7 +243,13 @@ const App: React.FC = () => {
   
   // Helper to update local stats state immediately after test
   const updateLocalStats = (results: { correct: boolean }[]) => {
-      const today = new Date().toISOString().split('T')[0];
+      // FIX: Use local time instead of UTC (toISOString) to match the user's calendar view
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const today = `${year}-${month}-${day}`;
+
       setDailyStats(prev => {
           const current = prev[today] || { date: today, total: 0, correct: 0 };
           
@@ -258,16 +264,25 @@ const App: React.FC = () => {
       if (session?.user) {
           setTimeout(() => {
              fetchUserStats(session.user.id).then(stats => {
-                const statsMap: Record<string, DayStats> = {};
+                const fetchedMap: Record<string, DayStats> = {};
                 stats.forEach((s: any) => {
-                    statsMap[s.date] = { 
+                    fetchedMap[s.date] = { 
                         date: s.date, 
                         total: s.total, 
                         correct: s.correct,
                         points: s.points 
                     };
                 });
-                setDailyStats(statsMap);
+                
+                // CRITICAL FIX: Only update TODAY'S data to prevent history flicker.
+                // We freeze historical data displayed on screen to ensure stability.
+                setDailyStats(prev => {
+                    const newStats = { ...prev };
+                    if (fetchedMap[today]) {
+                        newStats[today] = fetchedMap[today];
+                    }
+                    return newStats;
+                });
              });
           }, 1000); // Small delay to allow DB trigger/RPC to finish
       }

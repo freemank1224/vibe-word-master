@@ -350,8 +350,22 @@ export const fetchUserStats = async (userId: string) => {
 };
 
 export const syncDailyStats = async () => {
-    const { error } = await supabase.rpc('sync_todays_stats'); 
-    if (error) console.error("Error syncing daily stats:", error.message);
+    // Calculate client's timezone offset in hours (e.g., -480 minutes / 60 = -8, so we negate it to get +8)
+    // Date.getTimezoneOffset() returns positive for West, negative for East.
+    // China (+8) returns -480. New York (-5) returns 300.
+    // We want the adder value: China = +8. So we negate the result.
+    const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
+
+    // Try the new dynamic function first
+    const { error } = await supabase.rpc('sync_todays_stats_with_timezone', { 
+      p_timezone_offset_hours: offsetHours 
+    }); 
+    
+    // Fallback to old function if new one doesn't exist yet (during migration)
+    if (error) {
+       console.warn("Dynamic sync failed, falling back to static:", error.message);
+       await supabase.rpc('sync_todays_stats'); 
+    }
 };
 
 export const updateWordStatus = async (wordId: string, correct: boolean) => {
