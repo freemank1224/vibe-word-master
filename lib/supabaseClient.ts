@@ -25,12 +25,9 @@ if (!isSupabaseConfigured) {
   console.warn("Please make sure SUPABASE_URL and SUPABASE_ANON_KEY are set in your .env file");
 }
 
-// Validate Key Format (Supabase keys are usually JWTs starting with eyJ)
-if (isSupabaseConfigured && !supabaseAnonKey.startsWith('eyJ')) {
-    console.error("CRITICAL CONFIGURATION ERROR: The Supabase Anon Key seems invalid.");
-    console.error("It should start with 'eyJ...' (JWT format).");
-    console.error("Current key starts with:", supabaseAnonKey.substring(0, 15) + "...");
-    console.error("Please check your Supabase Project Settings -> API.");
+// Validate Key Format (Supabase keys are usually JWTs starting with eyJ, but updated formats exist)
+if (isSupabaseConfigured && !supabaseAnonKey) {
+    console.error("CRITICAL CONFIGURATION ERROR: Supabase Anon Key is missing.");
 }
 
 // Fallback to prevent crash on initialization, but requests will fail if config is invalid
