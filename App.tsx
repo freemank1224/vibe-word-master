@@ -260,7 +260,12 @@ const App: React.FC = () => {
              fetchUserStats(session.user.id).then(stats => {
                 const statsMap: Record<string, DayStats> = {};
                 stats.forEach((s: any) => {
-                    statsMap[s.date] = { date: s.date, total: s.total, correct: s.correct };
+                    statsMap[s.date] = { 
+                        date: s.date, 
+                        total: s.total, 
+                        correct: s.correct,
+                        points: s.points 
+                    };
                 });
                 setDailyStats(statsMap);
              });
@@ -1790,7 +1795,7 @@ const InputMode: React.FC<{
             <div className="absolute top-0 right-0 transform translate-x-full pl-4 hidden md:block w-48">
                  <div className="bg-light-charcoal/50 border border-electric-blue/30 p-4 rounded-2xl backdrop-blur-md">
                      <p className="font-mono text-[10px] uppercase text-text-dark mb-1">Target</p>
-                     <p className="font-headline text-xl text-white truncate">{targetWord}</p>
+                     <p className="font-serif text-xl text-white truncate">{targetWord}</p>
                      <p className="text-[10px] text-electric-blue mt-2">Type correctly {repeatCount} times to add.</p>
                  </div>
             </div>

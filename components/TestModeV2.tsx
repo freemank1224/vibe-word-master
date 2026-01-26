@@ -551,6 +551,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       // 1. Sync to Database - updateWordStatusV2 handles tested and last_tested internally
       const dbUpdates = {
           correct: success,
+          score: score,
           error_count_increment: success ? 0 : 1,
           best_time_ms: success ? (Date.now() - wordStartTime) : undefined
       };
@@ -577,6 +578,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
           onUpdateWord(currentWord.id, {
               correct: success,
+              score: score,
               tested: true,
               last_tested: Date.now(),
               error_count: newErrorCount,
@@ -985,6 +987,22 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
             {/* Action Zone */}
             <div className="w-full max-w-4xl px-4 flex flex-col items-center">
+                {/* Attempt Indicators */}
+                {!isRevealed && feedback !== 'CORRECT' && (
+                    <div className="flex gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                        {[0, 1, 2].map((i) => (
+                            <div 
+                                key={i}
+                                className={`w-10 h-1.5 rounded-full transition-all duration-500 ${
+                                    i < (3 - currentAttempts)
+                                        ? 'bg-electric-blue shadow-[0_0_10px_rgba(0,240,255,0.5)]'
+                                        : 'bg-mid-charcoal'
+                                }`}
+                            />
+                        ))}
+                    </div>
+                )}
+                
                 <div className={`w-full transition-all duration-500 ${feedback === 'CORRECT' ? 'scale-105' : ''}`}>
                     <LargeWordInput
                       value={isRevealed ? currentWord.text : inputValue}

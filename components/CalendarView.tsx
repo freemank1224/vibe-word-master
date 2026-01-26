@@ -25,7 +25,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
 
   const getCellColor = (stat?: DayStats) => {
     if (!stat || stat.total === 0) return 'bg-dark-charcoal/50 text-text-dark border-mid-charcoal/30 hover:border-mid-charcoal';
-    const rate = stat.correct / stat.total;
+    
+    // Calculate rate based on points if available, else simple correct/total
+    const rate = stat.points !== undefined 
+      ? stat.points / (stat.total * 3) 
+      : stat.correct / stat.total;
     
     if (stat.total < 10 || rate < 0.5) {
       return 'bg-red-500/40 text-red-400 border-red-500/60';
@@ -111,10 +115,33 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
               {stat && stat.total > 0 && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover:block z-[60] bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
                     <p className="font-bold text-white mb-1">Activity Log</p>
-                    <p className="text-text-dark"><span className="text-electric-blue">{stat.correct}</span> Correct</p>
-                    <p className="text-text-dark"><span className="text-text-light">{stat.total}</span> Total Words</p>
+                    <div className="space-y-0.5">
+                        <p className="text-text-dark flex justify-between gap-4">
+                            <span>Correct:</span>
+                            <span className="text-electric-blue font-mono">{stat.correct}</span>
+                        </p>
+                        <p className="text-text-dark flex justify-between gap-4">
+                            <span>Total Words:</span>
+                            <span className="text-text-light font-mono">{stat.total}</span>
+                        </p>
+                        <p className="text-text-dark flex justify-between gap-4 pt-1 border-t border-mid-charcoal/30 mt-1">
+                            <span>Accuracy:</span>
+                            <span className="text-electric-green font-bold font-mono">
+                                {stat.points !== undefined 
+                                    ? Math.round((stat.points / (stat.total * 3)) * 100) 
+                                    : Math.round((stat.correct / stat.total) * 100)}%
+                            </span>
+                        </p>
+                    </div>
                     <div className="h-1 w-full bg-mid-charcoal mt-2 rounded-full overflow-hidden">
-                        <div className="h-full bg-electric-blue" style={{ width: `${(stat.correct / stat.total) * 100}%` }}></div>
+                        <div 
+                            className="h-full bg-electric-blue transition-all duration-500" 
+                            style={{ 
+                                width: `${stat.points !== undefined 
+                                    ? (stat.points / (stat.total * 3)) * 100 
+                                    : (stat.correct / stat.total) * 100}%` 
+                            }} 
+                        ></div>
                     </div>
                 </div>
               )}

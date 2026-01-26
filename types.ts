@@ -19,6 +19,7 @@ export interface WordEntry {
   definition_en: string | null;
   deleted?: boolean;
   tags?: string[];
+  score?: number; // Added for point system (3 for direct, 2.4 for hint)
 }
 
 export interface InputSession {
@@ -36,4 +37,5 @@ export interface DayStats {
   date: string; // YYYY-MM-DD
   total: number;
   correct: number;
+  points?: number; // Added aggregate points
 }

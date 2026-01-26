@@ -374,6 +374,7 @@ export const updateWordStatusV2 = async (
   wordId: string, 
   updates: { 
     correct: boolean, 
+    score?: number,
     error_count_increment?: number, 
     best_time_ms?: number,
     phonetic?: string,
@@ -398,6 +399,7 @@ export const updateWordStatusV2 = async (
 
   const payload: any = {
     correct: updates.correct,
+    score: updates.score,
     tested: true,
     last_tested: new Date().toISOString(),
     error_count: new_error_count,
