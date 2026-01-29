@@ -17,6 +17,7 @@ import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
+import { AdminConsole } from './components/AdminConsole';
 
 
 // Define Test Configuration State
@@ -48,6 +49,25 @@ const App: React.FC = () => {
   // Delete Confirmation State
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [idsToDelete, setIdsToDelete] = useState<string[]>([]);
+  
+  // Admin Console State
+  const [showAdminConsole, setShowAdminConsole] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Toggle Admin Console with `~` or Backtick
+      if (e.key === '`' || e.key === '~') {
+          // If inputting text, maybe allow it? But `~` is rarely used in standard inputs except code.
+          // Check if active element is input
+          const tag = document.activeElement?.tagName.toLowerCase();
+          if (tag !== 'input' && tag !== 'textarea') {
+              setShowAdminConsole(prev => !prev);
+          }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
   
   // Achievement State
   const [unlockedAchievements, setUnlockedAchievements] = useState<Set<string>>(new Set());
@@ -763,6 +783,23 @@ const App: React.FC = () => {
           }}
         />
       )}
+      {showAdminConsole && (
+        <AdminConsole 
+          onClose={() => setShowAdminConsole(false)} 
+          onDataChange={() => {
+            // Re-fetch user data to reflect changes in images/words
+            if (session?.user?.id) {
+                setLoadingData(true);
+                fetchUserData(session.user.id)
+                    .then(({ words, sessions }) => {
+                        setWords(words);
+                        setSessions(sessions);
+                    })
+                    .finally(() => setLoadingData(false));
+            }
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -886,7 +923,6 @@ const Dashboard: React.FC<{
   onDeleteSessions: (ids: string[]) => void
 }> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions }) => {
   const [carouselIndex, setCarouselIndex] = useState(0);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [showAllSessions, setShowAllSessions] = useState(false);
 
   // Filter words that already have images for the carousel
@@ -894,7 +930,8 @@ const Dashboard: React.FC<{
 
   // 1. Auto-rotation logic (5 seconds)
   useEffect(() => {
-    if (wordsWithImages.length <= 1) return;
+    // Only start carousel if we have at least 10 images, as requested
+    if (wordsWithImages.length < 10) return;
 
     const timer = setInterval(() => {
       setCarouselIndex(prev => (prev + 1) % wordsWithImages.length);
@@ -902,27 +939,6 @@ const Dashboard: React.FC<{
 
     return () => clearInterval(timer);
   }, [wordsWithImages.length]);
-
-  // 2. Initial Generation Logic (Fallback if no images exist)
-  useEffect(() => {
-    const triggerInitialGen = async () => {
-      if (words.length > 0 && wordsWithImages.length === 0 && !isGenerating) {
-        const randomWord = words[Math.floor(Math.random() * words.length)];
-        setIsGenerating(true);
-        try {
-            // Note: generateImagesForMissingWords also runs in background in App,
-            // but this ensures the featured area doesn't stay empty on first login.
-            await aiService.generateImageHint(randomWord.text);
-            // Words will update via the background task in App
-        } catch (e) {
-            console.warn("Initial featured generation failed", e);
-        } finally {
-            setIsGenerating(false);
-        }
-      }
-    };
-    triggerInitialGen();
-  }, [words, wordsWithImages.length, isGenerating]);
 
   // Reset index if it goes out of sync with library updates
   useEffect(() => {
@@ -943,12 +959,7 @@ const Dashboard: React.FC<{
           <div className="w-full md:w-80 h-80 flex-shrink-0 relative group order-last md:order-first">
             <div className="absolute -inset-1 bg-gradient-to-r from-electric-blue to-electric-purple rounded-3xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative w-full h-full bg-light-charcoal rounded-3xl border border-mid-charcoal overflow-hidden flex flex-col items-center justify-center">
-              {isGenerating ? (
-                <div className="flex flex-col items-center gap-4 p-8 text-center animate-pulse">
-                  <span className="material-symbols-outlined text-5xl text-electric-blue">auto_awesome</span>
-                  <p className="font-mono text-[10px] text-text-dark uppercase tracking-widest">Visualizing...</p>
-                </div>
-              ) : wordsWithImages.length > 0 ? (
+              {wordsWithImages.length >= 10 ? (
                 <div key={wordsWithImages[carouselIndex].id} className="w-full h-full relative animate-in fade-in duration-1000">
                   <img 
                     src={wordsWithImages[carouselIndex].image_url!} 

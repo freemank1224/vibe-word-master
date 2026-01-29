@@ -21,13 +21,15 @@ export class GeminiProvider implements AIService {
     return new GoogleGenAI(config);
   }
 
-  async generateImageHint(word: string, apiKey?: string, endpoint?: string): Promise<string | null> {
+  async generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null> {
     try {
       const ai = this.getClient(apiKey, endpoint);
+      const prompt = promptOverride || `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality digital art, clean background. No words or characters in the generated image.`;
+
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
-          parts: [{ text: `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality digital art, clean background. No words or characters in the generated image.` }]
+          parts: [{ text: prompt }]
         },
         config: {
           imageConfig: { aspectRatio: "1:1" }

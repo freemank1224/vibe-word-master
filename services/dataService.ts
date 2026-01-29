@@ -4,6 +4,12 @@ import { WordEntry, InputSession } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
 
+// Helper to get current user ID
+export const getCurrentUserId = async (): Promise<string | null> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  return user?.id || null;
+};
+
 // Helper to upload Base64 image to Supabase Storage
 export const uploadImage = async (base64Data: string, userId: string): Promise<string | null> => {
   try {

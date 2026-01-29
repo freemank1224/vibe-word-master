@@ -1,8 +1,9 @@
 
-import { AIService, AIProviderType } from "./types";
+import { AIService, AIProviderType, SpellingResult } from "./types";
 import { GeminiProvider } from "./geminiProvider";
 import { OpenAIProvider } from "./openaiProvider";
 import { LocalProvider } from "./localProvider";
+import { AISettings, AEServiceProvider, AITask } from "./settings";
 
 class AIServiceManager implements AIService {
   private gemini = new GeminiProvider();
@@ -10,39 +11,75 @@ class AIServiceManager implements AIService {
   private local = new LocalProvider();
 
   private getProvider(type: string): AIService {
-    const providerType = (type || 'gemini').toLowerCase() as AIProviderType;
-    switch (providerType) {
-      case 'openai':
-        return this.openai;
-      case 'gemini':
-      default:
-        return this.gemini;
+    const providerType = (type || 'gemini').toLowerCase();
+    
+    if (providerType === 'openai' || providerType === 'custom') {
+      return this.openai; // Custom usually implies OpenAI-compatible API
     }
+    
+    return this.gemini;
   }
 
-  async generateImageHint(word: string): Promise<string | null> {
-    const providerType = process.env.IMAGE_GEN_PROVIDER || 'gemini';
+  private resolveConfig(task: AITask) {
+    // 1. Try Task-Specific User Settings (BYOK)
+    const userProvider = AISettings.getTaskProvider(task);
+    const userConfig = AISettings.getConfig(userProvider, task);
+
+    if (userConfig.apiKey) {
+      return {
+        providerType: userProvider,
+        apiKey: userConfig.apiKey,
+        endpoint: userConfig.endpoint,
+        modelName: userConfig.modelName
+      };
+    }
+
+    // 2. Fallback to Global User Settings (Legacy/Default)
+    const globalProvider = AISettings.getProvider();
+    const globalConfig = AISettings.getConfig(globalProvider);
+    if (globalConfig.apiKey) {
+      return {
+        providerType: globalProvider,
+        apiKey: globalConfig.apiKey,
+        endpoint: globalConfig.endpoint,
+        modelName: globalConfig.modelName
+      };
+    }
+
+    // 3. Fallback to Environment Variables
+    const envProvider = process.env[`${task}_PROVIDER`] || 'gemini';
+    const envKey = process.env[`${task}_API_KEY`];
+    const envEndpoint = process.env[`${task}_ENDPOINT`] || 
+                       (envProvider === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
+
+    return {
+      providerType: envProvider,
+      apiKey: envKey,
+      endpoint: envEndpoint,
+      modelName: undefined
+    };
+  }
+
+  async generateImageHint(word: string, promptOverride?: string): Promise<string | null> {
+    const { providerType, apiKey, endpoint } = this.resolveConfig('IMAGE_GEN');
     const provider = this.getProvider(providerType);
-    const endpoint = process.env.IMAGE_GEN_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
-    return provider.generateImageHint(word, process.env.IMAGE_GEN_API_KEY, endpoint);
+    return provider.generateImageHint(word, promptOverride, apiKey, endpoint);
   }
 
   async generateSpeech(text: string): Promise<AudioBuffer | string | null> {
-    const providerType = process.env.TTS_PROVIDER || 'gemini';
+    const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
     const provider = this.getProvider(providerType);
-    const endpoint = process.env.TTS_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
-    return provider.generateSpeech(text, process.env.TTS_API_KEY, endpoint);
+    return provider.generateSpeech(text, apiKey, endpoint);
   }
 
   async extractWordFromImage(base64Image: string): Promise<string | null> {
-    const providerType = process.env.OCR_PROVIDER || 'gemini';
+    const { providerType, apiKey, endpoint } = this.resolveConfig('VISION');
     const provider = this.getProvider(providerType);
-    const endpoint = process.env.OCR_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
-    return provider.extractWordFromImage(base64Image, process.env.OCR_API_KEY, endpoint);
+    return provider.extractWordFromImage(base64Image, apiKey, endpoint);
   }
 
   async validateSpelling(word: string, apiKey?: string, endpoint?: string, options?: { skipLLM?: boolean }): Promise<SpellingResult> {
-    // 1. Try local validation first (browser-based/dictionary scheme)
+    // 1. Try local validation first
     const localResult = await this.local.validateSpelling(word);
     if (localResult.found) {
       console.log(`Local validation hit for: "${word}"`);
@@ -56,16 +93,23 @@ class AIServiceManager implements AIService {
         return { isValid: false, found: false };
     }
 
-    // 2. Fallback to LLM if local check is inconclusive
+    // 2. Fallback to LLM
     console.log(`Local validation miss for: "${word}", falling back to LLM...`);
-    const providerType = process.env.SPELLING_CHECK_PROVIDER || 'gemini';
-    const provider = this.getProvider(providerType);
-    const resolvedEndpoint = endpoint || process.env.SPELLING_CHECK_ENDPOINT || (providerType === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
-    const resolvedApiKey = apiKey || process.env.SPELLING_CHECK_API_KEY;
+    
+    // If explicit args provided (e.g. from testing UI), use them
+    if (apiKey) {
+       const userProvider = AISettings.getProvider();
+       const provider = this.getProvider(userProvider);
+       return provider.validateSpelling(word, apiKey, endpoint);
+    }
 
-    return provider.validateSpelling(word, resolvedApiKey, resolvedEndpoint);
+    const { providerType, apiKey: resolvedKey, endpoint: resolvedEndpoint } = this.resolveConfig('TEXT');
+    const provider = this.getProvider(providerType);
+
+    return provider.validateSpelling(word, resolvedKey, resolvedEndpoint);
   }
 }
+
 
 export const aiService = new AIServiceManager();
 export * from "./types";

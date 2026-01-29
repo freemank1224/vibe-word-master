@@ -11,7 +11,7 @@ export interface AIService {
    * Generates an image hint for a word. 
    * Returns a base64 data URL or null.
    */
-  generateImageHint(word: string, apiKey?: string, endpoint?: string): Promise<string | null>;
+  generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null>;
 
   /**
    * Generates speech for text.

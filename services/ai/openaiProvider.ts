@@ -28,11 +28,13 @@ export class OpenAIProvider implements AIService {
     return response.json();
   }
 
-  async generateImageHint(word: string, apiKey?: string, endpoint?: string): Promise<string | null> {
+  async generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null> {
     try {
+      const prompt = promptOverride || `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality 3D digital art, clean background. No words or characters in the generated image.`;
+
       const data = await this.fetchOpenAI("images/generations", {
         model: "dall-e-3",
-        prompt: `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality 3D digital art, clean background. No words or characters in the generated image.`,
+        prompt: prompt,
         n: 1,
         size: "1024x1024",
         response_format: "b64_json"
