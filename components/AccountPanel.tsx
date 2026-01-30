@@ -49,6 +49,18 @@ const IssueRow: React.FC<{
 export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, onClose, onLogout }) => {
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanupStats | null>(null);
+  const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('vibe_ai_selection') === 'true';
+    }
+    return false;
+  });
+
+  const toggleAiSelection = () => {
+    const newState = !aiSelectionEnabled;
+    setAiSelectionEnabled(newState);
+    localStorage.setItem('vibe_ai_selection', String(newState));
+  };
 
   useEffect(() => {
     // 锁定主页面滚动
@@ -213,6 +225,26 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                 </div>
              </div>
           </div>
+
+          {/* AI Settings */}
+          <div className="space-y-4">
+             <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Neural Interface</h3>
+             <div className="bg-dark-charcoal p-5 rounded-3xl border border-mid-charcoal/30 flex items-center justify-between">
+                <div>
+                    <div className="text-white font-mono text-sm mb-1">AI Smart Selection</div>
+                    <div className="text-[10px] text-text-light font-mono max-w-[200px] leading-tight">
+                        Optimize test words using Ebbinghaus forgetting curve & error history.
+                    </div>
+                </div>
+                <button 
+                  onClick={toggleAiSelection}
+                  className={`w-14 h-8 rounded-full transition-colors relative ${aiSelectionEnabled ? 'bg-electric-blue' : 'bg-mid-charcoal'}`}
+                >
+                  <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform ${aiSelectionEnabled ? 'translate-x-6' : ''}`} />
+                </button>
+             </div>
+          </div>
+
           {/* Word Library Cleanup Tool */}
           <div className="space-y-4">
              <div className="flex justify-between items-center">

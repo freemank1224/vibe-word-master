@@ -1,5 +1,6 @@
 
 import { AIService, AIProviderType, SpellingResult } from "./types";
+import { WordEntry, InputSession } from "../../types";
 import { GeminiProvider } from "./geminiProvider";
 import { OpenAIProvider } from "./openaiProvider";
 import { LocalProvider } from "./localProvider";
@@ -107,6 +108,19 @@ class AIServiceManager implements AIService {
     const provider = this.getProvider(providerType);
 
     return provider.validateSpelling(word, resolvedKey, resolvedEndpoint);
+  }
+
+  async optimizeWordSelection(
+      words: WordEntry[], 
+      sessions: InputSession[], 
+      targetCount: number
+  ): Promise<string[] | null> {
+    const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
+    const provider = this.getProvider(providerType);
+    
+    if (!provider.optimizeWordSelection) return null;
+
+    return provider.optimizeWordSelection(words, sessions, targetCount, apiKey, endpoint);
   }
 }
 

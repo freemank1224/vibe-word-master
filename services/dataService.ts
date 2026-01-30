@@ -154,15 +154,34 @@ export const fetchUserData = async (userId: string) => {
 export const saveSessionData = async (
   userId: string, 
   targetCount: number, 
-  wordList: { text: string, imageBase64?: string }[],
+  wordList: { text: string, imageBase64?: string, language?: string }[],
   libraryTag: string = 'Custom'
 ) => {
+  // 0. Global Deduplication Check
+  // Filter out words that already exist globally for this user (Active words only)
+  const texts = wordList.map(w => w.text);
+  const { data: existing } = await supabase
+      .from('words')
+      .select('text')
+      .eq('user_id', userId)
+      .in('text', texts)
+      .or('deleted.eq.false,deleted.is.null');
+
+  const existingSet = new Set((existing || []).map((e: any) => e.text));
+  const uniqueWordList = wordList.filter(w => !existingSet.has(w.text));
+
+  // Log dropped words for debugging
+  if (wordList.length > uniqueWordList.length) {
+    console.log(`[saveSessionData] Dropped ${wordList.length - uniqueWordList.length} duplicate words:`, 
+        wordList.filter(w => existingSet.has(w.text)).map(w => w.text));
+  }
+
   // 1. Create Session
   const { data: sessionData, error: sessionError } = await supabase
     .from('sessions')
     .insert({
       user_id: userId,
-      word_count: wordList.length,
+      word_count: uniqueWordList.length,
       target_count: targetCount,
       library_tag: libraryTag
     })
@@ -177,7 +196,7 @@ export const saveSessionData = async (
   // 2. Process Words & Images
   const wordsPayload = [];
   
-  for (const w of wordList) {
+  for (const w of uniqueWordList) {
     let imagePath = null;
     if (w.imageBase64) {
       imagePath = await uploadImage(w.imageBase64, userId);
@@ -194,15 +213,20 @@ export const saveSessionData = async (
   }
 
   // 3. Bulk Insert Words
-  const { data: wordsData, error: wordsError } = await supabase
-    .from('words')
-    .insert(wordsPayload)
-    .select();
+  let wordsData = [];
+  if (wordsPayload.length > 0) {
+    const { data, error: wordsError } = await supabase
+        .from('words')
+        .insert(wordsPayload)
+        .select();
 
-  if (wordsError) {
-      console.error("Error inserting words:", wordsError.message);
-      throw wordsError;
+    if (wordsError) {
+        console.error("Error inserting words:", wordsError.message);
+        throw wordsError;
+    }
+    wordsData = data;
   }
+
 
   // 4. Final Sync: Ensure word_count matches actual inserted words
   const { count: finalCount } = await supabase
@@ -254,8 +278,25 @@ export const modifySession = async (
     // 2. Add New Words - they belong to the session's library
     const newWordsData: any[] = [];
     if (addedWords.length > 0) {
+        // Global Deduplication Check
+        const texts = addedWords.map(w => w.text);
+        const { data: existing } = await supabase
+            .from('words')
+            .select('text')
+            .eq('user_id', userId)
+            .in('text', texts)
+            .or('deleted.eq.false,deleted.is.null');
+
+        const existingSet = new Set((existing || []).map((e: any) => e.text));
+        const uniqueAddedWords = addedWords.filter(w => !existingSet.has(w.text));
+
+        if (addedWords.length > uniqueAddedWords.length) {
+            console.log(`[modifySession] Dropped ${addedWords.length - uniqueAddedWords.length} duplicate words:`, 
+                addedWords.filter(w => existingSet.has(w.text)).map(w => w.text));
+        }
+
         const wordsPayload = [];
-        for (const w of addedWords) {
+        for (const w of uniqueAddedWords) {
             let imagePath = null;
             if (w.imageBase64) {
                 imagePath = await uploadImage(w.imageBase64, userId);
@@ -269,16 +310,18 @@ export const modifySession = async (
             });
         }
         
-        const { data, error: insError } = await supabase
-            .from('words')
-            .insert(wordsPayload)
-            .select();
-            
-        if (insError) {
-            console.error("Error adding words to session:", insError.message);
-            throw insError;
+        if (wordsPayload.length > 0) {
+            const { data, error: insError } = await supabase
+                .from('words')
+                .insert(wordsPayload)
+                .select();
+                
+            if (insError) {
+                console.error("Error adding words to session:", insError.message);
+                throw insError;
+            }
+            if (data) newWordsData.push(...data);
         }
-        if (data) newWordsData.push(...data);
     }
 
     // 2.5 Update Existing Words
@@ -519,15 +562,38 @@ export const generateSRSQueue = (
     return finalQueue;
 };
 
-export const deleteSessions = async (userId: string, sessionIds: string[]) => {
-  if (!sessionIds || sessionIds.length === 0) return;
+export interface DeleteProgress {
+  step: 'fetching' | 'deleting-words' | 'deleting-sessions' | 'cleaning-tags' | 'complete';
+  message: string;
+  current?: number;
+  total?: number;
+}
+
+export const deleteSessions = async (
+  userId: string, 
+  sessionIds: string[],
+  onProgress?: (progress: DeleteProgress) => void
+) => {
+  console.log('[deleteSessions] START - userId:', userId, 'sessionIds:', sessionIds);
+  
+  if (!sessionIds || sessionIds.length === 0) {
+    console.log('[deleteSessions] Early return: no session IDs');
+    return;
+  }
+
+  onProgress?.({ step: 'fetching', message: 'Preparing to delete...' });
 
   // First, get the library tags of sessions being deleted
-  const { data: sessionsToDelete } = await supabase
+  const { data: sessionsToDelete, error: fetchError } = await supabase
     .from('sessions')
     .select('id, library_tag')
     .in('id', sessionIds)
     .eq('user_id', userId);
+
+  if (fetchError) {
+    console.error('[deleteSessions] Error fetching sessions:', fetchError);
+  }
+  console.log('[deleteSessions] Sessions to delete:', sessionsToDelete);
 
   const libraryTagsToClean = new Set<string>();
   sessionsToDelete?.forEach(s => {
@@ -537,37 +603,53 @@ export const deleteSessions = async (userId: string, sessionIds: string[]) => {
   });
 
   // 1. Soft Delete words that belong to these sessions
-  const { error: wordsError } = await supabase
+  onProgress?.({ step: 'deleting-words', message: 'Deleting words...' });
+  console.log('[deleteSessions] Step 1: Soft deleting words...');
+  const { error: wordsError, data: wordsData, count: wordsCount } = await supabase
       .from('words')
       .update({ deleted: true })
       .in('session_id', sessionIds)
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .select();
 
   if (wordsError) {
-      console.error("Error deleting session words:", wordsError.message);
+      console.error("[deleteSessions] Error deleting session words:", wordsError.message);
       throw wordsError;
   }
+  const deletedWordsCount = wordsData?.length || 0;
+  console.log('[deleteSessions] Words deleted:', deletedWordsCount);
+  onProgress?.({ step: 'deleting-words', message: `Deleted ${deletedWordsCount} words`, current: deletedWordsCount, total: deletedWordsCount });
 
   // 2. Soft Delete sessions
-  const { error: sessionError } = await supabase
+  onProgress?.({ step: 'deleting-sessions', message: 'Deleting sessions...' });
+  console.log('[deleteSessions] Step 2: Soft deleting sessions...');
+  const { error: sessionError, data: sessionData } = await supabase
       .from('sessions')
       .update({ deleted: true })
       .in('id', sessionIds)
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .select();
 
   if (sessionError) {
-      console.error("Error deleting sessions:", sessionError.message);
+      console.error("[deleteSessions] Error deleting sessions:", sessionError.message);
       throw sessionError;
   }
+  console.log('[deleteSessions] Sessions deleted:', sessionData?.length || 0, sessionData);
+  onProgress?.({ step: 'deleting-sessions', message: `Deleted ${sessionData?.length || 0} session(s)` });
 
   // 3. Clean up library tags from words in OTHER sessions
   // When deleting a library session (e.g., CET-6), we need to remove the CET-6 tag
   // from all words that have it, not just the words in the deleted session
+  // 
+  // PERFORMANCE FIX: Instead of updating each word individually (which caused 439+ requests),
+  // we use a single RPC call or batch the updates efficiently.
   if (libraryTagsToClean.size > 0) {
-    console.log('[deleteSessions] Cleaning library tags:', Array.from(libraryTagsToClean));
+    const tagsArray = Array.from(libraryTagsToClean);
+    onProgress?.({ step: 'cleaning-tags', message: `Cleaning library tags: ${tagsArray.join(', ')}...` });
+    console.log('[deleteSessions] Cleaning library tags:', tagsArray);
     
     for (const tag of libraryTagsToClean) {
-      // Find all words with this tag (not deleted)
+      // Find all words with this tag (not deleted) - we need this to know which words to update
       const { data: wordsWithTag } = await supabase
         .from('words')
         .select('id, tags')
@@ -576,26 +658,49 @@ export const deleteSessions = async (userId: string, sessionIds: string[]) => {
         .contains('tags', [tag]);
 
       if (wordsWithTag && wordsWithTag.length > 0) {
-        // Update each word to remove the tag
-        const updates = wordsWithTag.map(w => ({
-          id: w.id,
-          tags: (w.tags || []).filter((t: string) => t !== tag)
-        }));
-
-        // Batch update
-        for (const update of updates) {
-          // Ensure at least 'Custom' tag remains
-          const newTags = update.tags.length > 0 ? update.tags : ['Custom'];
-          await supabase
-            .from('words')
-            .update({ tags: newTags })
-            .eq('id', update.id);
+        onProgress?.({ step: 'cleaning-tags', message: `Updating ${wordsWithTag.length} words with tag '${tag}'...`, current: 0, total: wordsWithTag.length });
+        console.log(`[deleteSessions] Found ${wordsWithTag.length} words with tag '${tag}', updating in batches...`);
+        
+        // Group words by their resulting tags (after removing the current tag)
+        const tagGroupMap = new Map<string, string[]>(); // key = sorted tags string, value = word ids
+        
+        for (const w of wordsWithTag) {
+          const newTags = (w.tags || []).filter((t: string) => t !== tag);
+          const finalTags = newTags.length > 0 ? newTags : ['Custom'];
+          const key = JSON.stringify(finalTags.sort());
+          
+          if (!tagGroupMap.has(key)) {
+            tagGroupMap.set(key, []);
+          }
+          tagGroupMap.get(key)!.push(w.id);
         }
 
-        console.log(`[deleteSessions] Removed tag '${tag}' from ${updates.length} words`);
+        // Now batch update by tag group (words with same resulting tags)
+        let totalUpdated = 0;
+        for (const [tagsKey, wordIds] of tagGroupMap) {
+          const newTags = JSON.parse(tagsKey);
+          
+          // Supabase supports updating multiple rows with .in()
+          const { error: updateError } = await supabase
+            .from('words')
+            .update({ tags: newTags })
+            .in('id', wordIds);
+          
+          if (updateError) {
+            console.error(`[deleteSessions] Error updating batch:`, updateError);
+          } else {
+            totalUpdated += wordIds.length;
+          }
+        }
+
+        console.log(`[deleteSessions] Removed tag '${tag}' from ${totalUpdated} words (${tagGroupMap.size} batch updates)`);
+        onProgress?.({ step: 'cleaning-tags', message: `Cleaned tag '${tag}' from ${totalUpdated} words`, current: totalUpdated, total: totalUpdated });
       }
     }
   }
+  
+  onProgress?.({ step: 'complete', message: 'Delete completed!' });
+  console.log('[deleteSessions] COMPLETE');
 };
 
 export const fetchUserAchievements = async (userId: string): Promise<string[]> => {

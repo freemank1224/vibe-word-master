@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { adminService, AdminStats } from '../services/adminService';
 import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
+import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
+import { getCurrentUserId } from '../services/dataService';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -81,6 +83,7 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   const [logs, setLogs] = useState<string[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -102,13 +105,17 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   };
 
   const handleSync = async () => {
+    if (isSyncing || isRunning) return;
     try {
+      setIsSyncing(true);
       addLog("Starting Dictionary Sync...");
       await adminService.seedAllDictionaries((msg) => addLog(msg));
       loadStats();
       onDataChange?.();
     } catch (e: any) {
       addLog(`Error: ${e.message}`);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -126,30 +133,31 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
 
   const toggleGeneration = async () => {
     if (isRunning) {
-      adminService.stopGeneration();
+      cancelGeneration();
       setIsRunning(false);
       addLog("Stopping generation...");
     } else {
+      const userId = await getCurrentUserId();
+      if (!userId) {
+          addLog("Error: Not authenticated. Cannot start generation.");
+          return;
+      }
+
       setIsRunning(true);
       addLog("Starting Background Generation Loop...");
-      adminService.startBackgroundGeneration(
-        (status) => {
-          if (status.status === "Done") {
-            addLog(`✓ Generated: ${status.currentWord}`);
-            if (Math.random() > 0.9) loadStats(); 
-          } else if (status.status.includes("Rate Limited")) {
-            addLog(`! Rate Limit: ${status.currentWord} - Waiting...`);
-          } else if (status.status === "Generating...") {
-            // Noise reduction
-          } else {
-            addLog(`Status: ${status.status} (${status.currentWord})`);
+      
+      generateImagesForMissingWords(
+          userId,
+          (msg) => addLog(msg),
+          (wordId, path) => {
+              // Refresh stats occasionally
+              if (Math.random() > 0.2) loadStats();
           }
-        },
-        (err) => {
-          addLog(`Generate Error: ${err}`);
+      ).then(() => {
           setIsRunning(false);
-        }
-      );
+          addLog("Background generation finished.");
+          loadStats();
+      });
     }
   };
 
@@ -190,8 +198,22 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
             </div>
 
             <div style={{ marginBottom: '20px' }}>
-              <button style={{...BUTTON_STYLE, backgroundColor: '#4caf50'}} onClick={handleSync}>同步词典</button>
-              <button style={BUTTON_STYLE} onClick={toggleGeneration}>{isRunning ? '停止生成' : '开始自动后台生成'}</button>
+              <button 
+                style={{
+                    padding: '8px 16px', 
+                    borderRadius: '4px', 
+                    border: 'none', 
+                    cursor: (isSyncing && !isRunning) ? 'not-allowed' : 'pointer', 
+                    marginRight: '8px', 
+                    fontWeight: 'bold', 
+                    backgroundColor: isRunning ? '#ff9800' : (isSyncing ? '#666' : 'rgb(74, 144, 226)'), 
+                    color: 'white'
+                }} 
+                onClick={toggleGeneration}
+                disabled={isSyncing}
+              >
+                {isRunning ? '停止自动后台生成' : '开始自动后台生成'}
+              </button>
               <button style={{...BUTTON_STYLE, backgroundColor: '#f44336'}} onClick={handleClear}>清空图片</button>
             </div>
             

@@ -1,5 +1,6 @@
 
 import { AIService, SpellingResult } from "./types";
+import { WordEntry, InputSession } from "../../types";
 
 export class OpenAIProvider implements AIService {
   private get defaultApiKey(): string {
@@ -27,6 +28,17 @@ export class OpenAIProvider implements AIService {
     }
     return response.json();
   }
+
+  async optimizeWordSelection(
+    words: WordEntry[], 
+    sessions: InputSession[], 
+    targetCount: number, 
+    apiKey?: string, 
+    endpoint?: string
+  ): Promise<string[] | null> {
+    return null; // Not implemented yet
+  }
+
 
   async generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null> {
     try {

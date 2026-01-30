@@ -192,6 +192,7 @@ class AdminService {
             const prompt = getMascotPrompt(dayIndex, word.text);
             
             // Assuming I update the AI service to support this:
+            /*
             const base64 = await aiService.generateImageHint(word.text, prompt); 
             // I will update AI service signature momentarily.
 
@@ -224,6 +225,8 @@ class AdminService {
                 image_gen_status: 'completed',
                 image_gen_retries: 0
             }).eq('id', word.id);
+            */
+            console.log("Image generation disabled for", word.text);
 
             // Notify Progress (Success)
             onProgress({ currentWord: word.text, status: "Done", total: 0, coverage: 0 });

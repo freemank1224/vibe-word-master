@@ -10,6 +10,7 @@ import { Confetti } from './Confetti';
 
 interface TestModeV2Props {
   allWords: WordEntry[];
+  sessions: InputSession[]; // Added sessions prop
   initialSessionIds: string[];
   initialWordIds?: string[];
   onComplete: (results: { id: string; correct: boolean; score: number }[]) => void;
@@ -59,6 +60,7 @@ const HistoryCard = ({ result, word }: { result: { correct: boolean; score: numb
 
 const TestModeV2: React.FC<TestModeV2Props> = ({ 
   allWords, 
+  sessions,
   initialSessionIds, 
   initialWordIds, 
   onComplete, 
@@ -95,6 +97,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [confettiConfig, setConfettiConfig] = useState<{title?: string, subtitle?: string, variant?: 'green' | 'blue' | 'purple', showParticles?: boolean}>({});
   const [streak, setStreak] = useState(0);
   const [isStarted, setIsStarted] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [notification, setNotification] = useState<{message: string, type: 'info' | 'error' | 'success'} | null>(null);
 
   // Loading States & Refs
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
@@ -159,17 +163,97 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     // Regenerate queue when coverage is confirmed or updated, but only before starting
     if (isStarted || availablePool.length === 0 || !isSelectionConfirmed) return;
 
-    const targetCount = Math.max(1, Math.round((availablePool.length * coverage) / 100));
-    
-    // Fisher-Yates Shuffle for true unbiased randomness
-    const shuffled = [...availablePool];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
+    const generateQueue = async () => {
+        setIsOptimizing(true);
+        const targetCount = Math.max(1, Math.round((availablePool.length * coverage) / 100));
+        
+        // Check for AI Optimization
+        const isAiEnabled = localStorage.getItem('vibe_ai_selection') === 'true';
+        
+        if (isAiEnabled) {
+            try {
+                // 1. Build Candidate Pools
+                const currentIds = new Set(availablePool.map(w => w.id));
 
-    setQueue(shuffled.slice(0, targetCount));
-  }, [availablePool, coverage, isStarted, isSelectionConfirmed]);
+                const historyCandidates = allWords.filter(w => !currentIds.has(w.id) && !w.deleted);
+
+                const mistakeCandidates = allWords.filter(w => 
+                    !currentIds.has(w.id) && !w.deleted && 
+                    ((w.tags && w.tags.includes('Mistake')) || w.error_count > 0 || (w.score !== undefined && w.score < 3))
+                );
+
+                // 2. Create the "Smart Report" List (Limit to 100 for token efficiency)
+                const finalCandidates: WordEntry[] = [...availablePool];
+                
+                // Fill up to 100 with mistakes first
+                if (finalCandidates.length < 100) {
+                    const sortedMistakes = mistakeCandidates.sort((a,b) => b.error_count - a.error_count);
+                    for (const m of sortedMistakes) {
+                        if (finalCandidates.length >= 100) break;
+                        if (!finalCandidates.find(w => w.id === m.id)) {
+                            finalCandidates.push(m);
+                        }
+                    }
+                }
+
+                // Fill remainder with history (stale words first)
+                if (finalCandidates.length < 100) {
+                    const sortedHistory = historyCandidates.sort((a,b) => (a.last_tested || 0) - (b.last_tested || 0));
+                    for (const h of sortedHistory) {
+                        if (finalCandidates.length >= 100) break;
+                        if (!finalCandidates.find(w => w.id === h.id)) {
+                            finalCandidates.push(h);
+                        } 
+                    }
+                }
+
+                // 3. Call AI Service
+                const optimizedIds = await aiService.optimizeWordSelection(finalCandidates, sessions, targetCount);
+
+                if (optimizedIds && optimizedIds.length > 0) {
+                    const aiQueue = allWords.filter(w => optimizedIds.includes(w.id));
+                    
+                    if (aiQueue.length < targetCount) {
+                        const remaining = targetCount - aiQueue.length;
+                        const remainderPool = availablePool.filter(w => !optimizedIds.includes(w.id));
+                        for (let i = remainderPool.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [remainderPool[i], remainderPool[j]] = [remainderPool[j], remainderPool[i]];
+                        }
+                        aiQueue.push(...remainderPool.slice(0, remaining));
+                    }
+
+                    for (let i = aiQueue.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [aiQueue[i], aiQueue[j]] = [aiQueue[j], aiQueue[i]];
+                    }
+                    
+                    setQueue(aiQueue);
+                    setIsOptimizing(false);
+                    return;
+                }
+            } catch (e: any) {
+                console.warn("AI Selection failed, falling back to random:", e);
+                setNotification({
+                    type: 'error',
+                    message: `AI Optimization Unavailable: ${e?.message || 'Unknown error'}. Switching to Standard Mode.`
+                });
+                setTimeout(() => setNotification(null), 4000);
+            }
+        }
+
+        // Standard Random Shuffle (Fallback or Default)
+        const shuffled = [...availablePool];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        setQueue(shuffled.slice(0, targetCount));
+        setIsOptimizing(false);
+    };
+
+    generateQueue();
+  }, [availablePool, coverage, isStarted, isSelectionConfirmed, allWords, sessions]);
 
   useEffect(() => {
     // Cleanup audio on unmount
@@ -837,16 +921,30 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <div className="mb-10 w-full max-w-xs mx-auto">
                     <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden mb-2">
                          <div 
-                            className={`h-full transition-all duration-300 ${!isSelectionConfirmed ? 'bg-gray-700' : isResourcesLoaded ? 'bg-green-500' : 'bg-blue-500'}`}
-                            style={{ width: `${!isSelectionConfirmed ? 0 : (loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100}%` }}
+                            className={`h-full transition-all duration-300 ${!isSelectionConfirmed ? 'bg-gray-700' : (isResourcesLoaded && !isOptimizing) ? 'bg-green-500' : 'bg-blue-500'}`}
+                            style={{ width: `${!isSelectionConfirmed ? 0 : (isOptimizing ? 100 : (loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100)}%` }}
                          />
                     </div>
                     <div className="flex justify-between text-xs font-mono text-gray-500">
-                      <span>{!isSelectionConfirmed ? 'IDLE' : isResourcesLoaded ? 'READY' : 'LOADING RESOURCES...'}</span>
-                      <span>{!isSelectionConfirmed ? '0%' : Math.round((loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100) + '%'}</span>
+                      <span>
+                        {!isSelectionConfirmed 
+                            ? 'IDLE' 
+                            : isOptimizing 
+                                ? 'OPTIMIZING NEURAL PATHWAYS...' 
+                                : isResourcesLoaded 
+                                    ? 'READY' 
+                                    : 'LOADING RESOURCES...'}
+                      </span>
+                      <span>
+                        {!isSelectionConfirmed 
+                            ? '0%' 
+                            : isOptimizing 
+                                ? 'AI' 
+                                : Math.round((loadingProgress.current / Math.max(loadingProgress.total, 1)) * 100) + '%'}
+                      </span>
                     </div>
 
-                    {isResourcesLoaded && missingResources.images > 0 && (
+                    {isResourcesLoaded && !isOptimizing && missingResources.images > 0 && (
                         <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-3 text-left animate-in fade-in slide-in-from-bottom-2">
                              <svg className="w-5 h-5 text-yellow-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                              <div>
@@ -870,17 +968,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 setStartTime(Date.now());
                             }
                         }}
-                        disabled={isSelectionConfirmed && !isResourcesLoaded}
+                        disabled={isSelectionConfirmed && (!isResourcesLoaded || isOptimizing)}
                         className={`w-full px-8 py-4 text-black rounded-2xl font-headline text-xl transition-all transform duration-300
-                            ${(!isSelectionConfirmed || isResourcesLoaded)
+                            ${(!isSelectionConfirmed || (isResourcesLoaded && !isOptimizing))
                                 ? 'bg-blue-500 hover:bg-blue-400 hover:scale-[1.02] active:scale-95 shadow-[0_0_20px_rgba(59,130,246,0.3)] cursor-pointer' 
                                 : 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50'}`}
                     >
                         {!isSelectionConfirmed 
                             ? 'PREPARE NEURAL LINK' 
-                            : isResourcesLoaded 
-                                ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') 
-                                : 'SYNCING...'}
+                            : isOptimizing 
+                                ? 'ANALYZING BRAINWAVES...'
+                                : isResourcesLoaded 
+                                    ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') 
+                                    : 'SYNCING...'}
                     </button>
                     <button 
                         onClick={() => handleExit('CANCEL')}
@@ -903,6 +1003,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
       {isSyncing && <SyncOverlay showForceExit={showForceExit} onForceExit={onCancel} />}
       {showConfetti && <Confetti {...confettiConfig} />}
+      {notification && (
+        <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-[200] px-6 py-3 rounded-xl border shadow-2xl flex items-center gap-3 animate-in slide-in-from-top-4 duration-300
+            ${notification.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-200' : 'bg-blue-500/10 border-blue-500/30 text-blue-200'}`}>
+            <span className="material-symbols-outlined text-lg">
+                {notification.type === 'error' ? 'warning' : 'info'}
+            </span>
+            <span className="font-mono text-xs font-bold">{notification.message}</span>
+        </div>
+      )}
       
       {/* Top Progress Bar */}
       <div className="h-2 w-full bg-gray-900 border-b border-white/5">

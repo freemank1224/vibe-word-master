@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress } from './services/dataService';
 import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
@@ -13,7 +13,7 @@ import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedba
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
-import { generateImagesForMissingWords } from './services/imageGenerationTask';
+// import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
@@ -49,6 +49,8 @@ const App: React.FC = () => {
   // Delete Confirmation State
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [idsToDelete, setIdsToDelete] = useState<string[]>([]);
+  const [deleteProgress, setDeleteProgress] = useState<DeleteProgress | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   // Admin Console State
   const [showAdminConsole, setShowAdminConsole] = useState(false);
@@ -147,17 +149,17 @@ const App: React.FC = () => {
 
     const runTask = () => {
       // Run the generation task. This is async but we don't await it here as it runs in background.
-      generateImagesForMissingWords(session.user.id, (wordId, imagePath) => {
-        // Optimistically update local state so user sees images appear in real-time
-        setWords(prevWords => prevWords.map(w => {
-          if (w.id === wordId) {
-            return { ...w, image_path: imagePath, image_url: getImageUrl(imagePath) };
-          }
-          return w;
-        }));
-      }).catch(err => {
-        console.error("Background image generation task failed", err);
-      });
+      // generateImagesForMissingWords(session.user.id, (wordId, imagePath) => {
+      //   // Optimistically update local state so user sees images appear in real-time
+      //   setWords(prevWords => prevWords.map(w => {
+      //     if (w.id === wordId) {
+      //       return { ...w, image_path: imagePath, image_url: getImageUrl(imagePath) };
+      //     }
+      //     return w;
+      //   }));
+      // }).catch(err => {
+      //   console.error("Background image generation task failed", err);
+      // });
     };
 
     // Initial check after 10 seconds to allow initial load to settle
@@ -313,6 +315,7 @@ const App: React.FC = () => {
     if (!wordsToProcess || !Array.isArray(wordsToProcess)) return;
     for (const w of wordsToProcess) {
         // 1. Process Images
+        /*
         if (!w.image_path) {
             try {
                 const base64 = await aiService.generateImageHint(w.text);
@@ -331,6 +334,7 @@ const App: React.FC = () => {
                 console.warn(`Background image generation failed for ${w.text}:`, e);
             }
         }
+        */
 
         // 2. Process Dictionary Info (Phonetic, Audio, Definition)
         try {
@@ -424,13 +428,29 @@ const App: React.FC = () => {
   };
 
   const handleExecuteDelete = async () => {
-      if (!session?.user || idsToDelete.length === 0) return;
+      console.log("🔴 handleExecuteDelete called");
+      console.log("📋 Session user:", session?.user?.id);
+      console.log("📋 IDs to delete:", idsToDelete);
+      
+      if (!session?.user || idsToDelete.length === 0) {
+          console.error("❌ Early return: no user or no IDs");
+          return;
+      }
+      
+      setIsDeleting(true);
+      setDeleteProgress({ step: 'fetching', message: 'Starting deletion...' });
       
       try {
-          // 1. Delete from Cloud
-          await deleteSessions(session.user.id, idsToDelete);
+          // 1. Delete from Cloud with progress callback
+          console.log("🗑️ Calling deleteSessions...");
+          await deleteSessions(session.user.id, idsToDelete, (progress) => {
+              setDeleteProgress(progress);
+              console.log("📊 Delete progress:", progress);
+          });
+          console.log("✅ deleteSessions completed");
 
           // 2. Update Local State (Soft Delete)
+          console.log("🔄 Updating local state...");
           setSessions(prev => prev.map(s => idsToDelete.includes(s.id) ? { ...s, deleted: true } : s));
           setWords(prev => prev.map(w => idsToDelete.includes(w.sessionId) ? { ...w, deleted: true } : w));
           
@@ -442,10 +462,15 @@ const App: React.FC = () => {
           // 4. Close Modal
           setShowDeleteConfirm(false);
           setIdsToDelete([]);
+          setDeleteProgress(null);
+          console.log("✅ Delete completed successfully");
           playDing(); // Success sound
       } catch (e) {
-          console.error("Delete failed", e);
+          console.error("❌ Delete failed", e);
+          setDeleteProgress({ step: 'complete', message: `Error: ${(e as Error).message}` });
           alert("Failed to delete sessions. Check console.");
+      } finally {
+          setIsDeleting(false);
       }
   };
 
@@ -455,11 +480,20 @@ const App: React.FC = () => {
   };
 
   const handleInputModeDeleteWord = async (wordId: string) => {
-      if (!session?.user) return;
+      console.log("🔧 handleInputModeDeleteWord called with wordId:", wordId);
+      console.log("📋 Current session:", session?.user?.id);
+      console.log("📝 Editing session ID:", editingSessionId);
+      
+      if (!session?.user) {
+          console.error("❌ No session user found");
+          return;
+      }
+      
       try {
           if (editingSessionId) {
-             console.log("Deleting individual word:", wordId);
+             console.log("🗑️ Deleting individual word:", wordId, "from session:", editingSessionId);
              await modifySession(session.user.id, editingSessionId, [], [wordId]);
+             console.log("✅ modifySession completed successfully");
              
              // Update local state immediately
              setWords(prev => prev.filter(w => w.id !== wordId));
@@ -468,11 +502,14 @@ const App: React.FC = () => {
                  ? { ...s, wordCount: Math.max(0, s.wordCount - 1) } 
                  : s
              ));
+             console.log("✅ Local state updated");
              playDing();
+          } else {
+              console.error("⚠️ No editingSessionId found");
           }
       } catch (e) {
-          console.error("Delete individual word failed", e);
-          alert("Failed to delete word.");
+          console.error("❌ Delete individual word failed", e);
+          alert("Failed to delete word: " + (e as Error).message);
       }
   };
 
@@ -632,6 +669,7 @@ const App: React.FC = () => {
         {mode === 'TEST' && (
           <TestModeV2 
             allWords={visibleWords}
+            sessions={sessions}
             initialSessionIds={testConfig?.sessionIds || []}
             initialWordIds={testConfig?.wordIds}
             onUpdateWord={(id, updates) => {
@@ -659,34 +697,77 @@ const App: React.FC = () => {
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
                 <div className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-md w-full shadow-[0_0_30px_rgba(239,68,68,0.2)] scale-in-center">
                     <div className="flex items-center gap-3 mb-4 text-red-500">
-                        <span className="material-symbols-outlined text-4xl">warning</span>
-                        <h3 className="text-2xl font-headline tracking-tight">CONFIRM DELETION</h3>
+                        <span className="material-symbols-outlined text-4xl">{isDeleting ? 'delete_sweep' : 'warning'}</span>
+                        <h3 className="text-2xl font-headline tracking-tight">
+                            {isDeleting ? 'DELETING...' : 'CONFIRM DELETION'}
+                        </h3>
                     </div>
                     
-                    <p className="text-white font-body mb-2">
-                        You are about to delete <span className="text-electric-blue font-bold">{idsToDelete.length}</span> session(s).
-                    </p>
-                    <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
-                        WARNING: This action will permanently remove all associated words from your library and the cloud database. This process is irreversible.
-                    </p>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                        <button 
-                            onClick={() => {
-                                setShowDeleteConfirm(false);
-                                setIdsToDelete([]);
-                            }}
-                            className="bg-mid-charcoal hover:bg-white hover:text-charcoal text-text-light transition-all p-4 rounded-xl font-headline tracking-wider text-sm"
-                        >
-                            CANCEL
-                        </button>
-                        <button 
-                            onClick={handleExecuteDelete}
-                            className="bg-red-500 hover:bg-red-600 text-white transition-all p-4 rounded-xl font-headline tracking-wider text-sm shadow-lg shadow-red-900/20"
-                        >
-                            DELETE FOREVER
-                        </button>
-                    </div>
+                    {isDeleting ? (
+                        // Progress View
+                        <div className="space-y-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-6 h-6 border-2 border-electric-blue border-t-transparent rounded-full animate-spin"></div>
+                                <p className="text-white font-mono text-sm">{deleteProgress?.message || 'Processing...'}</p>
+                            </div>
+                            
+                            {/* Progress Steps */}
+                            <div className="bg-dark-charcoal rounded-xl p-4 border border-mid-charcoal space-y-2">
+                                <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'fetching' ? 'text-electric-blue' : deleteProgress?.step && ['deleting-words', 'deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'text-electric-green' : 'text-text-dark'}`}>
+                                    <span className="material-symbols-outlined text-sm">
+                                        {deleteProgress?.step === 'fetching' ? 'pending' : deleteProgress?.step && ['deleting-words', 'deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
+                                    </span>
+                                    Preparing...
+                                </div>
+                                <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'deleting-words' ? 'text-electric-blue' : deleteProgress?.step && ['deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'text-electric-green' : 'text-text-dark'}`}>
+                                    <span className="material-symbols-outlined text-sm">
+                                        {deleteProgress?.step === 'deleting-words' ? 'pending' : deleteProgress?.step && ['deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
+                                    </span>
+                                    Deleting words...
+                                </div>
+                                <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'deleting-sessions' ? 'text-electric-blue' : deleteProgress?.step && ['cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'text-electric-green' : 'text-text-dark'}`}>
+                                    <span className="material-symbols-outlined text-sm">
+                                        {deleteProgress?.step === 'deleting-sessions' ? 'pending' : deleteProgress?.step && ['cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
+                                    </span>
+                                    Deleting sessions...
+                                </div>
+                                <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'cleaning-tags' ? 'text-electric-blue' : deleteProgress?.step === 'complete' ? 'text-electric-green' : 'text-text-dark'}`}>
+                                    <span className="material-symbols-outlined text-sm">
+                                        {deleteProgress?.step === 'cleaning-tags' ? 'pending' : deleteProgress?.step === 'complete' ? 'check_circle' : 'radio_button_unchecked'}
+                                    </span>
+                                    Cleaning up tags...
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        // Confirmation View
+                        <>
+                            <p className="text-white font-body mb-2">
+                                You are about to delete <span className="text-electric-blue font-bold">{idsToDelete.length}</span> session(s).
+                            </p>
+                            <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
+                                WARNING: This action will permanently remove all associated words from your library and the cloud database. This process is irreversible.
+                            </p>
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                                <button 
+                                    onClick={() => {
+                                        setShowDeleteConfirm(false);
+                                        setIdsToDelete([]);
+                                    }}
+                                    className="bg-mid-charcoal hover:bg-white hover:text-charcoal text-text-light transition-all p-4 rounded-xl font-headline tracking-wider text-sm"
+                                >
+                                    CANCEL
+                                </button>
+                                <button 
+                                    onClick={handleExecuteDelete}
+                                    className="bg-red-500 hover:bg-red-600 text-white transition-all p-4 rounded-xl font-headline tracking-wider text-sm shadow-lg shadow-red-900/20"
+                                >
+                                    DELETE FOREVER
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
         )}
@@ -1565,13 +1646,11 @@ const InputMode: React.FC<{
           return;
       }
       
-      // Library-level Check: Check if word exists in the SAME library
-      const existsInSameLibrary = allWords.some(w => 
-        w.text.toLowerCase() === trimmed.toLowerCase() && 
-        w.tags?.includes(currentLibrary)
-      );
-      if (existsInSameLibrary) {
-          setErrorMsg(`"${trimmed}" already exists in ${currentLibrary} library.`);
+      // Global Check: Check if word exists anywhere in the user's collection
+      const existingWord = allWords.find(w => w.text.toLowerCase() === trimmed.toLowerCase());
+      if (existingWord) {
+          const tags = existingWord.tags?.join(', ') || 'Custom';
+          setErrorMsg(`"${trimmed}" already exists in your collection (${tags}).`);
           playBuzzer();
           return;
       }
@@ -1659,28 +1738,40 @@ const InputMode: React.FC<{
   const confirmDelete = async () => {
       if (!wordToDelete) return;
 
-      // New word (not saved yet)
-      if (!wordToDelete.item.id) {
-          const newWords = [...currentWords];
-          newWords.splice(wordToDelete.index, 1);
-          setCurrentWords(newWords);
-          setWordToDelete(null);
-      } else {
-          // Existing word - Immediate server sync requested
-          if (onDeleteWord) {
-              await onDeleteWord(wordToDelete.item.id);
-              // Local update happens via prop update or manual splice if parent doesn't auto-refresh input list
-              // Since we passed `initialWords`, `currentWords` is separate state. We must update it.
+      console.log("🗑️ confirmDelete called for:", wordToDelete);
+
+      try {
+          // New word (not saved yet)
+          if (!wordToDelete.item.id) {
+              console.log("✅ Deleting new unsaved word");
               const newWords = [...currentWords];
               newWords.splice(wordToDelete.index, 1);
               setCurrentWords(newWords);
           } else {
-              // Fallback to old behavior if prop missing
-              setDeletedIds(prev => [...prev, wordToDelete.item.id!]);
-              const newWords = [...currentWords];
-              newWords.splice(wordToDelete.index, 1);
-              setCurrentWords(newWords);
+              // Existing word - Immediate server sync requested
+              if (onDeleteWord) {
+                  console.log("🔄 Calling onDeleteWord for ID:", wordToDelete.item.id);
+                  await onDeleteWord(wordToDelete.item.id);
+                  console.log("✅ onDeleteWord completed successfully");
+                  // Local update happens via prop update or manual splice if parent doesn't auto-refresh input list
+                  // Since we passed `initialWords`, `currentWords` is separate state. We must update it.
+                  const newWords = [...currentWords];
+                  newWords.splice(wordToDelete.index, 1);
+                  setCurrentWords(newWords);
+              } else {
+                  console.log("⚠️ No onDeleteWord handler, using fallback");
+                  // Fallback to old behavior if prop missing
+                  setDeletedIds(prev => [...prev, wordToDelete.item.id!]);
+                  const newWords = [...currentWords];
+                  newWords.splice(wordToDelete.index, 1);
+                  setCurrentWords(newWords);
+              }
           }
+          setWordToDelete(null);
+      } catch (error) {
+          console.error("❌ confirmDelete failed:", error);
+          alert("Failed to delete word: " + (error as Error).message);
+          // 即使失败也关闭模态框，让用户可以重试
           setWordToDelete(null);
       }
   };
@@ -1943,8 +2034,23 @@ const InputMode: React.FC<{
 
       {/* Word Delete Confirmation Modal */}
       {wordToDelete && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-6 animate-in fade-in duration-300">
-            <div className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-[400px] w-full shadow-[0_0_30px_rgba(239,68,68,0.2)] scale-in-center">
+        <div 
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[80] flex items-center justify-center p-6 animate-in fade-in duration-300"
+            onClick={(e) => {
+                console.log("🎯 Backdrop clicked", e.target);
+                // 只在点击背景时关闭，不影响内部点击
+                if (e.target === e.currentTarget) {
+                    setWordToDelete(null);
+                }
+            }}
+        >
+            <div 
+                className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-[400px] w-full shadow-[0_0_30px_rgba(239,68,68,0.2)] scale-in-center"
+                onClick={(e) => {
+                    console.log("📦 Modal content clicked", e.target);
+                    e.stopPropagation(); // 阻止冒泡到背景
+                }}
+            >
                 <h3 className="text-xl font-headline text-white mb-2">REMOVE WORD?</h3>
                 <p className="text-text-dark mb-6 text-sm">
                     Are you sure you want to remove <span className="text-electric-blue font-bold">"{wordToDelete.item.text}"</span>?
@@ -1952,14 +2058,26 @@ const InputMode: React.FC<{
                 </p>
                 <div className="flex gap-4">
                     <button 
-                        onClick={() => setWordToDelete(null)}
+                        onClick={() => {
+                            console.log("❌ Cancel delete clicked");
+                            setWordToDelete(null);
+                        }}
                         className="flex-1 py-3 rounded-xl bg-dark-charcoal text-text-light hover:bg-white hover:text-charcoal transition-colors font-mono text-xs uppercase"
+                        type="button"
                     >
                         Cancel
                     </button>
                     <button 
-                        onClick={confirmDelete}
+                        onClick={(e) => {
+                            console.log("🔴 DELETE button clicked", e);
+                            console.log("🔴 Event target:", e.target);
+                            console.log("🔴 Event currentTarget:", e.currentTarget);
+                            confirmDelete();
+                        }}
+                        onMouseDown={() => console.log("🖱️ DELETE button mousedown")}
+                        onMouseEnter={() => console.log("🖱️ DELETE button hover")}
                         className="flex-1 py-3 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors font-headline tracking-wider text-sm shadow-lg"
+                        type="button"
                     >
                         DELETE
                     </button>

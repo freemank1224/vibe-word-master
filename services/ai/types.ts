@@ -1,3 +1,13 @@
+import { WordEntry, InputSession } from "../../types";
+
+export interface WordAnalysisData {
+  id: string;
+  text: string;
+  error_count: number;
+  score?: number;
+  last_tested: number | null;
+  created_at?: number;
+}
 
 export interface SpellingResult {
   isValid: boolean;
@@ -33,6 +43,18 @@ export interface AIService {
    * Future STT interface (reserved but not activated as per request).
    */
   transcribeAudio?(audioBlob: Blob, apiKey?: string, endpoint?: string): Promise<string | null>;
+
+  /**
+   * Optimizes word selection for testing based on history and forgetting curve.
+   * Returns a list of Word IDs to test.
+   */
+  optimizeWordSelection(
+    words: WordEntry[], 
+    sessions: InputSession[], 
+    targetCount: number, 
+    apiKey?: string, 
+    endpoint?: string
+  ): Promise<string[] | null>;
 }
 
 export type AIProviderType = 'gemini' | 'openai';

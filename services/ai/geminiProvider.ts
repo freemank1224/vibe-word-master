@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { AIService, SpellingResult } from "./types";
+import { WordEntry, InputSession } from "../../types";
 
 export class GeminiProvider implements AIService {
   private get defaultApiKey(): string {
@@ -148,5 +149,78 @@ export class GeminiProvider implements AIService {
       }
     }
     return buffer;
+  }
+
+  async optimizeWordSelection(
+    words: WordEntry[], 
+    sessions: InputSession[], 
+    targetCount: number, 
+    apiKey?: string, 
+    endpoint?: string
+  ): Promise<string[] | null> {
+    try {
+      const ai = this.getClient(apiKey, endpoint);
+      
+      // Prepare a minimal dataset to save tokens, but keeping essential stats
+      const wordStats = words.map(w => ({
+        id: w.id,
+        text: w.text,
+        error_count: w.error_count,
+        last_tested: w.last_tested ? new Date(w.last_tested).toISOString() : 'Never',
+        best_time: w.best_time_ms,
+        tags: w.tags,
+        score: w.score
+      }));
+      
+      const sessionSummary = sessions.slice(0, 5).map(s => ({ // Last 5 sessions
+        date: new Date(s.timestamp).toISOString(),
+        score: s.targetCount > 0 ? (s.wordCount / s.targetCount) : 0
+      }));
+
+      const prompt = `
+        As an expert language tutor, select exactly ${targetCount} words for the next vocabulary test.
+        
+        Prioritize:
+        1. Words with high error counts.
+        2. Words never tested or not tested recently (spaced repetition).
+        3. Words that are "stale" (tested long ago).
+        
+        Data:
+        Words: ${JSON.stringify(wordStats)}
+        Recent Sessions: ${JSON.stringify(sessionSummary)}
+        
+        Return STRICTLY a JSON array of strings containing ONLY the IDs of the selected words.
+        Example: ["id1", "id2", "id3"]
+      `;
+
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Request timed out")), 8000)
+      );
+
+      // Race against the API call
+      const result: any = await Promise.race([
+        ai.models.generateContent({
+          model: 'gemini-1.5-flash', // Use stable standard model
+          contents: { parts: [{ text: prompt }] },
+          config: {
+            responseMimeType: "application/json"
+          }
+        }),
+        timeoutPromise
+      ]);
+
+      const response = result as any;
+      const text = response.text();
+      if (!text) return null;
+      
+      const selectedIds = JSON.parse(text);
+      if (Array.isArray(selectedIds)) {
+        return selectedIds;
+      }
+    } catch (error) {
+      console.error("Gemini optimization failed:", error);
+    }
+    return null; // Fallback to random/algorithm
   }
 }
