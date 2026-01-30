@@ -193,15 +193,15 @@ export class GeminiProvider implements AIService {
         Example: ["id1", "id2", "id3"]
       `;
 
-      // Create a timeout promise
+      // Create a timeout promise (15s to handle slow connections)
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Request timed out")), 8000)
+        setTimeout(() => reject(new Error("Request timed out")), 15000)
       );
 
       // Race against the API call
       const result: any = await Promise.race([
         ai.models.generateContent({
-          model: 'gemini-1.5-flash', // Use stable standard model
+          model: 'gemini-2.5-flash', // Use latest flash model for speed and reliability
           contents: { parts: [{ text: prompt }] },
           config: {
             responseMimeType: "application/json"

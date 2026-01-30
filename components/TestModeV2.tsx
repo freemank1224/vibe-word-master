@@ -320,28 +320,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         }
                     }
 
-                    // 2. Preload Audio (with Blob for zero-lag and CORS fallback)
+                    // 2. Preload Audio (direct src assignment to avoid CORS issues with Youdao)
+                    // Note: <audio> element can play cross-origin URLs, but fetch() cannot
                     if (audioUrl) {
                         try {
                             const audio = new Audio();
                             audio.preload = 'auto';
-
-                            // Try to fetch as blob for true "offline" memory cache
-                            // This ensures the audio is 100% loaded before proceeding
-                            try {
-                                const response = await fetch(audioUrl, { mode: 'cors' });
-                                if (response.ok) {
-                                    const blob = await response.blob();
-                                    const objUrl = URL.createObjectURL(blob);
-                                    objectUrlsRef.current.push(objUrl);
-                                    audio.src = objUrl;
-                                } else {
-                                    audio.src = audioUrl; // Fallback to direct URL if fetch fails
-                                }
-                            } catch (corsErr) {
-                                // Fallback for CORS restricted URLs
-                                audio.src = audioUrl;
-                            }
+                            audio.crossOrigin = 'anonymous'; // Try anonymous first
+                            audio.src = audioUrl;
 
                             await new Promise<void>((resolve) => {
                                 const timeoutId = setTimeout(() => resolve(), 10000); // 10s for audio
@@ -350,9 +336,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                     resolve();
                                 };
                                 audio.onerror = () => {
-                                    clearTimeout(timeoutId);
-                                    missingAud++;
-                                    resolve();
+                                    // If crossOrigin fails, retry without it
+                                    audio.crossOrigin = '';
+                                    audio.src = audioUrl;
+                                    audio.oncanplaythrough = () => {
+                                        clearTimeout(timeoutId);
+                                        resolve();
+                                    };
+                                    audio.onerror = () => {
+                                        clearTimeout(timeoutId);
+                                        missingAud++;
+                                        resolve();
+                                    };
+                                    audio.load();
                                 };
                                 audio.load(); // Force load
                             });
