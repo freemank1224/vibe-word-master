@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WordEntry, InputSession } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService'; 
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
-import { fetchDictionaryData } from '../services/dictionaryService';
+import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
 import { aiService } from '../services/ai';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { LargeWordInput } from './LargeWordInput';
@@ -296,37 +296,35 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             await Promise.all(batch.map(async (word) => {
                 if (!isMountedRef.current) return;
                 try {
-                    // 1. Fetch Audio Data if missing or low quality in DB
+                    // 1. Fetch Dictionary Data to get CORS-friendly audio URLs
                     let audioUrl = word.audio_url;
-                    const isLowQuality = !audioUrl || (!audioUrl.includes('dictvoice') && !audioUrl.startsWith('blob:'));
-
-                    if (isLowQuality) {
-                        try {
-                            const data = await fetchDictionaryData(word.text, word.language || 'en');
-                            if (data?.audioUrl) {
-                                audioUrl = data.audioUrl;
-                                word.audio_url = audioUrl; // Update local reference
-                                if (data.phonetic) word.phonetic = data.phonetic;
-                                
-                                // Save to DB for future use (Lazy update)
-                                updateWordMetadata(word.id, { 
-                                    audio_url: audioUrl, 
-                                    phonetic: data.phonetic || word.phonetic || undefined,
-                                    definition_en: data.definition_en || word.definition_en || undefined
-                                });
-                            }
-                        } catch (e) { 
-                            console.warn("Dictionary fetch failed for", word.text);
+                    
+                    // Always try to get better audio from dictionary API (CORS-friendly sources)
+                    try {
+                        const data = await fetchDictionaryData(word.text, word.language || 'en');
+                        if (data?.audioUrl) {
+                            audioUrl = data.audioUrl;
+                            word.audio_url = audioUrl; // Update local reference
+                            if (data.phonetic) word.phonetic = data.phonetic;
+                            
+                            // Save to DB for future use (Lazy update)
+                            updateWordMetadata(word.id, { 
+                                audio_url: audioUrl, 
+                                phonetic: data.phonetic || word.phonetic || undefined,
+                                definition_en: data.definition_en || word.definition_en || undefined
+                            });
                         }
+                    } catch (e) { 
+                        console.warn("Dictionary fetch failed for", word.text);
                     }
 
-                    // 2. Preload Audio (direct src assignment to avoid CORS issues with Youdao)
-                    // Note: <audio> element can play cross-origin URLs, but fetch() cannot
-                    if (audioUrl) {
+                    // 2. Preload Audio only if we have a CORS-friendly URL
+                    // Dictionary API provides URLs from sources like api.dictionaryapi.dev which support CORS
+                    if (audioUrl && !audioUrl.includes('youdao.com')) {
                         try {
                             const audio = new Audio();
                             audio.preload = 'auto';
-                            audio.crossOrigin = 'anonymous'; // Try anonymous first
+                            audio.crossOrigin = 'anonymous';
                             audio.src = audioUrl;
 
                             await new Promise<void>((resolve) => {
@@ -336,19 +334,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                     resolve();
                                 };
                                 audio.onerror = () => {
-                                    // If crossOrigin fails, retry without it
-                                    audio.crossOrigin = '';
-                                    audio.src = audioUrl;
-                                    audio.oncanplaythrough = () => {
-                                        clearTimeout(timeoutId);
-                                        resolve();
-                                    };
-                                    audio.onerror = () => {
-                                        clearTimeout(timeoutId);
-                                        missingAud++;
-                                        resolve();
-                                    };
-                                    audio.load();
+                                    clearTimeout(timeoutId);
+                                    missingAud++;
+                                    resolve();
                                 };
                                 audio.load(); // Force load
                             });
@@ -357,6 +345,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             missingAud++;
                         }
                     } else {
+                        // No preloadable audio - will use Speech Synthesis fallback at runtime
                         missingAud++;
                     }
 
@@ -478,13 +467,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     activeWordIdRef.current = word.id;
     
     // We already stop in the transition effect, but double-check here
-    // Note: Don't call stopAudio() here if it was already called to avoid redundant cycles
-    // but better safe than sorry.
     stopAudio();
     setIsPlayingAudio(true);
     
     try {
-        // Try cached audio first
+        // Try cached audio first (from preloading)
         const cachedAudio = resourceCacheRef.current.get(word.id);
         if (cachedAudio) {
             currentAudioSourceRef.current = cachedAudio;
@@ -499,74 +486,18 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             }
         }
 
-
-        // Fallback logic
-        let audioUrl = word.audio_url;
-        
-        // If no audio url, try to get it (but don't block if we can use TTS)
-        if (!audioUrl) {
-           // We'll proceed with TTS fallback immediately or fetch logic
-           // For responsiveness, maybe check if we have fetched data previously or fetch now
-           const dictData = await fetchDictionaryData(word.text).catch(() => null);
-           
-           // Double check: if user moved away, abort
-           if (activeWordIdRef.current !== word.id) return;
-
-           if (dictData?.audioUrl) {
-                audioUrl = dictData.audioUrl;
-                // Update in background
-                updateWordStatusV2(word.id, { 
-                    correct: word.correct,
-                    phonetic: dictData.phonetic, // ensure phonetic is updated
-                    audio_url: dictData.audioUrl,
-                    definition_en: dictData.definition_en
-                });
-           }
-        }
-
         // Double check before playing
         if (activeWordIdRef.current !== word.id) return;
 
-        if (audioUrl) {
-            const audio = new Audio(audioUrl);
-            currentAudioSourceRef.current = audio;
-            audio.onended = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
-            try {
-                await audio.play();
-            } catch (err) {
-                console.warn("Audio play failed, falling back to TTS", err);
-                // If audio fails, we might still be active, let's try TTS
-                if (activeWordIdRef.current !== word.id) return;
-                // fall through to TTS logic
-                throw new Error("Audio element failed");
-            }
-        } else {
-            // Fallback to AI Service / TTS
-            const audioResponse = await aiService.generateSpeech(word.text);
-            
-            // Double check: if user moved away, abort
-            if (activeWordIdRef.current !== word.id) return;
-
-            if (!audioResponse) throw new Error("No audio generated");
-
-            if (typeof audioResponse === 'string') {
-                const u = new SpeechSynthesisUtterance(audioResponse);
-                u.onend = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
-                u.onerror = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
-                window.speechSynthesis.speak(u);
-            } else {
-                if (!audioCtxRef.current) {
-                    audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-                }
-                const ctx = audioCtxRef.current;
-                
-                const source = ctx.createBufferSource();
-                source.buffer = audioResponse as AudioBuffer;
-                source.connect(ctx.destination);
-                source.onended = () => { if(isMountedRef.current) setIsPlayingAudio(false); };
-                source.start(0);
-                currentAudioSourceRef.current = source;
-            }
+        // Use the unified audio service that handles CORS issues
+        const success = await playWordAudioService(word.text, word.language || 'en');
+        
+        if (isMountedRef.current) {
+            setIsPlayingAudio(false);
+        }
+        
+        if (!success) {
+            console.warn("All audio methods failed for:", word.text);
         }
     } catch (e) {
         console.error("Audio playback error", e);

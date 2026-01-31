@@ -8,7 +8,7 @@ import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import TestModeV2 from './components/TestModeV2';
 import { aiService } from './services/ai';
-import { fetchDictionaryData } from './services/dictionaryService';
+import { fetchDictionaryData, playWordAudio as playWordAudioService } from './services/dictionaryService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
@@ -1585,48 +1585,13 @@ const InputMode: React.FC<{
       if (playingAudio) return;
       setPlayingAudio(text);
 
-      // 1. Try Dictionary API (Human Audio)
       try {
-          const dictData = await fetchDictionaryData(text);
-          if (dictData?.audioUrl) {
-               await new Promise<void>((resolve, reject) => {
-                   const audio = new Audio(dictData.audioUrl);
-                   audio.onended = () => resolve();
-                   audio.onerror = () => reject(new Error("Audio load failed"));
-                   audio.play().catch(reject);
-               });
-               setPlayingAudio(null);
-               return; 
-          }
+        // Use the new unified audio service that handles CORS issues
+        await playWordAudioService(text, 'en');
       } catch (e) {
-          console.warn("Dictionary audio unavailable, falling back to system TTS", e);
+        console.error("Audio playback error:", e);
       }
-
-      // 2. Fallback to System/AI TTS
-      try {
-          const audio = await aiService.generateSpeech(text);
-          if (audio) {
-            if (typeof audio === 'string') {
-                const u = new SpeechSynthesisUtterance(audio);
-                u.onend = () => setPlayingAudio(null);
-                u.onerror = () => setPlayingAudio(null);
-                window.speechSynthesis.speak(u);
-                return;
-            } else {
-                const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-                const source = ctx.createBufferSource();
-                source.buffer = audio;
-                source.connect(ctx.destination);
-                source.start(0);
-                source.onended = () => setPlayingAudio(null);
-                // Fallback for cleanup
-                setTimeout(() => setPlayingAudio(null), audio.duration * 1000 + 500);
-                return;
-            }
-          }
-      } catch (e) {
-          console.error("Audio error", e);
-      }
+      
       setPlayingAudio(null);
   };
 
