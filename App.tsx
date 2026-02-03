@@ -1586,7 +1586,7 @@ const InputMode: React.FC<{
       setPlayingAudio(text);
 
       try {
-        // Use the new unified audio service that handles CORS issues
+        // 直接使用本地 Web Speech API
         await playWordAudioService(text, 'en');
       } catch (e) {
         console.error("Audio playback error:", e);

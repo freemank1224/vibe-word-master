@@ -115,13 +115,17 @@ export interface AchievementStatus {
 export function calculateAchievements(words: WordEntry[], sessions: InputSession[]): AchievementStatus[] {
     // 1. Calculate base metrics
     
-    // Total Words
-    const totalWords = words.length;
+    // Total Words - ONLY count manually added words (tags includes 'Custom')
+    // Exclude words imported from dictionaries (Primary, CET4, etc.)
+    const manuallyAddedWords = words.filter(w => 
+        w.tags && w.tags.includes('Custom')
+    );
+    const totalManualWords = manuallyAddedWords.length;
     
-    // Total Correct Answers
+    // Total Correct Answers (all words, including library imports)
     const totalCorrect = words.filter(w => w.correct).length;
     
-    // Global Accuracy
+    // Global Accuracy (all words, including library imports)
     const testedWords = words.filter(w => w.tested);
     const globalAccuracy = testedWords.length > 0 
         ? Math.round((words.filter(w => w.correct).length / testedWords.length) * 100)
@@ -199,7 +203,7 @@ export function calculateAchievements(words: WordEntry[], sessions: InputSession
 
         switch (ach.id) {
             case 'p_novice':
-                current = totalWords;
+                current = totalManualWords; // Only manually added words
                 unlocked = current >= ach.maxProgress;
                 break;
             case 'p_consistency':
@@ -209,7 +213,7 @@ export function calculateAchievements(words: WordEntry[], sessions: InputSession
                 break;
             case 'p_hoarder':
             case 'p_builder':
-                current = totalWords;
+                current = totalManualWords; // Only manually added words
                 unlocked = current >= ach.maxProgress;
                 break;
             case 'a_bullseye':
