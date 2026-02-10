@@ -269,23 +269,34 @@ const App: React.FC = () => {
   };
   
   // Helper to update local stats state immediately after test
-  const updateLocalStats = (results: { correct: boolean }[]) => {
-      // FIX: Use local time instead of UTC (toISOString) to match the user's calendar view
+  const updateLocalStats = (results: { correct: boolean; score: number }[]) => {
+      // CRITICAL: Use client's local timezone for consistency with calendar view
+      // The database RPC will handle server-side timezone conversion separately
       const d = new Date();
       const year = d.getFullYear();
       const month = String(d.getMonth() + 1).padStart(2, '0');
       const day = String(d.getDate()).padStart(2, '0');
       const today = `${year}-${month}-${day}`;
 
+      // Update local stats immediately for instant UI feedback
       setDailyStats(prev => {
-          const current = prev[today] || { date: today, total: 0, correct: 0 };
-          
-          // Note: This matches the "Sync Logic" in SQL - Distinct words count?
-          // Actually, since we don't know easily if these specific words were ALREADY tested today locally without complex logic,
-          // for the *immediate UI feedback* we might just assume we refresh stats or accept slight lag.
-          // BUT: The user wants ACCURATE stats.
-          // The best way: Start a background fetch of stats after test completes.
-          return prev; 
+          const current = prev[today] || { date: today, total: 0, correct: 0, points: 0 };
+
+          // Calculate new totals based on test results
+          const correctCount = results.filter(r => r.correct).length;
+          const currentTestPoints = results.reduce((sum, r) => sum + (r.score || 0), 0);
+
+          // CRITICAL FIX: Accumulate points properly!
+          // Previous bug: points was replaced instead of accumulated
+          return {
+              ...prev,
+              [today]: {
+                  date: today,
+                  total: current.total + results.length,
+                  correct: current.correct + correctCount,
+                  points: current.points + currentTestPoints  // ✅ Now accumulates correctly
+              }
+          };
       });
       // Trigger a fetch to get authoritative stats from DB (Sync outcome)
       if (session?.user) {
@@ -293,14 +304,14 @@ const App: React.FC = () => {
              fetchUserStats(session.user.id).then(stats => {
                 const fetchedMap: Record<string, DayStats> = {};
                 stats.forEach((s: any) => {
-                    fetchedMap[s.date] = { 
-                        date: s.date, 
-                        total: s.total, 
-                        correct: s.correct,
-                        points: s.points 
+                    fetchedMap[s.date] = {
+                        date: s.date,
+                        total: s.total_count || s.total || 0,
+                        correct: s.correct_count || s.correct || 0,
+                        points: s.points || s.total_points || 0
                     };
                 });
-                
+
                 // CRITICAL FIX: Only update TODAY'S data to prevent history flicker.
                 // We freeze historical data displayed on screen to ensure stability.
                 setDailyStats(prev => {
@@ -310,8 +321,11 @@ const App: React.FC = () => {
                     }
                     return newStats;
                 });
+             }).catch(err => {
+                 console.error("Failed to fetch updated stats from DB:", err);
+                 // Keep local update on error
              });
-          }, 1000); // Small delay to allow DB trigger/RPC to finish
+          }, 2000); // Increased delay to allow DB trigger/RPC to finish
       }
   };
 
@@ -680,7 +694,7 @@ const App: React.FC = () => {
             onUpdateWord={(id, updates) => {
                 setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
             }}
-            onComplete={(results) => {
+            onComplete={(results: { id: string; correct: boolean; score: number }[]) => {
               updateLocalStats(results);
               setMode('DASHBOARD');
             }}
