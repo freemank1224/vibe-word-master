@@ -28,3 +28,6 @@ dist-ssr
 *.sln
 *.sw?
 # Keep migration files - they should be version controlled
+
+# Archive directory - keep locally but don't commit to git
+archive/
