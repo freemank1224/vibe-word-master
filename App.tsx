@@ -118,7 +118,12 @@ const App: React.FC = () => {
           // Map DB daily_stats array to Record<string, DayStats>
           const statsMap: Record<string, DayStats> = {};
           stats.forEach((s: any) => {
-              statsMap[s.date] = { date: s.date, total: s.total, correct: s.correct };
+              statsMap[s.date] = {
+                  date: s.date,
+                  total: s.total_count || s.total,  // Use total_count from DB
+                  correct: s.correct_count || s.correct,  // Use correct_count from DB
+                  points: s.points || s.total_points || 0  // Use points from DB
+              };
           });
           setDailyStats(statsMap);
         })

@@ -1,0 +1,63 @@
+# Supabase MCP 配置说明
+
+## 问题
+当前 MCP 只能访问 AdventureAI 组织，无法访问 EducationIdeas 组织。
+
+## 解决方案
+
+### 步骤 1: 生成 EducationIdeas Access Token
+
+1. 访问 https://app.supabase.com/org/_/settings/tokens
+2. 切换到 EducationIdeas 组织（左上角组织选择器）
+3. 点击 "Generate New Token"
+4. 名称: `Claude Code MCP - EducationIdeas`
+5. 点击 "Generate"
+6. **立即复制 token**（只显示一次！）
+
+### 步骤 2: 更新 .mcp.json 配置
+
+将 .mcp.json 文件更新为：
+
+```json
+{
+  "mcpServers": {
+    "supabase": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_EDUCATIONIDEAS_ACCESS_TOKEN_HERE"
+      }
+    }
+  }
+}
+```
+
+**重要**: 将 `YOUR_EDUCATIONIDEAS_ACCESS_TOKEN_HERE` 替换为你刚复制的 token。
+
+### 步骤 3: 重启 VS Code / MCP 服务器
+
+1. 关闭 VS Code
+2. 重新打开 VS Code
+3. MCP 会重新加载配置
+
+### 步骤 4: 验证连接
+
+让 Claude 运行：
+```bash
+mcp__supabase__list_organizations
+```
+
+应该能看到 EducationIdeas 组织。
+
+---
+
+## 临时替代方案
+
+如果配置 MCP 遇到问题，可以直接在浏览器执行 SQL：
+
+参考: [QUICK_FIX_GUIDE.md](QUICK_FIX_GUIDE.md)
+
+1. 打开 https://app.supabase.com/project/mkdxdlsjisqazermmfoe/sql
+2. 复制 safe_fix_frontend_backend_mismatch.sql 的内容
+3. 执行脚本
+4. 刷新浏览器验证
