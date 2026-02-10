@@ -3,10 +3,13 @@
  * Provides high-quality word pronunciation with automatic fallback
  *
  * Production deployment strategy:
- * 1. Try Supabase Edge Function proxy (bypasses CORS)
- * 2. Fallback to direct API access (may work locally)
- * 3. Final fallback to browser TTS
+ * 1. Try persistent cache (localStorage) - INSTANT
+ * 2. Try Supabase Edge Function proxy (bypasses CORS)
+ * 3. Fallback to direct API access (may work locally)
+ * 4. Final fallback to browser TTS
  */
+
+import { audioCacheManager } from './audioCache';
 
 export interface PronunciationSource {
   name: string;
@@ -194,9 +197,10 @@ const sources: PronunciationSource[] = [
 ];
 
 /**
- * Audio cache to prevent re-fetching the same URLs
+ * Audio element cache to prevent re-creating HTMLAudioElements
+ * Stores the actual audio instances (separate from URL cache)
  */
-const audioCache = new Map<string, { audio: HTMLAudioElement; url: string }>();
+const audioElementCache = new Map<string, HTMLAudioElement>();
 
 /**
  * Current playing audio for cleanup
@@ -216,6 +220,22 @@ export const playWordPronunciation = async (
 
   // Stop any currently playing audio
   await stopCurrentAudio();
+
+  // Check persistent cache first (instant playback)
+  console.log(`🔍 Checking persistent cache for "${word}"...`);
+  const cachedUrl = audioCacheManager.get(word, lang);
+  if (cachedUrl) {
+    console.log(`🎯 Persistent cache hit for "${word}": ${cachedUrl}`);
+    const success = await playAudioFromUrl(cachedUrl, cacheKey, word);
+    if (success) {
+      return { success: true, sourceUsed: 'Persistent Cache' };
+    }
+    // Cache URL is invalid, remove it
+    audioCacheManager.delete(word, lang);
+    console.warn(`⚠️ Persistent cache URL expired for "${word}", re-fetching...`);
+  } else {
+    console.log(`❌ No persistent cache found for "${word}"`);
+  }
 
   // Sort sources by priority, but prioritize preferred source if specified
   let sortedSources = [...sources].sort((a, b) => a.priority - b.priority);
@@ -253,8 +273,19 @@ export const playWordPronunciation = async (
 
       // Try to play audio from URL
       const success = await playAudioFromUrl(audioUrl, cacheKey, word);
+      console.log(`📢 playAudioFromUrl returned: ${success}`);
       if (success) {
         console.log(`✅ Success using: ${source.name}`);
+
+        // Save to persistent cache for future instant playback
+        console.log(`💾 Saving to cache: word="${word}", lang="${lang}", url="${audioUrl}", source="${source.name}"`);
+        audioCacheManager.set(word, lang, audioUrl, source.name);
+        console.log(`💾 Cached URL for "${word}" from ${source.name}`);
+
+        // Verify cache was saved
+        const verifyCache = audioCacheManager.get(word, lang);
+        console.log(`✅ Cache verification: ${verifyCache ? 'SAVED' : 'FAILED'}`);
+
         return { success: true, sourceUsed: source.name };
       }
 
@@ -279,19 +310,19 @@ const playAudioFromUrl = async (
 ): Promise<boolean> => {
   return new Promise((resolve) => {
     try {
-      // Check cache first but verify URL hasn't changed
-      const cached = audioCache.get(cacheKey);
+      // Check audio element cache (separate from persistent URL cache)
       let audio: HTMLAudioElement;
+      const cachedAudio = audioElementCache.get(cacheKey);
 
-      if (cached && cached.url === url) {
-        audio = cached.audio;
-        console.log(`♻️ Using cached audio for "${word}"`);
+      if (cachedAudio && cachedAudio.src === url) {
+        audio = cachedAudio;
+        console.log(`♻️ Using cached audio element for "${word}"`);
       } else {
         audio = new Audio(url);
         // Enable CORS for audio
         audio.crossOrigin = 'anonymous';
-        audioCache.set(cacheKey, { audio, url });
-        console.log(`🆕 Creating new audio for "${word}"`);
+        audioElementCache.set(cacheKey, audio);
+        console.log(`🆕 Creating new audio element for "${word}"`);
       }
 
       // Set up event handlers
@@ -422,11 +453,11 @@ const playWithWebSpeech = async (word: string, lang: string): Promise<boolean> =
 export const stopCurrentAudio = async (): Promise<void> => {
   // Stop HTML audio
   if (currentPlayingKey) {
-    const cached = audioCache.get(currentPlayingKey);
-    if (cached?.audio) {
+    const cachedAudio = audioElementCache.get(currentPlayingKey);
+    if (cachedAudio) {
       try {
-        cached.audio.pause();
-        cached.audio.currentTime = 0;
+        cachedAudio.pause();
+        cachedAudio.currentTime = 0;
         console.log('⏸️ Stopped audio playback');
       } catch (e) {
         console.warn('⚠️ Error stopping audio:', e);
@@ -457,7 +488,8 @@ export const getAvailableSources = (): PronunciationSource[] => {
  * Clear audio cache (useful for memory management)
  */
 export const clearAudioCache = (): void => {
-  audioCache.forEach(({ audio }) => {
+  // Clear audio element cache (memory)
+  audioElementCache.forEach((audio) => {
     try {
       audio.pause();
       audio.src = '';
@@ -465,8 +497,12 @@ export const clearAudioCache = (): void => {
       // Ignore errors
     }
   });
-  audioCache.clear();
-  console.log('🗑️ Cleared audio cache');
+  audioElementCache.clear();
+
+  // Clear persistent URL cache (localStorage)
+  audioCacheManager.clear();
+
+  console.log('🗑️ Cleared all audio caches (memory + persistent)');
 };
 
 /**
@@ -484,8 +520,12 @@ export const preloadAudio = async (word: string, lang: string = 'en'): Promise<b
       const audio = new Audio(url);
       audio.crossOrigin = 'anonymous';
       audio.preload = 'auto';
-      audioCache.set(cacheKey, { audio, url });
+      audioElementCache.set(cacheKey, audio);
       console.log(`📥 Preloaded audio for "${word}" from ${source.name}`);
+
+      // Also save to persistent cache
+      audioCacheManager.set(word, lang, url, source.name);
+
       return true;
     } catch (error) {
       console.warn(`⚠️ Preload failed from ${source.name}:`, error);
