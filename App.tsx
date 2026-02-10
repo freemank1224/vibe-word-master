@@ -1239,13 +1239,21 @@ const LibraryMode: React.FC<{
             if (saved) {
                 const parsed = JSON.parse(saved);
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                    return new Set(parsed);
+                    // 如果保存的选择中没有 'All'，强制添加 'All'
+                    // 确保用户看到所有单词
+                    const libSet = new Set(parsed);
+                    if (!libSet.has('All')) {
+                        console.log('[LibraryMode] Auto-upgrading to show all words');
+                        return new Set(['All']);
+                    }
+                    return libSet;
                 }
             }
         } catch (e) {
             console.error('Failed to load saved library selection:', e);
         }
-        return new Set(['Custom']);
+        // 默认选择 'All'，显示所有单词
+        return new Set(['All']);
     });
 
     // Save library selection whenever it changes
@@ -1283,7 +1291,17 @@ const LibraryMode: React.FC<{
         return [...libraryFilteredWords].sort((a, b) => a.text.localeCompare(b.text));
     }, [libraryFilteredWords]);
 
-    const filteredWords = sortedWords.filter(w => w.text.toLowerCase().includes(searchTerm.toLowerCase()));
+    const filteredWords = useMemo(() => {
+        const result = sortedWords.filter((w: WordEntry) => w.text.toLowerCase().includes(searchTerm.toLowerCase()));
+        console.log('[LibraryMode] Filter stats:', {
+            totalWords: words.length,
+            libraryFiltered: libraryFilteredWords.length,
+            sortedWords: sortedWords.length,
+            searchTerm: searchTerm || '(empty)',
+            filteredWords: result.length
+        });
+        return result;
+    }, [sortedWords, searchTerm, words.length, libraryFilteredWords.length]);
 
     // Group by letter
     const grouped = useMemo(() => {
@@ -1360,7 +1378,7 @@ const LibraryMode: React.FC<{
                      </button>
                      <div>
                         <h2 className="font-headline text-3xl text-white tracking-wide">LIBRARY</h2>
-                        <p className="font-mono text-[10px] text-text-dark uppercase">{libraryFilteredWords.length} WORDS ({selectedLibraries.has('All') ? 'ALL' : Array.from(selectedLibraries).join('+')})</p>
+                        <p className="font-mono text-[10px] text-text-dark uppercase">{new Set(words.map((w: WordEntry) => w.text)).size} UNIQUE WORDS ({selectedLibraries.has('All') ? 'SHOWING ALL' : `FILTERED: ${libraryFilteredWords.length}`})</p>
                      </div>
                 </div>
 
