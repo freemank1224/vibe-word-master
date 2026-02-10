@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
+        // Server-side environment variables (for Node.js scripts)
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.OPENAI_API_KEY': JSON.stringify(env.OPENAI_API_KEY),
@@ -33,6 +34,10 @@ export default defineConfig(({ mode }) => {
         'process.env.OPENAI_ENDPOINT': JSON.stringify(env.OPENAI_ENDPOINT || 'https://api.openai.com/v1'),
         'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL),
         'process.env.SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY),
+
+        // Client-side environment variables (expose VITE_* to import.meta.env)
+        'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(env.SUPABASE_URL),
+        'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY),
       },
       resolve: {
         alias: {

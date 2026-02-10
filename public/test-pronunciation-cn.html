@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>发音服务测试 - 中国可用API</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 20px;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+      color: #fff;
+      min-height: 100vh;
+    }
+
+    .container {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    h1 {
+      color: #3b82f6;
+      margin-bottom: 8px;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      color: #9ca3af;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    .test-section {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .test-section h3 {
+      margin-bottom: 16px;
+      font-size: 18px;
+      color: #10b981;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.3);
+      color: #fff;
+      transition: all 0.2s;
+    }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #3b82f6;
+      background: rgba(0, 0, 0, 0.5);
+    }
+
+    button {
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .play-btn {
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: #fff;
+    }
+
+    .play-btn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+
+    .play-btn:disabled {
+      background: #374151;
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .source-display {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .source-badge {
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .source-youdao { background: #ef4444; color: #fff; }
+    .source-iciba { background: #f59e0b; color: #fff; }
+    .source-dictcn { background: #10b981; color: #fff; }
+    .source-edu { background: #8b5cf6; color: #fff; }
+    .source-vocab { background: #ec4899; color: #fff; }
+    .source-browser { background: #6b7280; color: #fff; }
+    .source-none { background: #374151; color: #9ca3af; }
+
+    .test-words {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .test-word-btn {
+      padding: 8px 16px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: #d1d5db;
+    }
+
+    .test-word-btn:hover {
+      background: rgba(59, 130, 246, 0.2);
+      border-color: #3b82f6;
+      color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .log-container {
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'SFMono-Regular', Consolas, Monaco, monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .log-container::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .log-container::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 4px;
+    }
+
+    .log-container::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
+
+    .log-entry {
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      animation: fadeIn 0.3s ease-in;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .log-success { color: #10b981; }
+    .log-error { color: #ef4444; }
+    .log-warning { color: #f59e0b; }
+    .log-info { color: #3b82f6; }
+
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+
+    .status-ready { background: #10b981; box-shadow: 0 0 8px #10b981; }
+    .status-playing { background: #3b82f6; box-shadow: 0 0 8px #3b82f6; animation: pulse 1s infinite; }
+    .status-error { background: #ef4444; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .info-box {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: #93c5fd;
+    }
+
+    .info-box strong {
+      color: #3b82f6;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔊 发音服务测试</h1>
+    <p class="subtitle">中国境内可访问的英语单词发音API测试工具</p>
+
+    <div class="info-box">
+      <strong>ℹ️ 发音源优先级：</strong>
+      有道词典 → 金山词霸 → 海词词典 → 教育资源 → Vocabulary.com → 浏览器TTS（兜底）
+    </div>
+
+    <div class="test-section">
+      <h3>📝 测试单词发音</h3>
+      <div class="input-group">
+        <input type="text" id="wordInput" placeholder="输入要测试的单词..." value="hello">
+        <button class="play-btn" id="playBtn">
+          <span id="statusIndicator" class="status-indicator status-ready"></span>
+          <span id="btnText">播放发音</span>
+        </button>
+      </div>
+      <div class="source-display">
+        <span>使用音源：</span>
+        <span id="sourceUsed" class="source-badge source-none">-</span>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <p style="color: #9ca3af; font-size: 13px; margin-bottom: 8px;">快速测试词：</p>
+        <div class="test-words">
+          <button class="test-word-btn" data-word="hello">hello</button>
+          <button class="test-word-btn" data-word="pronunciation">pronunciation</button>
+          <button class="test-word-btn" data-word="algorithm">algorithm</button>
+          <button class="test-word-btn" data-word="schedule">schedule</button>
+          <button class="test-word-btn" data-word="beautiful">beautiful</button>
+          <button class="test-word-btn" data-word="through">through</button>
+          <button class="test-word-btn" data-word="colonel">colonel</button>
+          <button class="test-word-btn" data-word="entrepreneur">entrepreneur</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h3>📋 活动日志</h3>
+      <div class="log-container" id="logContainer">
+        <div class="log-entry log-info">✅ 发音服务已初始化</div>
+        <div class="log-entry log-info">🌐 所有API均为中国境内可访问服务</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Import the pronunciation service
+    import { playWordPronunciation, getAvailableSources } from './services/pronunciationService.ts';
+
+    const wordInput = document.getElementById('wordInput');
+    const playBtn = document.getElementById('playBtn');
+    const sourceUsed = document.getElementById('sourceUsed');
+    const logContainer = document.getElementById('logContainer');
+    const statusIndicator = document.getElementById('statusIndicator');
+    const btnText = document.getElementById('btnText');
+
+    function log(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry log-${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logContainer.insertBefore(entry, logContainer.firstChild);
+
+      // Keep only last 50 entries
+      while (logContainer.children.length > 50) {
+        logContainer.removeChild(logContainer.lastChild);
+      }
+    }
+
+    function updateStatus(status) {
+      statusIndicator.className = 'status-indicator';
+      if (status === 'ready') {
+        statusIndicator.classList.add('status-ready');
+        btnText.textContent = '播放发音';
+        playBtn.disabled = false;
+      } else if (status === 'playing') {
+        statusIndicator.classList.add('status-playing');
+        btnText.textContent = '播放中...';
+        playBtn.disabled = true;
+      } else if (status === 'error') {
+        statusIndicator.classList.add('status-error');
+        btnText.textContent = '播放失败';
+        playBtn.disabled = false;
+      }
+    }
+
+    function setSourceBadge(sourceName) {
+      sourceUsed.textContent = sourceName;
+      sourceUsed.className = 'source-badge';
+
+      const sourceMap = {
+        'Youdao Dictionary (CN)': 'source-youdao',
+        'iCiba Dictionary (CN)': 'source-iciba',
+        'Dict.cn (CN)': 'source-dictcn',
+        'Edu.123听力 (CN)': 'source-edu',
+        'Vocabulary.com': 'source-vocab',
+        'Browser TTS (Optimized)': 'source-browser',
+        'None': 'source-none'
+      };
+
+      const badgeClass = sourceMap[sourceName];
+      if (badgeClass) {
+        sourceUsed.classList.add(badgeClass);
+      }
+    }
+
+    async function playWord() {
+      const word = wordInput.value.trim();
+      if (!word) {
+        log('⚠️ 请输入要测试的单词', 'warning');
+        return;
+      }
+
+      updateStatus('playing');
+      setSourceBadge('加载中...');
+      log(`🔊 开始播放: "${word}"`, 'info');
+
+      try {
+        const result = await playWordPronunciation(word, 'en');
+
+        if (result.success) {
+          log(`✅ 成功播放 "${word}" - 使用音源: ${result.sourceUsed}`, 'success');
+          setSourceBadge(result.sourceUsed);
+          updateStatus('ready');
+        } else {
+          log(`❌ 播放失败 "${word}" - 所有音源均不可用`, 'error');
+          setSourceBadge('None');
+          updateStatus('error');
+        }
+      } catch (error) {
+        log(`❌ 错误: ${error.message}`, 'error');
+        setSourceBadge('None');
+        updateStatus('error');
+      }
+    }
+
+    playBtn.addEventListener('click', playWord);
+
+    wordInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') playWord();
+    });
+
+    // Quick test word buttons
+    document.querySelectorAll('.test-word-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        wordInput.value = btn.dataset.word;
+        playWord();
+      });
+    });
+
+    // Log available sources on load
+    log('📋 可用发音源列表（按优先级排序）:', 'info');
+    getAvailableSources().forEach(source => {
+      log(`  ${source.priority}. ${source.name}`, 'info');
+    });
+  </script>
+</body>
+</html>

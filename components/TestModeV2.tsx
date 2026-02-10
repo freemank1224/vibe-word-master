@@ -3,6 +3,7 @@ import { WordEntry, InputSession } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService'; 
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
+import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
 import { aiService } from '../services/ai';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { LargeWordInput } from './LargeWordInput';
@@ -270,6 +271,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             } catch (e) {}
         }
         window.speechSynthesis.cancel();
+        clearAudioCache(); // Clear pronunciation service cache
     };
   }, []);
 
@@ -396,7 +398,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             audio.currentTime = 0;
         } catch (e) { /* ignore */ }
     });
-    
+
     // 2. Stop ad-hoc audio (TTS or non-cached)
     if (currentAudioSourceRef.current) {
         try {
@@ -411,9 +413,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         }
         currentAudioSourceRef.current = null;
     }
-    
-    // 3. Stop System TTS
+
+    // 3. Stop System TTS and new pronunciation service
     window.speechSynthesis.cancel();
+    stopPronunciationAudio(); // Stop new pronunciation service audio
     setIsPlayingAudio(false);
   }, []);
 

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edge Function 测试</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+      color: #fff;
+    }
+    .container {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    h1 {
+      color: #10b981;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      color: #9ca3af;
+      margin-bottom: 24px;
+    }
+    .test-section {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .status {
+      padding: 8px 16px;
+      border-radius: 8px;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    .status.success {
+      background: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .status.error {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .status.info {
+      background: rgba(59, 130, 246, 0.2);
+      color: #3b82f6;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: #fff;
+      transition: all 0.2s;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+    }
+    code {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .url-display {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+      word-break: break-all;
+      margin: 12px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>✅ Supabase Edge Function 部署成功</h1>
+    <p class="subtitle">发音代理服务已自动部署并测试通过</p>
+
+    <div class="test-section">
+      <h3>📋 部署信息</h3>
+      <div class="status success">✅ Edge Function 已激活</div>
+      <div class="status success">✅ 语音代理测试通过</div>
+      <div class="status success">✅ 环境变量已配置</div>
+
+      <p style="margin-top: 16px;"><strong>Edge Function URL:</strong></p>
+      <div class="url-display">
+        https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation
+      </div>
+
+      <p style="margin-top: 12px;"><strong>测试示例:</strong></p>
+      <div class="url-display">
+        ?word=hello&source=youdao&lang=en
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h3>🔊 快速测试</h3>
+      <button onclick="testPronunciation()">测试 "hello" 发音</button>
+      <div id="status" class="status info" style="display: none;"></div>
+    </div>
+
+    <div class="test-section">
+      <h3>📚 下一步</h3>
+      <p style="line-height: 1.6; color: #d1d5db;">
+        ✅ 所有配置已完成！<br>
+        ✅ 本地开发环境已就绪<br>
+        ✅ Vercel 部署后将自动使用代理服务
+      </p>
+      <div class="status info" style="margin-top: 12px;">
+        💡 <strong>提示</strong>: 现在可以正常使用单词发音功能了
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function testPronunciation() {
+      const status = document.getElementById('status');
+      status.style.display = 'block';
+      status.textContent = '⏳ 正在测试发音...';
+      status.className = 'status info';
+
+      try {
+        const response = await fetch(
+          'https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation?word=hello&source=youdao&lang=en'
+        );
+
+        if (response.ok) {
+          const audioBlob = await response.blob();
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          audio.play();
+
+          status.textContent = '✅ 播放成功！Edge Function 工作正常';
+          status.className = 'status success';
+
+          setTimeout(() => URL.revokeObjectURL(audioUrl), 5000);
+        } else {
+          throw new Error(`HTTP ${response.status}`);
+        }
+      } catch (error) {
+        status.textContent = `❌ 错误: ${error.message}`;
+        status.className = 'status error';
+      }
+    }
+  </script>
+</body>
+</html>

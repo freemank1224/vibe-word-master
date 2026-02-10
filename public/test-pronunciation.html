@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pronunciation Service Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #0a0a0a;
+      color: #fff;
+    }
+    .test-container {
+      background: #111;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      border: 1px solid #222;
+    }
+    h1 {
+      color: #3b82f6;
+      margin-bottom: 24px;
+    }
+    .word-input {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 16px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: #fff;
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .play-btn {
+      background: #3b82f6;
+      color: #fff;
+    }
+    .play-btn:hover {
+      background: #2563eb;
+    }
+    .play-btn:disabled {
+      background: #333;
+      cursor: not-allowed;
+    }
+    .source-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      background: #222;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: monospace;
+      margin-left: 8px;
+    }
+    .source-badge.google { background: #4285f4; color: #fff; }
+    .source-badge.cambridge { background: #059669; color: #fff; }
+    .source-badge.dictionary { background: #7c3aed; color: #fff; }
+    .source-badge.youdao { background: #dc2626; color: #fff; }
+    .source-badge.fallback { background: #6b7280; color: #fff; }
+
+    .log-container {
+      background: #1a1a1a;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #333;
+    }
+    .log-entry {
+      padding: 4px 0;
+      border-bottom: 1px solid #222;
+    }
+    .log-entry.success { color: #22c55e; }
+    .log-entry.error { color: #ef4444; }
+    .log-entry.info { color: #3b82f6; }
+
+    .test-words {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .test-word-btn {
+      padding: 6px 12px;
+      background: #222;
+      border: 1px solid #333;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .test-word-btn:hover {
+      background: #333;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔊 Pronunciation Service Test</h1>
+
+  <div class="test-container">
+    <h3>Test a Word</h3>
+    <div class="word-input">
+      <input type="text" id="wordInput" placeholder="Enter a word to test..." value="hello">
+      <button class="play-btn" id="playBtn">▶ Play</button>
+    </div>
+    <div>
+      <span>Source: <span id="sourceUsed" class="source-badge">-</span></span>
+    </div>
+
+    <h4 style="margin-top: 20px;">Quick Test Words:</h4>
+    <div class="test-words">
+      <button class="test-word-btn" data-word="hello">hello</button>
+      <button class="test-word-btn" data-word="pronunciation">pronunciation</button>
+      <button class="test-word-btn" data-word="algorithm">algorithm</button>
+      <button class="test-word-btn" data-word="schedule">schedule</button>
+      <button class="test-word-btn" data-word="restaurant">restaurant</button>
+      <button class="test-word-btn" data-word="beautiful">beautiful</button>
+      <button class="test-word-btn" data-word="through">through</button>
+      <button class="test-word-btn" data-word="colonel">colonel</button>
+    </div>
+  </div>
+
+  <div class="test-container">
+    <h3>Activity Log</h3>
+    <div class="log-container" id="logContainer">
+      <div class="log-entry info">Ready to test pronunciation service...</div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Import the pronunciation service
+    import { playWordPronunciation, getAvailableSources } from './services/pronunciationService.ts';
+
+    const wordInput = document.getElementById('wordInput');
+    const playBtn = document.getElementById('playBtn');
+    const sourceUsed = document.getElementById('sourceUsed');
+    const logContainer = document.getElementById('logContainer');
+
+    function log(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logContainer.insertBefore(entry, logContainer.firstChild);
+    }
+
+    async function playWord() {
+      const word = wordInput.value.trim();
+      if (!word) {
+        log('Please enter a word', 'error');
+        return;
+      }
+
+      playBtn.disabled = true;
+      playBtn.textContent = '⏳ Playing...';
+      sourceUsed.textContent = 'Loading...';
+      sourceUsed.className = 'source-badge';
+
+      log(`Playing pronunciation for "${word}"...`, 'info');
+
+      try {
+        const result = await playWordPronunciation(word, 'en');
+
+        if (result.success) {
+          log(`✓ Successfully played "${word}" using ${result.sourceUsed}`, 'success');
+          sourceUsed.textContent = result.sourceUsed;
+
+          // Set badge color based on source
+          const sourceMap = {
+            'Google Translate TTS': 'google',
+            'Cambridge Dictionary': 'cambridge',
+            'DictionaryAPI.dev': 'dictionary',
+            'Youdao Dictionary': 'youdao',
+            'Web Speech API (Fallback)': 'fallback'
+          };
+          sourceUsed.classList.add(sourceMap[result.sourceUsed] || '');
+        } else {
+          log(`✗ Failed to play "${word}" - All sources failed`, 'error');
+          sourceUsed.textContent = 'Failed';
+          sourceUsed.className = 'source-badge fallback';
+        }
+      } catch (error) {
+        log(`✗ Error: ${error.message}`, 'error');
+        sourceUsed.textContent = 'Error';
+        sourceUsed.className = 'source-badge fallback';
+      } finally {
+        playBtn.disabled = false;
+        playBtn.textContent = '▶ Play';
+      }
+    }
+
+    playBtn.addEventListener('click', playWord);
+
+    wordInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') playWord();
+    });
+
+    // Quick test word buttons
+    document.querySelectorAll('.test-word-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        wordInput.value = btn.dataset.word;
+        playWord();
+      });
+    });
+
+    // Log available sources on load
+    log('Available pronunciation sources:', 'info');
+    getAvailableSources().forEach(source => {
+      log(`  - ${source.name} (Priority: ${source.priority})`, 'info');
+    });
+  </script>
+</body>
+</html>

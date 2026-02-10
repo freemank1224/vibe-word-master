@@ -6,34 +6,38 @@ export interface DictionaryData {
 }
 
 /**
- * Play word audio using Web Speech API (browser built-in TTS)
- * This is a reliable local method that doesn't require external APIs
+ * Play word audio using enhanced pronunciation service
+ * Uses multiple high-quality sources with automatic fallback:
+ * 1. Google Translate TTS (Natural AI voices)
+ * 2. Cambridge Dictionary (Human recordings)
+ * 3. DictionaryAPI.dev (Mixed sources)
+ * 4. Youdao Dictionary (Alternative)
+ * 5. Web Speech API (System fallback)
  */
 export const playWordAudio = async (word: string, lang: string = 'en'): Promise<boolean> => {
-  return new Promise((resolve) => {
+  try {
+    const { playWordPronunciation } = await import('./pronunciationService');
+    const result = await playWordPronunciation(word, lang);
+    console.log(`Pronunciation played using: ${result.sourceUsed}`);
+    return result.success;
+  } catch (error) {
+    console.error('Pronunciation service error:', error);
+    // Fallback to Web Speech API if service fails to load
     if (!window.speechSynthesis) {
-      console.warn('Speech synthesis not supported');
-      resolve(false);
-      return;
+      return false;
     }
-    
-    // Stop any currently speaking synthesis
-    window.speechSynthesis.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(word);
-    utterance.lang = lang === 'en' ? 'en-US' : lang;
-    utterance.rate = 0.8; // Slightly slower for clarity
-    utterance.volume = 0.8;
-    utterance.pitch = 1;
-    
-    utterance.onend = () => resolve(true);
-    utterance.onerror = (e) => {
-      console.warn('Speech synthesis error:', e);
-      resolve(false);
-    };
-    
-    window.speechSynthesis.speak(utterance);
-  });
+    return new Promise((resolve) => {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(word);
+      utterance.lang = lang === 'en' ? 'en-US' : lang;
+      utterance.rate = 0.8;
+      utterance.volume = 0.8;
+      utterance.pitch = 1;
+      utterance.onend = () => resolve(true);
+      utterance.onerror = () => resolve(false);
+      window.speechSynthesis.speak(utterance);
+    });
+  }
 };
 
 export const fetchDictionaryData = async (word: string, lang: string = 'en'): Promise<DictionaryData | null> => {
