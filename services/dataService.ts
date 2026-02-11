@@ -406,15 +406,76 @@ export const syncDailyStats = async () => {
     const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
 
     // Try the new dynamic function first
-    const { error } = await supabase.rpc('sync_todays_stats_with_timezone', { 
-      p_timezone_offset_hours: offsetHours 
-    }); 
-    
+    const { error } = await supabase.rpc('sync_todays_stats_with_timezone', {
+      p_timezone_offset_hours: offsetHours
+    });
+
     // Fallback to old function if new one doesn't exist yet (during migration)
     if (error) {
        console.warn("Dynamic sync failed, falling back to static:", error.message);
-       await supabase.rpc('sync_todays_stats'); 
+       await supabase.rpc('sync_todays_stats');
     }
+};
+
+/**
+ * ✨ NEW: Record a test session and incrementally update statistics
+ * This is the preferred method for recording test results
+ * @param userId - User ID
+ * @param testCount - Number of words tested in this session
+ * @param correctCount - Number of correct answers in this session
+ * @param points - Points earned in this session
+ * @returns The updated aggregated statistics
+ */
+export const recordTestAndSyncStats = async (
+    testCount: number,
+    correctCount: number,
+    points: number
+) => {
+    const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
+
+    // Get current user ID
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.id) {
+        throw new Error('User not authenticated');
+    }
+
+    // Call the new RPC function that records the test and syncs stats
+    const { data, error } = await supabase.rpc('record_test_and_sync_stats', {
+        p_test_count: testCount,
+        p_correct_count: correctCount,
+        p_points: points,
+        p_timezone_offset_hours: offsetHours
+    });
+
+    if (error) {
+        console.error("Error recording test and syncing stats:", error.message);
+        // Fallback to old method
+        console.warn("Falling back to legacy sync method");
+        await syncDailyStats();
+        return null;
+    }
+
+    // Return the synced stats (first row if multiple)
+    return Array.isArray(data) && data.length > 0 ? data[0] : data;
+};
+
+/**
+ * ✨ NEW: Get today's statistics (aggregated from test records)
+ * This returns accurate incremental statistics
+ */
+export const getTodaysStats = async () => {
+    const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
+
+    const { data, error } = await supabase.rpc('get_todays_stats', {
+        p_timezone_offset_hours: offsetHours
+    });
+
+    if (error) {
+        console.error("Error fetching today's stats:", error.message);
+        return null;
+    }
+
+    return Array.isArray(data) && data.length > 0 ? data[0] : data;
 };
 
 export const updateWordStatus = async (wordId: string, correct: boolean) => {
