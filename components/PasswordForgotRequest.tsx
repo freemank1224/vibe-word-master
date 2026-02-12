@@ -27,9 +27,10 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
 
     try {
       // 优先使用环境变量配置的 URL，否则使用当前域名
+      // 注意：不要添加 hash，Supabase 会自动添加 #access_token=xxx&type=recovery
       const redirectUrl = import.meta.env.VITE_APP_URL || window.location.origin;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${redirectUrl}/#type=recovery`,
+        redirectTo: redirectUrl,
       });
 
       if (error) {
