@@ -14,6 +14,12 @@ export interface SpellingResult {
   suggestion?: string;
   found?: boolean; // Used by local provider
   serviceError?: boolean; // Indicates service was unreachable
+
+  // Phrase validation fields
+  needsCollocationCheck?: boolean; // 2-word phrases need AI collocation check
+  highlightedPhrase?: string; // Display phrase with errors highlighted: "go [cyclling]"
+  isCommon?: boolean; // AI collocation check result: true = common, false = uncommon
+  error?: string; // Error code like 'TOO_MANY_WORDS'
 }
 
 export interface AIService {
@@ -49,12 +55,18 @@ export interface AIService {
    * Returns a list of Word IDs to test.
    */
   optimizeWordSelection(
-    words: WordEntry[], 
-    sessions: InputSession[], 
-    targetCount: number, 
-    apiKey?: string, 
+    words: WordEntry[],
+    sessions: InputSession[],
+    targetCount: number,
+    apiKey?: string,
     endpoint?: string
   ): Promise<string[] | null>;
+
+  /**
+   * Validates if a 2-word phrase is a common collocation.
+   * Returns { isCommon: boolean } - true if common, false if uncommon
+   */
+  validateCollocation(phrase: string, apiKey?: string, endpoint?: string): Promise<{ isCommon: boolean }>;
 }
 
 export type AIProviderType = 'gemini' | 'openai';

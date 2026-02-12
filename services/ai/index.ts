@@ -11,6 +11,21 @@ class AIServiceManager implements AIService {
   private openai = new OpenAIProvider();
   private local = new LocalProvider();
 
+  // Track AI availability for graceful degradation
+  private enabled: boolean = false;
+  private available: boolean = false;
+
+  constructor() {
+    this.checkAvailability();
+  }
+
+  private async checkAvailability() {
+    // Check if AI service has valid configuration
+    const config = this.resolveConfig('TEXT');
+    this.enabled = !!config.apiKey;
+    this.available = this.enabled;
+  }
+
   private getProvider(type: string): AIService {
     const providerType = (type || 'gemini').toLowerCase();
     
@@ -111,16 +126,68 @@ class AIServiceManager implements AIService {
   }
 
   async optimizeWordSelection(
-      words: WordEntry[], 
-      sessions: InputSession[], 
+      words: WordEntry[],
+      sessions: InputSession[],
       targetCount: number
   ): Promise<string[] | null> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
     const provider = this.getProvider(providerType);
-    
+
     if (!provider.optimizeWordSelection) return null;
 
     return provider.optimizeWordSelection(words, sessions, targetCount, apiKey, endpoint);
+  }
+
+  /**
+   * Validates a phrase (2-3 words).
+   * Returns validation result with highlighting and collocation check flag.
+   */
+  async validatePhrase(phrase: string): Promise<SpellingResult> {
+    // Use LocalProvider for phrase validation
+    if (this.local.validatePhrase) {
+      return await this.local.validatePhrase(phrase);
+    }
+    // Fallback: just validate as a single word
+    return await this.validateSpelling(phrase);
+  }
+
+  /**
+   * Validates if a 2-word phrase is a common collocation.
+   * Returns { isCommon: boolean } with 5-second timeout and graceful degradation.
+   */
+  async validateCollocation(phrase: string): Promise<{ isCommon: boolean }> {
+    // Re-check availability in case it changed
+    await this.checkAvailability();
+
+    if (!this.enabled || !this.available) {
+      console.log('AI unavailable, assuming phrase is valid');
+      return { isCommon: true }; // Degradation: assume valid
+    }
+
+    try {
+      // 5-second timeout protection
+      const result = await Promise.race([
+        this.performCollocationCheck(phrase),
+        new Promise<{ isCommon: boolean }>((resolve) =>
+          setTimeout(() => resolve({ isCommon: true }), 5000)
+        )
+      ]);
+      return result;
+    } catch (error) {
+      console.error('Collocation check failed:', error);
+      return { isCommon: true }; // Conservative degradation
+    }
+  }
+
+  private async performCollocationCheck(phrase: string): Promise<{ isCommon: boolean }> {
+    const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
+    const provider = this.getProvider(providerType);
+
+    if (provider.validateCollocation) {
+      return await provider.validateCollocation(phrase, apiKey, endpoint);
+    }
+    // Fallback: assume common
+    return { isCommon: true };
   }
 }
 

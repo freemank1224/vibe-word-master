@@ -4,6 +4,7 @@ import { calculateAchievements, ACHIEVEMENTS } from '../services/achievementServ
 import { Badge } from './Achievements/Badge';
 import { cleanExistingWords, CleanupStats } from '../services/wordCleanupService';
 import { supabase } from '../lib/supabaseClient';
+import { AISettings, AEServiceProvider } from '../services/ai/settings';
 
 interface AccountPanelProps {
   user: any;
@@ -56,10 +57,92 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     return false;
   });
 
+  // AI Configuration State
+  const [showAiConfig, setShowAiConfig] = useState(false);
+  const [aiProvider, setAiProvider] = useState<AEServiceProvider>(() => {
+    const saved = localStorage.getItem('vibe-word-ai-settings-provider');
+    return (saved as AEServiceProvider) || 'gemini';
+  });
+  const [apiKey, setApiKey] = useState(() => {
+    return localStorage.getItem(`vibe-word-ai-settings-${aiProvider}-key`) || '';
+  });
+  const [endpoint, setEndpoint] = useState(() => {
+    return localStorage.getItem(`vibe-word-ai-settings-${aiProvider}-endpoint`) || '';
+  });
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
   const toggleAiSelection = () => {
     const newState = !aiSelectionEnabled;
     setAiSelectionEnabled(newState);
     localStorage.setItem('vibe_ai_selection', String(newState));
+
+    // Auto-expand config when enabling
+    if (newState) {
+      setShowAiConfig(true);
+    }
+  };
+
+  const saveAiConfig = () => {
+    // Use AISettings storage format for consistency
+    localStorage.setItem('vibe-word-ai-settings-provider', aiProvider);
+    localStorage.setItem(`vibe-word-ai-settings-${aiProvider}-key`, apiKey);
+    if (endpoint) {
+      localStorage.setItem(`vibe-word-ai-settings-${aiProvider}-endpoint`, endpoint);
+    } else {
+      localStorage.removeItem(`vibe-word-ai-settings-${aiProvider}-endpoint`);
+    }
+    alert('AI配置已保存！');
+  };
+
+  const testConnection = async () => {
+    setTestingConnection(true);
+    setConnectionStatus('idle');
+
+    try {
+      // Import aiService dynamically for test
+      const { aiService } = await import('../services/ai');
+
+      // Test by validating a simple word
+      const testResult = await aiService.validateSpelling('test', apiKey, endpoint || undefined);
+
+      if (testResult.isValid || !testResult.serviceError) {
+        setConnectionStatus('success');
+      } else {
+        setConnectionStatus('error');
+      }
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      setConnectionStatus('error');
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const getProviderPlaceholder = () => {
+    switch (aiProvider) {
+      case 'gemini':
+        return 'https://generativelanguage.googleapis.com';
+      case 'openai':
+        return 'https://api.openai.com/v1';
+      case 'custom':
+        return 'https://api.example.com/v1';
+      default:
+        return 'API Endpoint URL';
+    }
+  };
+
+  const getModelPlaceholder = () => {
+    switch (aiProvider) {
+      case 'gemini':
+        return 'gemini-2.5-flash';
+      case 'openai':
+        return 'gpt-4o-mini';
+      case 'custom':
+        return 'model-name';
+      default:
+        return 'Model';
+    }
   };
 
   useEffect(() => {
@@ -236,13 +319,113 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                         Optimize test words using Ebbinghaus forgetting curve & error history.
                     </div>
                 </div>
-                <button 
+                <button
                   onClick={toggleAiSelection}
                   className={`w-14 h-8 rounded-full transition-colors relative ${aiSelectionEnabled ? 'bg-electric-blue' : 'bg-mid-charcoal'}`}
                 >
                   <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform ${aiSelectionEnabled ? 'translate-x-6' : ''}`} />
                 </button>
              </div>
+
+             {/* Expanded Configuration Panel */}
+             {aiSelectionEnabled && showAiConfig && (
+               <div className="bg-dark-charcoal/50 p-5 rounded-2xl border border-mid-charcoal/30 space-y-4 animate-in fade-in duration-300">
+                  {/* Provider Selection */}
+                  <div className="space-y-2">
+                     <label className="text-white font-mono text-xs uppercase tracking-widest">AI Provider</label>
+                     <select
+                       className="w-full bg-light-charcoal border border-mid-charcoal text-white rounded-lg px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-electric-blue focus:border-transparent"
+                       value={aiProvider}
+                       onChange={(e) => {
+                         const newProvider = e.target.value as AEServiceProvider;
+                         setAiProvider(newProvider);
+                         // Load existing config for new provider
+                         const savedKey = localStorage.getItem(`vibe-word-ai-settings-${newProvider}-key`);
+                         const savedEndpoint = localStorage.getItem(`vibe-word-ai-settings-${newProvider}-endpoint`);
+                         setApiKey(savedKey || '');
+                         setEndpoint(savedEndpoint || '');
+                       }}
+                     >
+                       <option value="gemini">Google Gemini</option>
+                       <option value="openai">OpenAI (兼容)</option>
+                       <option value="custom">OpenAI 兼容 (自建/其他)</option>
+                     </select>
+                  </div>
+
+                  {/* API Key Input */}
+                  <div className="space-y-2">
+                     <label className="text-white font-mono text-xs uppercase tracking-widest">API Key</label>
+                     <input
+                       type="password"
+                       className="w-full bg-light-charcoal border border-mid-charcoal text-white rounded-lg px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-electric-blue focus:border-transparent placeholder:text-text-dark"
+                       placeholder="•••••••••••"
+                       value={apiKey}
+                       onChange={(e) => setApiKey(e.target.value)}
+                     />
+                  </div>
+
+                  {/* Endpoint URL (Optional for OpenAI/Custom) */}
+                  {aiProvider !== 'gemini' && (
+                    <div className="space-y-2">
+                       <label className="text-white font-mono text-xs uppercase tracking-widest">
+                         Endpoint URL {aiProvider === 'gemini' ? '(不可用)' : '(可选)'}
+                       </label>
+                       <input
+                         type="text"
+                         className="w-full bg-light-charcoal border border-mid-charcoal text-white rounded-lg px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-electric-blue focus:border-transparent placeholder:text-text-dark"
+                         placeholder={getProviderPlaceholder()}
+                         value={endpoint}
+                         onChange={(e) => setEndpoint(e.target.value)}
+                         disabled={aiProvider === 'gemini'}
+                       />
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-3 pt-2">
+                     <button
+                       onClick={saveAiConfig}
+                       disabled={!apiKey || testingConnection}
+                       className="flex-1 py-2 px-4 rounded-lg bg-electric-blue text-white font-bold text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                     >
+                       保存配置
+                     </button>
+                     <button
+                       onClick={testConnection}
+                       disabled={!apiKey || testingConnection}
+                       className="flex-1 py-2 px-4 rounded-lg border-2 border-mid-charcoal bg-transparent text-white font-mono text-xs hover:bg-mid-charcoal disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                     >
+                       {testingConnection ? (
+                         <>
+                           <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                           测试中...
+                         </>
+                       ) : (
+                         <>
+                           <span className={`material-symbols-outlined text-sm ${connectionStatus === 'success' ? 'text-electric-green' : connectionStatus === 'error' ? 'text-red-400' : ''}`}>wifi_find</span>
+                           {connectionStatus === 'success' ? '已连接' : connectionStatus === 'error' ? '失败' : '测试连接'}
+                         </>
+                       )}
+                     </button>
+                  </div>
+
+                  {/* Connection Status Message */}
+                  {connectionStatus === 'success' && (
+                    <div className="mt-3 p-3 rounded-lg bg-electric-green/10 border border-electric-green/30">
+                       <p className="text-electric-green text-xs font-mono text-center">
+                         ✓ 连接成功！可以正常使用词组验证功能
+                       </p>
+                    </div>
+                  )}
+                  {connectionStatus === 'error' && (
+                    <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                       <p className="text-red-400 text-xs font-mono text-center">
+                         ✗ 连接失败，请检查 API Key 和 Endpoint
+                       </p>
+                    </div>
+                  )}
+               </div>
+             )}
           </div>
 
           {/* Word Library Cleanup Tool */}

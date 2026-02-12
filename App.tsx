@@ -2136,6 +2136,13 @@ const InputMode: React.FC<{
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [serviceErrorWord, setServiceErrorWord] = useState<string | null>(null);
+
+  // Phrase validation states
+  const [collocationWarning, setCollocationWarning] = useState<{
+    phrase: string;
+    suggestion?: string;
+  } | null>(null);
+  const [pendingPhrase, setPendingPhrase] = useState<string | null>(null);
   
   // Feature 1: Drill Logic
   const [targetWord, setTargetWord] = useState<string | null>(null);
@@ -2211,7 +2218,18 @@ const InputMode: React.FC<{
       }
 
       setIsProcessing(true);
-      const validation = await aiService.validateSpelling(trimmed);
+
+      // Check if input is a phrase (contains spaces)
+      const isPhrase = trimmed.includes(' ');
+
+      let validation;
+      if (isPhrase) {
+        // Use phrase validation for multi-word inputs
+        validation = await aiService.validatePhrase(trimmed);
+      } else {
+        // Use single word validation
+        validation = await aiService.validateSpelling(trimmed);
+      }
       setIsProcessing(false);
 
       if (validation.serviceError) {
@@ -2220,16 +2238,49 @@ const InputMode: React.FC<{
         return;
       }
 
+      // Handle phrase length errors
+      if (validation.error === 'TOO_MANY_WORDS' || validation.error === 'TOO_FEW_WORDS') {
+        playBuzzer();
+        setErrorMsg(validation.suggestion || 'Please enter 2-3 words only');
+        return;
+      }
+
       if (!validation.isValid) {
         playBuzzer();
-        setErrorMsg(`Did you mean "${validation.suggestion || 'something else'}"?`);
+        // Show highlighted phrase if available
+        const displayText = validation.highlightedPhrase || validation.suggestion || 'something else';
+        setErrorMsg(`Did you mean "${displayText}"?`);
         return;
+      }
+
+      // Handle 2-word phrase collocation check
+      if (validation.needsCollocationCheck) {
+        setIsProcessing(true);
+        try {
+          const collocationResult = await aiService.validateCollocation(trimmed);
+          setIsProcessing(false);
+
+          if (!collocationResult.isCommon) {
+            // Show collocation warning
+            setCollocationWarning({
+              phrase: trimmed,
+              suggestion: validation.suggestion
+            });
+            setPendingPhrase(trimmed);
+            playBuzzer();
+            return;
+          }
+        } catch (error) {
+          console.error('Collocation check error:', error);
+          setIsProcessing(false);
+          // On error, continue with the phrase
+        }
       }
 
       // Start Drill
       setTargetWord(trimmed);
       setDrillProgress(1); // First input counts as 1
-      setInputValue(''); 
+      setInputValue('');
       setInputStatus('correct');
       playDing();
       playWordAudio(trimmed);
@@ -2283,6 +2334,15 @@ const InputMode: React.FC<{
        setServiceErrorWord(null);
        playDing();
        if (repeatCount === 1) finishAddingWord(serviceErrorWord);
+    } else if (collocationWarning && pendingPhrase) {
+       // Force add phrase despite collocation warning
+       setTargetWord(pendingPhrase);
+       setDrillProgress(1);
+       setInputValue('');
+       setCollocationWarning(null);
+       setPendingPhrase(null);
+       playDing();
+       if (repeatCount === 1) finishAddingWord(pendingPhrase);
     }
   };
 
@@ -2513,6 +2573,42 @@ const InputMode: React.FC<{
                     className="flex-1 py-3 px-4 rounded-xl bg-electric-purple text-white hover:bg-purple-500 transition-all font-sans font-bold text-sm shadow-lg shadow-purple-900/20"
                   >
                     Add Anyway
+                  </button>
+               </div>
+            </div>
+          </div>
+        )}
+
+        {collocationWarning && (
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50 w-full max-w-md">
+            <div className="bg-amber-900/90 border-2 border-amber-500 text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(245,158,11,0.3)] w-full text-center backdrop-blur-sm">
+               <div className="flex items-center gap-3 text-amber-400 mb-1">
+                  <span className="material-symbols-outlined text-3xl">warning</span>
+                  <span className="font-headline text-xl uppercase tracking-widest">Uncommon Phrase</span>
+               </div>
+               <p className="font-mono text-sm text-text-light leading-relaxed">
+                  <span className="text-electric-blue">"{collocationWarning.phrase}"</span> may not be a common English phrase.
+               </p>
+               {collocationWarning.suggestion && (
+                 <p className="font-mono text-xs text-text-dark">
+                    Did you mean: <span className="text-electric-blue">{collocationWarning.suggestion}</span>?
+                 </p>
+               )}
+               <div className="flex gap-4 w-full">
+                  <button
+                    onClick={() => {
+                      setCollocationWarning(null);
+                      setPendingPhrase(null);
+                    }}
+                    className="flex-1 py-3 px-4 rounded-xl border border-mid-charcoal hover:bg-mid-charcoal transition-all font-mono text-xs uppercase tracking-widest"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleManualAdd}
+                    className="flex-1 py-3 px-4 rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-all font-sans font-bold text-sm shadow-lg shadow-amber-900/20"
+                  >
+                    Force Add
                   </button>
                </div>
             </div>

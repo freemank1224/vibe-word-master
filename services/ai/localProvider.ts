@@ -52,7 +52,7 @@ export class LocalProvider implements Partial<AIService> {
     // Huntspell is case-sensitive, but for simple vocab check we usually want to be permissive
     // or check both original and lowercase.
     let isValid = this.spell.correct(normalizedWord);
-    
+
     // Try lowercase if original failed
     if (!isValid && normalizedWord !== normalizedWord.toLowerCase()) {
       isValid = this.spell.correct(normalizedWord.toLowerCase());
@@ -62,19 +62,98 @@ export class LocalProvider implements Partial<AIService> {
       return { found: true, isValid: true };
     } else {
       const suggestions = this.spell.suggest(normalizedWord);
-      
+
       // If we found a suggestion locally, we treat it as a "hit" to avoid LLM tokens.
-      // If no suggestion is found, it might be a very weird word or a technical term, 
+      // If no suggestion is found, it might be a very weird word or a technical term,
       // so we fallback to LLM.
       if (suggestions.length > 0) {
-        return { 
-          found: true, 
-          isValid: false, 
-          suggestion: suggestions[0] 
+        return {
+          found: true,
+          isValid: false,
+          suggestion: suggestions[0]
         };
       }
-      
+
       return { found: false, isValid: false };
     }
+  }
+
+  /**
+   * Validates a phrase (2-3 words).
+   * Splits phrase and validates each word's spelling.
+   * Returns validation result with highlighting and collocation check flag.
+   */
+  async validatePhrase(phrase: string): Promise<SpellingResult> {
+    await this.ensureLoaded();
+
+    if (!this.spell) {
+      return { isValid: false, error: 'DICT_NOT_LOADED' };
+    }
+
+    const trimmedPhrase = phrase.trim();
+    const words = trimmedPhrase.split(/\s+/).filter(w => w.length > 0);
+
+    // Check length: only support 2-3 word phrases
+    if (words.length < 2 || words.length > 3) {
+      return {
+        isValid: false,
+        error: words.length < 2 ? 'TOO_FEW_WORDS' : 'TOO_MANY_WORDS',
+        suggestion: words.length < 2
+          ? 'Please enter at least 2 words for a phrase'
+          : 'Please enter 2-3 words only'
+      };
+    }
+
+    // Validate each word's spelling
+    const wordResults = words.map(word => {
+      const normalizedWord = word.trim();
+      let isValid = this.spell.correct(normalizedWord);
+
+      // Try lowercase if original failed
+      if (!isValid && normalizedWord !== normalizedWord.toLowerCase()) {
+        isValid = this.spell.correct(normalizedWord.toLowerCase());
+      }
+
+      return {
+        word: normalizedWord,
+        isValid,
+        suggestion: isValid ? undefined : this.spell.suggest(normalizedWord)?.[0]
+      };
+    });
+
+    // Check if any word is misspelled
+    const misspelledWords = wordResults.filter(r => !r.isValid);
+
+    if (misspelledWords.length > 0) {
+      // Create highlighted phrase with errors in brackets
+      const highlightedPhrase = wordResults
+        .map(r => r.isValid ? r.word : `[${r.word}]`)
+        .join(' ');
+
+      // Get suggestions for all misspelled words
+      const suggestionPhrase = wordResults
+        .map(r => r.isValid ? r.word : (r.suggestion || r.word))
+        .join(' ');
+
+      return {
+        isValid: false,
+        highlightedPhrase,
+        suggestion: suggestionPhrase
+      };
+    }
+
+    // All words are spelled correctly
+    // 2-word phrases need collocation check
+    if (words.length === 2) {
+      return {
+        isValid: true,
+        needsCollocationCheck: true
+      };
+    }
+
+    // 3-word phrases: assume they are reasonable combinations
+    return {
+      isValid: true
+    };
   }
 }

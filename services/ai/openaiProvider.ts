@@ -134,4 +134,38 @@ export class OpenAIProvider implements AIService {
       return { isValid: false, serviceError: true };
     }
   }
+
+  async validateCollocation(phrase: string, apiKey?: string, endpoint?: string): Promise<{ isCommon: boolean }> {
+    try {
+      const data = await this.fetchOpenAI("chat/completions", {
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "You are an English language expert. Check if word collocations are common and natural. Respond with JSON: { \"isCommon\": boolean }"
+          },
+          {
+            role: "user",
+            content: `Is "${phrase}" a common and natural English word collocation/phrase?
+
+Consider:
+- Is this a frequently used phrase in English?
+- Do these words naturally go together?
+- Examples of common collocations: "go cycling", "take part in", "look forward to"
+- Examples of uncommon combinations: "come cycling", "eat cycling", "do cycling"
+
+Return true if this is a common, natural phrase. Return false if the words are spelled correctly but don't form a common phrase.`
+          }
+        ],
+        response_format: { type: "json_object" }
+      }, apiKey, endpoint);
+
+      const result = JSON.parse(data.choices[0].message.content);
+      return { isCommon: result.isCommon ?? true };
+    } catch (error) {
+      console.error("OpenAI collocation check failed:", error);
+      // On error, conservatively assume phrase is valid
+      return { isCommon: true };
+    }
+  }
 }

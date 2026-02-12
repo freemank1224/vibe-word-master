@@ -129,6 +129,42 @@ export class GeminiProvider implements AIService {
     }
   }
 
+  async validateCollocation(phrase: string, apiKey?: string, endpoint?: string): Promise<{ isCommon: boolean }> {
+    try {
+      const ai = this.getClient(apiKey, endpoint);
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Is "${phrase}" a common and natural English word collocation/phrase?
+
+                  Consider:
+                  - Is this a frequently used phrase in English?
+                  - Do these words naturally go together?
+                  - Examples of common collocations: "go cycling", "take part in", "look forward to"
+                  - Examples of uncommon combinations: "come cycling", "eat cycling", "do cycling"
+
+                  Return:
+                  - isCommon: true if this is a common, natural phrase
+                  - isCommon: false if the words are spelled correctly but don't form a common phrase`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              isCommon: { type: Type.BOOLEAN }
+            }
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text || "{}");
+      return { isCommon: result.isCommon ?? true }; // Default to true if parsing fails
+    } catch (error) {
+      console.error("Gemini collocation check failed:", error);
+      // On error, conservatively assume the phrase is valid
+      return { isCommon: true };
+    }
+  }
+
   private decodeBase64(base64: string) {
     const binaryString = atob(base64);
     const bytes = new Uint8Array(binaryString.length);
