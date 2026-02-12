@@ -98,8 +98,10 @@ const App: React.FC = () => {
       const accessToken = params.get('access_token');
       if (accessToken) {
         setResetToken(accessToken);
-        // Clear any existing session when resetting password
-        supabase.auth.signOut();
+      } else {
+        // Some providers/flows may not include access_token immediately
+        // but still indicate a password recovery flow.
+        setResetToken('recovery');
       }
     }
   }, []);

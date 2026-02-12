@@ -9,34 +9,110 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
   const [success, setSuccess] = useState(false);
   const [sessionSet, setSessionSet] = useState(false);
 
-  // Check if we have a valid session (Supabase should auto-set from URL hash)
+  // Ensure recovery session is available before allowing password update.
   useEffect(() => {
-    const checkSession = async () => {
-      try {
-        // Check current session - Supabase should auto-set from URL hash
-        const { data: { session }, error: checkError } = await supabase.auth.getSession();
+    let isMounted = true;
+    let sessionCheckTimer: number | undefined;
 
-        if (checkError) {
-          console.error('Get session error:', checkError);
-          setError('Failed to check session. Please try again.');
-          return;
-        }
+    const markSessionReady = () => {
+      if (!isMounted) return;
+      setSessionSet(true);
+      setError('');
+    };
 
-        if (session) {
-          console.log('Session found, user:', session.user?.email);
-          setSessionSet(true);
-        } else {
-          console.error('No session found');
-          setError('No valid session found. The reset link may be expired.');
-        }
-      } catch (err: unknown) {
-        console.error('Check session error:', err);
-        const errorMessage = err instanceof Error ? err.message : 'Failed to check session';
-        setError(errorMessage);
+    const checkCurrentSession = async (): Promise<boolean> => {
+      const { data: { session }, error: checkError } = await supabase.auth.getSession();
+
+      if (checkError) {
+        throw checkError;
+      }
+
+      if (session) {
+        console.log('Session found, user:', session.user?.email);
+        markSessionReady();
+        return true;
+      }
+
+      return false;
+    };
+
+    const trySetSessionFromUrlTokens = async (): Promise<void> => {
+      const hash = window.location.hash.startsWith('#')
+        ? window.location.hash.substring(1)
+        : window.location.hash;
+      const params = new URLSearchParams(hash);
+      const accessTokenFromHash = params.get('access_token');
+      const refreshTokenFromHash = params.get('refresh_token');
+
+      if (!accessTokenFromHash || !refreshTokenFromHash) {
+        return;
+      }
+
+      const { error: setSessionError } = await supabase.auth.setSession({
+        access_token: accessTokenFromHash,
+        refresh_token: refreshTokenFromHash,
+      });
+
+      if (setSessionError) {
+        throw setSessionError;
       }
     };
 
+    const checkSession = async () => {
+      try {
+        if (await checkCurrentSession()) {
+          return;
+        }
+
+        // Fallback for edge cases where the SDK hasn't parsed hash yet.
+        await trySetSessionFromUrlTokens();
+
+        if (await checkCurrentSession()) {
+          return;
+        }
+
+        sessionCheckTimer = window.setTimeout(async () => {
+          try {
+            const hasSession = await checkCurrentSession();
+            if (!hasSession && isMounted) {
+              console.error('No session found');
+              setError('No valid session found. The reset link may be expired.');
+            }
+          } catch (timerError: unknown) {
+            console.error('Delayed session check error:', timerError);
+            const errorMessage = timerError instanceof Error ? timerError.message : 'Failed to check session';
+            if (isMounted) {
+              setError(errorMessage);
+            }
+          }
+        }, 1200);
+      } catch (err: unknown) {
+        console.error('Check session error:', err);
+        const errorMessage = err instanceof Error ? err.message : 'Failed to check session';
+        if (isMounted) {
+          setError(errorMessage);
+        }
+      }
+    };
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      if (session && (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
+        markSessionReady();
+      }
+    });
+
     checkSession();
+
+    return () => {
+      isMounted = false;
+      if (sessionCheckTimer) {
+        window.clearTimeout(sessionCheckTimer);
+      }
+      subscription.unsubscribe();
+    };
   }, [accessToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
