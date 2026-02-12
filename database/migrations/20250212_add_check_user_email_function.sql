@@ -1,14 +1,10 @@
 -- Drop function if exists (to handle recreations)
 DROP FUNCTION IF EXISTS check_user_email_exists(text) CASCADE;
 
--- Function to check if a user email already exists in auth.users
--- This function is used by the check_user_exists Edge Function
--- Security: Uses SECURITY DEFINER to allow access to auth schema
--- The function checks if the email exists and returns the user's confirmation status
-CREATE OR REPLACE FUNCTION check_user_email_exists(user_email text)
-RETURNS TABLE (
-  user_id uuid,
-  email character varying(255),
+-- DEPRECATED (2026-02-12)
+-- Legacy helper for check_user_exists Edge Function.
+-- Repeated-signup detection now uses Supabase auth.signUp response handling.
+COMMENT ON FUNCTION check_user_email_exists IS 'DEPRECATED legacy helper for check_user_exists Edge Function. Current flow uses auth.signUp response handling.';
   email_confirmed_at timestamptz,
   created_at timestamptz
 )

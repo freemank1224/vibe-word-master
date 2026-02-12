@@ -7,6 +7,8 @@ interface AuthProps {
 }
 
 export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
+  const LOGIN_SWITCH_TEXT = 'Please switch to "Login" mode to sign in.';
+
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -38,43 +40,6 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
     setFailedAttempts(0);
   }, [email, mode]);
 
-  // Check if user already exists before signup
-  const checkUserExists = async (email: string): Promise<{ exists: boolean; email_confirmed: string | null } | null> => {
-    try {
-      const supabaseUrl = process.env.SUPABASE_URL || '';
-      const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
-
-      if (!supabaseUrl) {
-        console.error('SUPABASE_URL not configured');
-        return null;
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(
-        `${supabaseUrl}/functions/v1/check_user_exists`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session?.access_token || supabaseAnonKey}`,
-          },
-          body: JSON.stringify({ email }),
-        }
-      );
-
-      if (!response.ok) {
-        console.error('check_user_exists failed:', response.status, response.statusText);
-        return null;
-      }
-
-      const result = await response.json();
-      return result;
-    } catch (error) {
-      console.error('Error checking user exists:', error);
-      return null;
-    }
-  };
-
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -83,23 +48,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
 
     try {
       if (mode === 'SIGNUP') {
-        // First check if user already exists
-        const checkResult = await checkUserExists(email);
-
-        if (checkResult?.exists) {
-          // User already exists
-          if (checkResult.email_confirmed) {
-            setMsgType('info');
-            setMsg("This email is already registered. Please switch to \"Login\" mode to sign in. If you've forgotten your password, use \"Forgot Password\" option below.");
-          } else {
-            setMsgType('info');
-            setMsg("Your account exists but email hasn't been confirmed yet. Please check your inbox (including spam folder) or click \"Resend Email\" below.");
-          }
-          setLoading(false);
-          return;
-        }
-
-        // Proceed with signup
+        // Signup directly and handle all existing-account responses here.
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
@@ -121,6 +70,16 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             setMsg(`Signup failed: ${error.message}`);
           }
         } else {
+          const identities = (data.user as any)?.identities;
+          const isLikelyExistingUser = Array.isArray(identities) && identities.length === 0;
+
+          if (isLikelyExistingUser) {
+            setMsgType('info');
+            setMsg("This email is already registered. Please switch to \"Login\" mode to sign in. If you've forgotten your password, use \"Forgot Password\" option below.");
+            setPassword('');
+            return;
+          }
+
           // Check if email confirmation is required
           if (data.user && !data.user.email_confirmed_at) {
             setMsgType('success');
@@ -168,8 +127,8 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
         }
       }
     } catch (error: unknown) {
-      setMsgType('error');
       const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.';
+      setMsgType('error');
       setMsg(errorMessage);
     } finally {
       setLoading(false);
@@ -225,6 +184,35 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
     } else {
       return 'INITIATE ACCOUNT';
     }
+  };
+
+  const handleSwitchToLogin = () => {
+    setMode('LOGIN');
+    setMsg('');
+    setMsgType('info');
+    setPassword('');
+  };
+
+  const renderMessageContent = () => {
+    if (!msg.includes(LOGIN_SWITCH_TEXT)) {
+      return msg;
+    }
+
+    const [beforeText, afterText] = msg.split(LOGIN_SWITCH_TEXT);
+
+    return (
+      <>
+        {beforeText}
+        <button
+          type="button"
+          onClick={handleSwitchToLogin}
+          className="underline text-electric-blue hover:text-white transition-colors"
+        >
+          {LOGIN_SWITCH_TEXT}
+        </button>
+        {afterText}
+      </>
+    );
   };
 
   return (
@@ -298,11 +286,11 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           {/* Enhanced Status Message */}
           {msg && (
             <div className={`text-xs p-3 rounded-lg border ${getMessageClass()}`}>
-              <div className="mb-2">{msg}</div>
+              <div className="mb-2">{renderMessageContent()}</div>
 
               {/* Show appropriate action buttons based on message */}
               <div className="flex flex-wrap gap-2 mt-2">
-                {(msg.includes('already registered') || msg.includes('not confirmed') || msg.includes('Invalid password') || msg.includes('attempts')) && (
+                {(msg.includes('not confirmed') || msg.includes('Invalid password') || msg.includes('attempts')) && (
                   <>
                     <button
                       type="button"
