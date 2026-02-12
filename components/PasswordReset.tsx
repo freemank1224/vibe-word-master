@@ -16,6 +16,8 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
         // First, clear any existing session to avoid conflicts
         await supabase.auth.signOut();
 
+        console.log('Setting session with access token:', accessToken.substring(0, 20) + '...');
+
         // Then set the new session using the access token
         const { data, error: sessionError } = await supabase.auth.setSession({
           access_token: accessToken,
@@ -27,7 +29,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
           return;
         }
 
-        console.log('Session set successfully');
+        console.log('Session set successfully, user:', data?.session?.user?.email);
         setSessionSet(true);
       } catch (err: unknown) {
         console.error('Set session error:', err);
