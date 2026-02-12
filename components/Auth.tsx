@@ -125,9 +125,11 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           if (data.user && !data.user.email_confirmed_at) {
             setMsgType('success');
             setMsg('🎉 Account created! Please check your email to activate your account (including spam folder).');
+            setPassword('');
           } else if (data.session) {
             setMsgType('success');
             setMsg('✅ Account created and logged in successfully!');
+            setPassword('');
           }
         }
       } else {
@@ -162,6 +164,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           setFailedAttempts(0);
           setMsgType('success');
           setMsg('Welcome back! 🎮 Loading your data...');
+          setPassword('');
         }
       }
     } catch (error: unknown) {
@@ -271,6 +274,10 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl p-4 text-white focus:border-electric-blue focus:ring-1 focus:ring-electric-blue outline-none transition-all"
                 placeholder="user@example.com"
               />
@@ -282,6 +289,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete={mode === 'LOGIN' ? 'current-password' : 'new-password'}
                 className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl p-4 text-white focus:border-electric-blue focus:ring-1 focus:ring-electric-blue outline-none transition-all"
                 placeholder="•••••••"
               />
@@ -358,16 +366,20 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24">
             <path
-              d="M22.56 12.25c0-.78-.07-1.53-.2-25H12v4.26h5.92c-.26 1.37-1.042.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              d="M21.805 10.023h-9.18v3.955h5.277c-.228 1.252-.94 2.313-2.006 3.023v2.512h3.247c1.9-1.75 2.996-4.328 2.996-7.39 0-.7-.063-1.373-.334-2.1z"
               fill="#4285F4"
             />
             <path
-              d="M5.84 14.09c-.22-.66-.35-2.09s.13-1.43.35 1.06-2.86 0.5.29-1.93 6.16-4.53H2.18v2.84C3.99 20.53 7.7.23 12.23z"
+              d="M12.625 22c2.7 0 4.965-.895 6.62-2.422l-3.247-2.512c-.902.605-2.06.965-3.373.965-2.59 0-4.78-1.74-5.56-4.085H3.71v2.577A10 10 0 0 0 12.625 22z"
               fill="#34A853"
             />
             <path
-              d="M12 23c2.97 0-5.46-.98 7.28-2.66l-3.57-2.09s.13-1.43 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              d="M7.066 13.946a5.996 5.996 0 0 1 0-3.892V7.477H3.71a10 10 0 0 0 0 8.99l3.356-2.52z"
               fill="#FBBC05"
+            />
+            <path
+              d="M12.625 5.969c1.467 0 2.786.505 3.823 1.496l2.865-2.864C17.585 2.984 15.325 2 12.625 2A10 10 0 0 0 3.71 7.477l3.356 2.577c.78-2.345 2.97-4.085 5.56-4.085z"
+              fill="#EA4335"
             />
             </svg>
           CONTINUE WITH GOOGLE

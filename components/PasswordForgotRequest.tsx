@@ -104,6 +104,10 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl p-4 text-white focus:border-electric-blue focus:ring-1 focus:ring-electric-blue outline-none transition-all"
                 placeholder="user@example.com"
               />

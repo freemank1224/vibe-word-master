@@ -28,7 +28,6 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
       }
 
       if (session) {
-        console.log('Session found, user:', session.user?.email);
         markSessionReady();
         return true;
       }
@@ -138,6 +137,8 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
 
       if (error) throw error;
 
+      setPassword('');
+      setConfirmPassword('');
       setSuccess(true);
       setTimeout(() => {
         onClose();
@@ -246,6 +247,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
               className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl p-4 text-white focus:border-electric-blue focus:ring-1 focus:ring-electric-blue outline-none transition-all"
               placeholder="Enter new password (min 6 characters)"
               minLength={6}
@@ -259,6 +261,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
               required
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
+              autoComplete="new-password"
               className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl p-4 text-white focus:border-electric-blue focus:ring-1 focus:ring-electric-blue outline-none transition-all"
               placeholder="Confirm new password"
               minLength={6}
