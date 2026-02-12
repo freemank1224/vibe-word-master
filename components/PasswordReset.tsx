@@ -9,36 +9,34 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
   const [success, setSuccess] = useState(false);
   const [sessionSet, setSessionSet] = useState(false);
 
-  // Set session using access token from URL hash
+  // Check if we have a valid session (Supabase should auto-set from URL hash)
   useEffect(() => {
-    const setSession = async () => {
+    const checkSession = async () => {
       try {
-        // First, clear any existing session to avoid conflicts
-        await supabase.auth.signOut();
+        // Check current session - Supabase should auto-set from URL hash
+        const { data: { session }, error: checkError } = await supabase.auth.getSession();
 
-        console.log('Setting session with access token:', accessToken.substring(0, 20) + '...');
-
-        // Then set the new session using the access token
-        const { data, error: sessionError } = await supabase.auth.setSession({
-          access_token: accessToken,
-        });
-
-        if (sessionError) {
-          console.error('Session error:', sessionError);
-          setError('Invalid or expired reset link. Please request a new password reset.');
+        if (checkError) {
+          console.error('Get session error:', checkError);
+          setError('Failed to check session. Please try again.');
           return;
         }
 
-        console.log('Session set successfully, user:', data?.session?.user?.email);
-        setSessionSet(true);
+        if (session) {
+          console.log('Session found, user:', session.user?.email);
+          setSessionSet(true);
+        } else {
+          console.error('No session found');
+          setError('No valid session found. The reset link may be expired.');
+        }
       } catch (err: unknown) {
-        console.error('Set session error:', err);
-        const errorMessage = err instanceof Error ? err.message : 'Failed to authenticate';
+        console.error('Check session error:', err);
+        const errorMessage = err instanceof Error ? err.message : 'Failed to check session';
         setError(errorMessage);
       }
     };
 
-    setSession();
+    checkSession();
   }, [accessToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
