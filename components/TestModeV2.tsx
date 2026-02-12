@@ -86,6 +86,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   // New Logic States
   const [currentAttempts, setCurrentAttempts] = useState(0);
   const [hasUsedHint, setHasUsedHint] = useState(false);
+  const [hintAttempts, setHintAttempts] = useState(0);  // Hint模式下的错误次数
   
   // Exit/Sync States
   const [isSyncing, setIsSyncing] = useState(false);
@@ -507,23 +508,61 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       // Check if we are done
       if (!currentWord) return;
 
+      // CRITICAL FIX: 立即捕获当前状态值，避免闭包使用过期值
+      const currentWordSnapshot = currentWord;
+      const currentHintAttemptsSnapshot = hintAttempts;
+      const hasUsedHintSnapshot = hasUsedHint;
+      const errorCountBefore = (currentWordSnapshot?.error_count || 0);
+
       const success = score > 0;
-      const wordStartTime = startTime; 
-      
+      const wordStartTime = startTime;
+
+      // 计算error_count增量（严格追踪策略，使用小数）
+      let errorCountDelta = 0;
+
+      if (score === 0) {
+          // 完全答错：+1
+          errorCountDelta = 1.0;
+      } else if (hasUsedHintSnapshot) {
+          // Hint模式：根据错误次数精细递增
+          if (currentHintAttemptsSnapshot === 0) {
+              errorCountDelta = 0.3;  // hint模式下0次错误，轻微困难
+          } else if (currentHintAttemptsSnapshot === 1) {
+              errorCountDelta = 0.5;  // hint模式下1次错误，需要提示
+          } else if (currentHintAttemptsSnapshot === 2) {
+              errorCountDelta = 0.8;  // hint模式下2次错误，明显困难
+          } else {
+              errorCountDelta = 1.0;  // hint模式下3次及以上，严重困难
+          }
+      } else {
+          // 不用hint且答对：不增加error_count
+          errorCountDelta = 0;
+      }
+
+      // DEBUG: 输出调试信息
+      console.log('🎯 [DEBUG] Word Test Result:', {
+          word: currentWordSnapshot?.text,
+          hasUsedHint: hasUsedHintSnapshot,
+          hintAttempts: currentHintAttemptsSnapshot,
+          score,
+          error_count_delta: errorCountDelta,
+          error_count: errorCountBefore + errorCountDelta
+      });
+
       // 1. Sync to Database - updateWordStatusV2 handles tested and last_tested internally
       const dbUpdates = {
           correct: success,
           score: score,
-          error_count_increment: success ? 0 : 1,
+          error_count_increment: errorCountDelta,  // 传给 dataService 的增量，内部会加到 error_count 上
           best_time_ms: success ? (Date.now() - wordStartTime) : undefined
       };
 
       try {
-        await updateWordStatusV2(currentWord.id, dbUpdates);
+        await updateWordStatusV2(currentWordSnapshot.id, dbUpdates);
         
         // --- NEW LOGIC: Add to Mistake Bank if Score is 0 ---
         if (!success) {
-            addMistakeTag(currentWord.id, currentWord.tags);
+            addMistakeTag(currentWordSnapshot.id, currentWordSnapshot.tags);
         }
         // ----------------------------------------------------
       } catch (e) {
@@ -532,23 +571,23 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       // 2. Real-time Local Update (for Calendar/Library synchronization)
       if (onUpdateWord) {
-          const newErrorCount = (currentWord.error_count || 0) + (success ? 0 : 1);
+          const updatedErrorCount = errorCountBefore + errorCountDelta;  // 使用快照的值计算新error_count
           // If 0 score (failed), we optimistically add the tag locally too
-          const newTags = !success && !(currentWord.tags || []).includes('Mistake')
-            ? [...(currentWord.tags || []), 'Mistake']
-            : currentWord.tags;
+          const newTags = !success && !(currentWordSnapshot.tags || []).includes('Mistake')
+            ? [...(currentWordSnapshot.tags || []), 'Mistake']
+            : currentWordSnapshot.tags;
 
-          onUpdateWord(currentWord.id, {
+          onUpdateWord(currentWordSnapshot.id, {
               correct: success,
               score: score,
               tested: true,
               last_tested: Date.now(),
-              error_count: newErrorCount,
+              error_count: updatedErrorCount,
               tags: newTags
           });
       }
 
-      const newResults = [...results, { id: currentWord.id, correct: success, score }];
+            const newResults = [...results, { id: currentWordSnapshot.id, correct: success, score }];
       setResults(newResults);
       
       if (success) {
@@ -606,9 +645,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           setIsProcessing(false); // Reset lock
           setStartTime(Date.now());
           setCurrentAttempts(0);
-          setHasUsedHint(false);
+          setHintAttempts(0);  // Reset for next word
+          setHasUsedHint(false);  // Reset for next word
       }
-  }, [currentIndex, queue, results, startTime, onUpdateWord, streak, currentWord]);
+    }, [currentIndex, queue, results, startTime, onUpdateWord, streak, currentWord, hintAttempts, hasUsedHint]);
 
   const handleReveal = () => {
       setIsRevealed(true);
@@ -640,13 +680,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           
           // Score Calculation
           let score = 0;
+
           if (hasUsedHint) {
-              score = 2.4;
+              // Hint模式：只要答对就有鼓励分，不受hintAttempts影响
+              score = 1.5;
           } else if (currentAttempts < 3) {
-              score = 3;
+              score = 3;  // 不用hint，3次内答对
           } else {
               // Should not happen with new fail logic, but safe fallback
-              score = 0;
+              score = 0;  // 不用hint，3次都错
           }
 
           // Auto-advance
@@ -659,9 +701,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           // Check Hints first (Unlimited attempts)
           if (hasUsedHint) {
               setFeedback('WRONG');
-              // No attempt limit
+              const newHintAttempts = hintAttempts + 1;
+              setHintAttempts(newHintAttempts);
+              // DEBUG: 输出hint模式错误累积
+              console.log('💡 [DEBUG] Hint Mode Error:', {
+                  word: currentWord.text,
+                  hintAttempts: newHintAttempts,
+                  message: `用户在hint模式下答错${newHintAttempts}次`
+              });
               return;
-          } 
+          }
 
           // Standard Mode (Limit 3)
           // Current attempts starts at 0.
