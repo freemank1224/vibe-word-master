@@ -9,21 +9,28 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
   const [success, setSuccess] = useState(false);
   const [sessionSet, setSessionSet] = useState(false);
 
-  // Set session using the access token from URL hash
+  // Set session using access token from URL hash
   useEffect(() => {
     const setSession = async () => {
       try {
+        // First, clear any existing session to avoid conflicts
+        await supabase.auth.signOut();
+
+        // Then set the new session using the access token
         const { data, error: sessionError } = await supabase.auth.setSession({
           access_token: accessToken,
         });
 
         if (sessionError) {
+          console.error('Session error:', sessionError);
           setError('Invalid or expired reset link. Please request a new password reset.');
           return;
         }
 
+        console.log('Session set successfully');
         setSessionSet(true);
       } catch (err: unknown) {
+        console.error('Set session error:', err);
         const errorMessage = err instanceof Error ? err.message : 'Failed to authenticate';
         setError(errorMessage);
       }
