@@ -29,6 +29,7 @@ export interface InputSession {
   targetCount: number;
   deleted?: boolean;
   libraryTag?: string; // Which library this session belongs to (Custom, CET-4, etc.)
+  syncStatus?: 'synced' | 'pending' | 'failed'; // ☁️ Cloud sync status for UI
 }
 
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';

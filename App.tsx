@@ -2,6 +2,18 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats } from './services/dataService';
+import {
+  loadLocalBackup,
+  saveLocalBackup,
+  saveSessionToLocal,
+  deleteSessionFromLocal,
+  syncSessionToCloud,
+  resolveConflict,
+  syncAllPendingSessions,
+  SessionWithSync,
+  SyncStatus,
+  SyncResult
+} from './services/syncService';
 import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
@@ -30,6 +42,22 @@ const App: React.FC = () => {
   const [session, setSession] = useState<any>(null);
   const [showLanding, setShowLanding] = useState(true);
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
+
+  // 通知系统
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
+
+  const showNotification = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
+  };
+
+  // 同步状态
+  const [syncingSessionId, setSyncingSessionId] = useState<string | null>(null);
+  const [conflictModal, setConflictModal] = useState<{
+    sessionId: string;
+    cloud: InputSession;
+    local: InputSession;
+  } | null>(null);
   const [words, setWords] = useState<WordEntry[]>([]);
   const [sessions, setSessions] = useState<InputSession[]>([]);
   const [dailyStats, setDailyStats] = useState<Record<string, DayStats>>({});
@@ -51,7 +79,7 @@ const App: React.FC = () => {
   const [idsToDelete, setIdsToDelete] = useState<string[]>([]);
   const [deleteProgress, setDeleteProgress] = useState<DeleteProgress | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  
+
   // Admin Console State
   const [showAdminConsole, setShowAdminConsole] = useState(false);
 
@@ -332,6 +360,45 @@ const App: React.FC = () => {
       }
   };
 
+  // ☁️ Sync Status Checker - Check localStorage and update sessions with sync status
+  useEffect(() => {
+    // Wait for data to be fully loaded
+    if (loadingData) return;
+
+    // Only run when we have sessions
+    if (sessions.length === 0) return;
+
+    console.log('[SyncStatusChecker] Checking sync status for loaded sessions...');
+
+    // Load local backup from localStorage
+    const localBackup = loadLocalBackup();
+
+    // Create a map of sessions in local backup for quick lookup
+    const localBackupMap = new Map<string, 'synced' | 'pending' | 'failed'>();
+
+    if (localBackup && localBackup.sessions.length > 0) {
+      // Mark sessions that exist in local backup
+      localBackup.sessions.forEach(s => {
+        localBackupMap.set(s.id, s.syncStatus);
+        console.log(`[SyncStatusChecker] Found in local backup: ${s.id} -> ${s.syncStatus}`);
+      });
+    }
+
+    // Update sessions with sync status
+    setSessions(prev => prev.map(s => {
+      const syncStatus = localBackupMap.get(s.id);
+      if (syncStatus) {
+        // Session exists in local backup, use its status
+        console.log(`[SyncStatusChecker] Session ${s.id}: ${syncStatus}`);
+        return { ...s, syncStatus };
+      } else {
+        // Session not in local backup, assume it's synced
+        console.log(`[SyncStatusChecker] Session ${s.id}: synced (not in backup)`);
+        return { ...s, syncStatus: 'synced' as const };
+      }
+    }));
+  }, [loadingData, sessions.length]); // Depend on loading completion and sessions array
+
   // Background Process
   const processBackgroundData = async (userId: string, wordsToProcess: any[]) => {
     if (!wordsToProcess || !Array.isArray(wordsToProcess)) return;
@@ -442,10 +509,81 @@ const App: React.FC = () => {
       // Trigger Background Process
       const wordsToProcess = dashboardWords.filter(w => idsToProcess.has(w.id));
       processBackgroundData(session.user.id, wordsToProcess);
-      
+
+      // ✅ 成功保存到云端，清除本地备份
+      if (editingSessionId) {
+        const localBackup = loadLocalBackup();
+        if (localBackup) {
+          const updatedBackup = {
+            ...localBackup,
+            sessions: localBackup.sessions.filter(s => s.id !== editingSessionId)
+          };
+          saveLocalBackup(updatedBackup);
+        }
+      }
+
     } catch (e) {
-      console.error("Failed to save session", e);
-      alert("Failed to save session to cloud. Check console for details.");
+      console.error("❌ Failed to save session to cloud:", e);
+
+      // 💾 保存到本地备份（离线优先模式）
+      const sessionId = editingSessionId || `local_${Date.now()}`;
+      const sessionData: InputSession = {
+        id: sessionId,
+        timestamp: Date.now(),
+        wordCount: wordList.length,
+        targetCount: wordList.length,
+        deleted: false,
+        libraryTag: 'Custom'
+      };
+
+      // 准备单词数据（不包含 base64 图片，避免 localStorage 超限）
+      const wordsData: WordEntry[] = wordList.map((w, idx) => {
+        const existingWord = w.id ? words.find(ow => ow.id === w.id) : undefined;
+        return {
+          id: w.id || `${sessionId}_word_${idx}`,
+          text: w.text,
+          timestamp: existingWord?.timestamp || Date.now(),
+          sessionId: sessionId,
+          correct: existingWord?.correct || false,
+          tested: existingWord?.tested || false,
+          image_path: undefined, // 不存储本地图片到 localStorage
+          image_url: undefined,
+          error_count: existingWord?.error_count || 0,
+          best_time_ms: existingWord?.best_time_ms || null,
+          last_tested: existingWord?.last_tested || null,
+          phonetic: existingWord?.phonetic || null,
+          audio_url: existingWord?.audio_url || null,
+          definition_cn: existingWord?.definition_cn || null,
+          definition_en: existingWord?.definition_en || null,
+          deleted: false,
+          tags: ['Custom']
+        };
+      });
+
+      // 保存到本地
+      saveSessionToLocal(sessionData, wordsData, 'pending');
+
+      // 更新本地状态
+      setSessions(prev => {
+        const existing = prev.find(s => s.id === sessionId);
+        if (existing) {
+          return prev.map(s => s.id === sessionId ? sessionData : s);
+        } else {
+          return [...prev, sessionData];
+        }
+      });
+
+      setWords(prev => {
+        const existingIds = new Set(prev.filter(w => w.sessionId === sessionId).map(w => w.id));
+        const newWords = wordsData.filter(w => !existingIds.has(w.id));
+        return [...prev, ...newWords];
+      });
+
+      setMode('DASHBOARD');
+      setEditingSessionId(null);
+
+      // 用户友好提示
+      showNotification('⚠️ Saved locally due to connection error. Will auto-sync when connection is restored.', 'warning');
     }
   };
 
@@ -535,6 +673,241 @@ const App: React.FC = () => {
       }
   };
 
+  // ☁️ Manual Sync Handler
+  const handleManualSync = async (sessionId: string) => {
+    if (!session?.user) {
+      showNotification('请先登录', 'error');
+      return;
+    }
+
+    setSyncingSessionId(sessionId);
+
+    try {
+      // 从本地备份获取数据
+      const localBackup = loadLocalBackup();
+      const localSession = localBackup?.sessions.find(s => s.id === sessionId);
+      const localWords = localBackup?.words.filter(w => w.sessionId === sessionId);
+
+      if (!localSession || !localWords) {
+        // 如果本地备份中没有，可能已经在云端了，尝试从云端刷新
+        showNotification('该 Session 未找到本地备份数据，正在从云端刷新...', 'warning');
+        const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
+        setSessions(cloudSessions);
+        setWords(cloudWords);
+        showNotification('✅ 数据已从云端刷新', 'success');
+        return;
+      }
+
+      console.log(`[ManualSync] Syncing session ${sessionId}...`);
+
+      // 调用同步服务
+      const result = await syncSessionToCloud(
+        session.user.id,
+        localSession,
+        localWords
+      );
+
+      if (result.success) {
+        if (result.action === 'uploaded') {
+          // 上传成功 → 清除本地备份
+          const updatedBackup = {
+            ...localBackup!,
+            sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
+          };
+          saveLocalBackup(updatedBackup);
+
+          // 刷新数据
+          const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
+          setSessions(cloudSessions);
+          setWords(cloudWords);
+
+          showNotification('✅ 同步成功！数据已上传到云端', 'success');
+        } else if (result.action === 'downloaded') {
+          // 云端较新 → 应用云端数据
+          if (result.cloudData) {
+            setSessions(prev => prev.map(s =>
+              s.id === sessionId ? result.cloudData!.session : s
+            ));
+            setWords(prev => {
+              const oldIds = prev
+                .filter(w => w.sessionId === sessionId)
+                .map(w => w.id);
+              const newWords = result.cloudData!.words.filter(
+                w => !oldIds.has(w.id)
+              );
+              return [...prev.filter(w => !oldIds.has(w.id)), ...newWords];
+            });
+
+            // 清除本地备份
+            const updatedBackup = {
+              ...localBackup!,
+              sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
+            };
+            saveLocalBackup(updatedBackup);
+          }
+          showNotification('📥 已应用云端最新数据', 'success');
+        } else if (result.action === 'skipped') {
+          showNotification('✅ 数据已同步，无需操作', 'success');
+        }
+      } else {
+        // 冲突 → 显示对话框
+        if (result.action === 'conflict' && result.conflictData) {
+          setConflictModal({
+            sessionId,
+            cloud: result.conflictData.cloud,
+            local: result.conflictData.local
+          });
+        } else {
+          showNotification(`❌ ${result.message}`, 'error');
+        }
+      }
+    } catch (error) {
+      console.error('[ManualSync] Error:', error);
+      showNotification(`❌ 同步失败: ${(error as Error).message}`, 'error');
+    } finally {
+      setSyncingSessionId(null);
+    }
+  };
+
+  // ⚖️ Conflict Resolution Handler
+  const handleConfirmConflictResolution = async () => {
+    if (!conflictModal || !conflictChoice || !session?.user) return;
+
+    try {
+      const result = await resolveConflict(
+        session.user.id,
+        conflictModal.sessionId,
+        conflictChoice,
+        {
+          session: conflictModal.local,
+          words: [] // Words will be fetched separately
+        },
+        {
+          session: conflictModal.cloud,
+          words: []
+        }
+      );
+
+      if (result.success) {
+        // 清除冲突标记
+        setConflictModal(null);
+        setConflictChoice(null);
+
+        // 刷新数据
+        const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
+        setSessions(cloudSessions);
+        setWords(cloudWords);
+
+        // 清除本地备份
+        const localBackup = loadLocalBackup();
+        if (localBackup) {
+          const updatedBackup = {
+            ...localBackup,
+            sessions: localBackup.sessions.filter(s => s.id !== conflictModal.sessionId)
+          };
+          saveLocalBackup(updatedBackup);
+        }
+
+        showNotification('✅ 冲突已解决！', 'success');
+      } else {
+        showNotification(`❌ 解决冲突失败: ${result.message}`, 'error');
+      }
+    } catch (error) {
+      console.error('[ConflictResolution] Error:', error);
+      showNotification(`❌ 解决冲突失败: ${(error as Error).message}`, 'error');
+    }
+  };
+
+  // 🔄 Auto Sync (30 minutes)
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const interval = setInterval(async () => {
+      const backup = loadLocalBackup();
+      if (!backup) return;
+
+      const pendingSessions = backup.sessions.filter(
+        s => s.syncStatus === 'pending' || s.syncStatus === 'failed'
+      );
+
+      if (pendingSessions.length === 0) return;
+
+      console.log(`[AutoSync] Found ${pendingSessions.length} pending sessions`);
+
+      const result = await syncAllPendingSessions(session.user.id);
+      console.log(
+        `[AutoSync] Complete: ${result.synced} synced, ${result.failed} failed, ${result.conflicts} conflicts`
+      );
+
+      // 更新本地状态
+      if (result.synced > 0 || result.conflicts > 0) {
+        const { sessions: cloudSessions, words: cloudWords } =
+          await fetchUserData(session.user.id);
+        setSessions(cloudSessions);
+        setWords(cloudWords);
+
+        if (result.synced > 0) {
+          showNotification(
+            `✅ 自动同步完成：${result.synced} 个 Session 已同步`,
+            'success'
+          );
+        }
+      }
+
+      // 处理冲突
+      if (result.conflicts > 0) {
+        showNotification(
+          `⚠️ 检测到 ${result.conflicts} 个同步冲突，请手动处理`,
+          'warning'
+        );
+      }
+    }, 30 * 60 * 1000); // 30分钟
+
+    return () => clearInterval(interval);
+  }, [session?.user]);
+
+  // 🌐 Network Status Listener
+  useEffect(() => {
+    const handleOnline = async () => {
+      console.log('🌐 Network restored, attempting to sync...');
+      showNotification('🌐 网络已恢复，正在同步...', 'success');
+
+      // 立即尝试同步所有待同步的Session
+      const backup = loadLocalBackup();
+      if (backup && session?.user) {
+        const pendingSessions = backup.sessions.filter(
+          s => s.syncStatus === 'pending' || s.syncStatus === 'failed'
+        );
+
+        if (pendingSessions.length > 0) {
+          const result = await syncAllPendingSessions(session.user.id);
+          if (result.synced > 0) {
+            const { sessions: cloudSessions, words: cloudWords } =
+              await fetchUserData(session.user.id);
+            setSessions(cloudSessions);
+            setWords(cloudWords);
+          }
+        }
+      }
+    };
+
+    const handleOffline = () => {
+      console.log('📴 Network lost, switching to offline mode');
+      showNotification(
+        '⚠️ 网络断开，数据将保存到本地',
+        'warning'
+      );
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [session?.user]);
+
   const handleStartEdit = (sessionId: string) => {
     setEditingSessionId(sessionId);
     setMode('INPUT');
@@ -601,7 +974,127 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col font-body overflow-x-hidden relative bg-charcoal">
-        <style>{`
+
+      {/* 🔔 Notification Toast */}
+      {notification && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-[200] px-6 py-4 rounded-2xl shadow-2xl border-2 flex items-center gap-3 animate-in slide-in-from-top-4 fade-in duration-300 ${
+            notification.type === 'success'
+              ? 'bg-electric-green/20 border-electric-green text-white'
+              : notification.type === 'warning'
+              ? 'bg-yellow-500/20 border-yellow-500 text-white'
+              : 'bg-red-500/20 border-red-500 text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-2xl">
+            {notification.type === 'success'
+              ? 'check_circle'
+              : notification.type === 'warning'
+              ? 'warning'
+              : 'error'}
+          </span>
+          <p className="font-medium">{notification.message}</p>
+        </div>
+      )}
+
+      {/* ⚠️ Conflict Resolution Modal */}
+      {conflictModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="bg-light-charcoal border-2 border-yellow-500 rounded-3xl p-8 max-w-2xl w-full shadow-[0_0_50px_rgba(234,179,8,0.3)] scale-in-center">
+            <div className="flex items-center gap-3 mb-6">
+              <span className="material-symbols-outlined text-5xl text-yellow-500">warning</span>
+              <h3 className="text-3xl font-headline text-white tracking-tight">SYNC CONFLICT</h3>
+            </div>
+
+            <p className="text-text-light mb-8 text-sm leading-relaxed">
+              检测到云端和本地有不同版本的该 Session。请选择要保留的版本：
+            </p>
+
+            <div className="grid md:grid-cols-2 gap-6 mb-8">
+              {/* 云端版本 */}
+              <div
+                onClick={() => setConflictChoice('cloud')}
+                className={`cursor-pointer p-6 rounded-2xl border-2 transition-all ${
+                  conflictChoice === 'cloud'
+                    ? 'border-electric-blue bg-electric-blue/10'
+                    : 'border-mid-charcoal hover:border-electric-blue/50'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="material-symbols-outlined text-electric-blue">cloud</span>
+                  <h4 className="text-lg font-headline text-white">云端版本</h4>
+                </div>
+                <div className="space-y-2 text-sm">
+                  <p className="text-text-light">
+                    <span className="text-text-dark">时间：</span>
+                    {new Date(conflictModal.cloud.timestamp).toLocaleString()}
+                  </p>
+                  <p className="text-text-light">
+                    <span className="text-text-dark">单词数：</span>
+                    {conflictModal.cloud.wordCount} 个
+                  </p>
+                  <p className="text-text-light">
+                    <span className="text-text-dark">标签：</span>
+                    {conflictModal.cloud.libraryTag}
+                  </p>
+                </div>
+              </div>
+
+              {/* 本地版本 */}
+              <div
+                onClick={() => setConflictChoice('local')}
+                className={`cursor-pointer p-6 rounded-2xl border-2 transition-all ${
+                  conflictChoice === 'local'
+                    ? 'border-electric-green bg-electric-green/10'
+                    : 'border-mid-charcoal hover:border-electric-green/50'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="material-symbols-outlined text-electric-green">devices</span>
+                  <h4 className="text-lg font-headline text-white">本地版本</h4>
+                </div>
+                <div className="space-y-2 text-sm">
+                  <p className="text-text-light">
+                    <span className="text-text-dark">时间：</span>
+                    {new Date(conflictModal.local.timestamp).toLocaleString()}
+                  </p>
+                  <p className="text-text-light">
+                    <span className="text-text-dark">单词数：</span>
+                    {conflictModal.local.wordCount} 个
+                  </p>
+                  <p className="text-text-light">
+                    <span className="text-text-dark">标签：</span>
+                    {conflictModal.local.libraryTag}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* 按钮组 */}
+            <div className="flex gap-4">
+              <button
+                onClick={() => {
+                  setConflictModal(null);
+                  setConflictChoice(null);
+                }}
+                className="flex-1 py-4 rounded-xl bg-mid-charcoal text-text-light hover:bg-white hover:text-charcoal transition-all font-mono text-xs uppercase tracking-widest"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmConflictResolution}
+                disabled={!conflictChoice}
+                className="flex-1 py-4 rounded-xl bg-electric-green text-charcoal hover:bg-white transition-all font-headline text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined">check_circle</span>
+                使用 {conflictChoice === 'cloud' ? '云端' : '本地'} 版本
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
           @keyframes breathe {
             0%, 100% { opacity: 0.3; transform: scale(1); }
             50% { opacity: 0.5; transform: scale(1.2); }
@@ -648,8 +1141,8 @@ const App: React.FC = () => {
 
       <main className="flex-1 p-4 md:p-8 pt-20 md:pt-24 pb-12 md:pb-16 max-w-[1400px] mx-auto w-full relative z-10">
         {mode === 'DASHBOARD' && (
-          <Dashboard 
-            stats={getStats()} 
+          <Dashboard
+            stats={getStats()}
             sessions={visibleSessions}
             words={visibleWords}
             selectedSessionIds={selectedDashboardSessionIds}
@@ -664,7 +1157,7 @@ const App: React.FC = () => {
             onStartInput={() => {
                 setEditingSessionId(null);
                 setMode('INPUT');
-            }} 
+            }}
             onStartTest={(ids) => handleStartTest(ids)}
             onStartEdit={handleStartEdit}
             onOpenLibrary={() => setMode('LIBRARY')}
@@ -673,6 +1166,8 @@ const App: React.FC = () => {
                 setIdsToDelete(ids);
                 setShowDeleteConfirm(true);
             }}
+            onManualSync={handleManualSync}
+            syncingSessionId={syncingSessionId}
           />
         )}
         {mode === 'INPUT' && (
@@ -909,15 +1404,17 @@ const App: React.FC = () => {
 };
 
 // --- Session Matrix Component ---
-const SessionMatrix: React.FC<{ 
-  sessions: InputSession[], 
+const SessionMatrix: React.FC<{
+  sessions: InputSession[],
   selectedIds: Set<string>,
   onToggleSelect: (id: string) => void,
   onStartTest: (id: string) => void,
   onEdit: (id: string) => void,
   onDelete: (id: string) => void,
-  onExpand: () => void 
-}> = ({ sessions, selectedIds, onToggleSelect, onStartTest, onEdit, onDelete, onExpand }) => {
+  onExpand: () => void,
+  onManualSync?: (id: string) => void,
+  syncingSessionId?: string | null
+}> = ({ sessions, selectedIds, onToggleSelect, onStartTest, onEdit, onDelete, onExpand, onManualSync, syncingSessionId }) => {
   const MAX_SLOTS = 12; // 2 rows x 6 cols
   const count = sessions.length;
   const showMoreButton = count > MAX_SLOTS;
@@ -984,7 +1481,7 @@ const SessionMatrix: React.FC<{
                 </div>
               </div>
               
-              <button 
+              <button
                 onClick={(e) => {
                     e.stopPropagation();
                     onDelete(s.id);
@@ -994,6 +1491,31 @@ const SessionMatrix: React.FC<{
               >
                 <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>delete</span>
               </button>
+
+              {/* ☁️ Cloud Sync Button */}
+              {onManualSync && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onManualSync(s.id);
+                  }}
+                  disabled={syncingSessionId === s.id}
+                  className={`rounded-lg transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'} ${
+                    syncingSessionId === s.id
+                      ? 'bg-electric-blue/20 text-electric-blue cursor-wait'
+                      : 'bg-mid-charcoal text-text-dark hover:bg-electric-blue hover:text-white'
+                  }`}
+                  title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
+                >
+                  <span className={`material-symbols-outlined ${syncingSessionId === s.id ? 'animate-spin' : ''} ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>
+                    {syncingSessionId === s.id ? 'cloud_sync' : (
+                      s.syncStatus === 'synced' ? 'cloud_done' :
+                      s.syncStatus === 'pending' ? 'cloud_off' :
+                      'cloud_error'
+                    )}
+                  </span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1013,19 +1535,21 @@ const SessionMatrix: React.FC<{
 };
 
 // --- Dashboard Component ---
-const Dashboard: React.FC<{ 
-  stats: Record<string, DayStats>, 
-  sessions: InputSession[], 
-  words: WordEntry[], 
-  selectedSessionIds: Set<string>, 
-  onToggleSessionSelect: (id: string) => void, 
-  onStartInput: () => void, 
-  onStartTest: (sIds: string[]) => void, 
-  onStartEdit: (sId: string) => void, 
+const Dashboard: React.FC<{
+  stats: Record<string, DayStats>,
+  sessions: InputSession[],
+  words: WordEntry[],
+  selectedSessionIds: Set<string>,
+  onToggleSessionSelect: (id: string) => void,
+  onStartInput: () => void,
+  onStartTest: (sIds: string[]) => void,
+  onStartEdit: (sId: string) => void,
   onOpenLibrary: () => void,
   onQuickTest: () => void,
-  onDeleteSessions: (ids: string[]) => void
-}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions }) => {
+  onDeleteSessions: (ids: string[]) => void,
+  onManualSync?: (id: string) => void,
+  syncingSessionId?: string | null
+}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId }) => {
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [showAllSessions, setShowAllSessions] = useState(false);
 
@@ -1182,6 +1706,29 @@ const Dashboard: React.FC<{
                                 </div>
                              </div>
                              <div className="flex gap-2">
+                                {/* ☁️ Cloud Sync Button */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    // Sync will be handled by parent
+                                  }}
+                                  disabled={syncingSessionId === s.id}
+                                  className={`p-2 rounded-lg transition-colors ${
+                                    syncingSessionId === s.id
+                                      ? 'bg-electric-blue/20 text-electric-blue cursor-wait'
+                                      : 'bg-mid-charcoal text-text-dark hover:bg-electric-blue hover:text-white'
+                                  }`}
+                                  title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
+                                >
+                                  <span className={`material-symbols-outlined text-lg ${syncingSessionId === s.id ? 'animate-spin' : ''}`}>
+                                    {syncingSessionId === s.id ? 'cloud_sync' : (
+                                      s.syncStatus === 'synced' ? 'cloud_done' :
+                                      s.syncStatus === 'pending' ? 'cloud_off' :
+                                      'cloud_error'
+                                    )}
+                                  </span>
+                                </button>
+
                                 <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title="Edit">
                                     <span className="material-symbols-outlined text-lg">edit</span>
                                 </button>
@@ -1194,15 +1741,17 @@ const Dashboard: React.FC<{
                 </div>
             ) : (
                 /* Adaptive Matrix View */
-                <div className="h-96 w-full p-2"> 
-                    <SessionMatrix 
-                        sessions={sessions} 
+                <div className="h-96 w-full p-2">
+                    <SessionMatrix
+                        sessions={sessions}
                         selectedIds={selectedSessionIds}
                         onToggleSelect={onToggleSessionSelect}
                         onStartTest={(id) => onStartTest([id])}
                         onEdit={onStartEdit}
                         onDelete={(id) => onDeleteSessions([id])}
                         onExpand={() => setShowAllSessions(true)}
+                        onManualSync={onManualSync}
+                        syncingSessionId={syncingSessionId}
                     />
                 </div>
             )}
