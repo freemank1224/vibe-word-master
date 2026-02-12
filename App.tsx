@@ -1001,12 +1001,7 @@ const App: React.FC = () => {
 
   // Password reset page has highest priority
   if (resetToken) {
-    // When resetting password, show the reset page regardless of session state
-    // Clear any existing session to avoid interference
-    if (session) {
-      supabase.auth.signOut();
-      setSession(null);
-    }
+    // Show password reset page - don't sign out as the access token will set the session
     return <PasswordReset accessToken={resetToken} onClose={() => setResetToken(null)} />;
   }
 

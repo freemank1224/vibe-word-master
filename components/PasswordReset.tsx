@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
 export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void }> = ({ accessToken, onClose }) => {
@@ -7,6 +7,30 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [sessionSet, setSessionSet] = useState(false);
+
+  // Set session using the access token from URL hash
+  useEffect(() => {
+    const setSession = async () => {
+      try {
+        const { data, error: sessionError } = await supabase.auth.setSession({
+          access_token: accessToken,
+        });
+
+        if (sessionError) {
+          setError('Invalid or expired reset link. Please request a new password reset.');
+          return;
+        }
+
+        setSessionSet(true);
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Failed to authenticate';
+        setError(errorMessage);
+      }
+    };
+
+    setSession();
+  }, [accessToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,6 +149,12 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
           <p className="font-mono text-xs text-text-dark uppercase tracking-widest">Enter your new password below</p>
         </div>
 
+        {!sessionSet && !error && (
+          <div className="bg-electric-blue/10 text-electric-blue text-xs p-3 rounded-lg border border-electric-blue/30 mb-4">
+            🔐 Setting up secure session...
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
             <label className="block text-xs font-mono text-text-dark mb-2 uppercase">New Password</label>
@@ -160,10 +190,10 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !sessionSet}
             className="w-full py-4 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors disabled:opacity-50"
           >
-            {loading ? 'PROCESSING...' : 'UPDATE PASSWORD'}
+            {loading ? 'PROCESSING...' : !sessionSet ? 'SETTING UP SESSION...' : 'UPDATE PASSWORD'}
           </button>
 
           <div className="mt-4 text-center">
