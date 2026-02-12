@@ -121,6 +121,22 @@ const App: React.FC = () => {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+
+      // Check if user's email is confirmed after login/signup
+      if (session?.user && !session.user.email_confirmed_at) {
+        // Only show this warning if we haven't already shown it for this user
+        const notificationKey = `email-warning-shown-${session.user.id}`;
+        if (!localStorage.getItem(notificationKey)) {
+          setTimeout(() => {
+            showNotification(
+              '⚠️ Please confirm your email address! Check your inbox (including spam folder) to activate your account.',
+              'warning',
+              10000
+            );
+          }, 1000);
+          localStorage.setItem(notificationKey, 'true');
+        }
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -139,10 +155,10 @@ const App: React.FC = () => {
         .then(([{ sessions, words }, stats, achievementIds]) => {
           setSessions(sessions);
           setWords(words);
-          
+
           // Initialize Achievements (DB Load)
           setUnlockedAchievements(new Set(achievementIds));
-          
+
           // Map DB daily_stats array to Record<string, DayStats>
           const statsMap: Record<string, DayStats> = {};
           stats.forEach((s: any) => {
