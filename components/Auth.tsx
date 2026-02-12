@@ -1,14 +1,19 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
-export const Auth: React.FC = () => {
+interface AuthProps {
+  onForgotPassword?: () => void;
+}
+
+export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState<'LOGIN' | 'SIGNUP'>('LOGIN');
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'success' | 'error' | 'info'>('info');
+  const [failedAttempts, setFailedAttempts] = useState(0);
 
   // Mascot logic
   const getMascotTheme = () => {
@@ -27,6 +32,11 @@ export const Auth: React.FC = () => {
   };
 
   const currentTheme = getMascotTheme();
+
+  // Reset failed attempts when email or mode changes
+  useEffect(() => {
+    setFailedAttempts(0);
+  }, [email, mode]);
 
   // Check if user already exists before signup
   const checkUserExists = async (email: string): Promise<{ exists: boolean; email_confirmed: string | null } | null> => {
@@ -128,15 +138,28 @@ export const Auth: React.FC = () => {
         });
 
         if (error) {
-          setMsgType('error');
+          // Increment failed attempts for invalid credentials
           if (error.message.includes('Invalid login credentials')) {
-            setMsg('Invalid email or password. If you just registered, please confirm your email first.');
+            const newAttempts = failedAttempts + 1;
+            setFailedAttempts(newAttempts);
+
+            if (newAttempts >= 3) {
+              setMsgType('error');
+              setMsg(`❌ Invalid password (3 attempts). Forgot your password? Click "Forgot Password" below to reset it.`);
+            } else {
+              setMsgType('error');
+              setMsg(`Invalid email or password (${newAttempts}/3 attempts). Please try again.`);
+            }
           } else if (error.message.includes('Email not confirmed')) {
+            setMsgType('error');
             setMsg('Please confirm your email address first. Check your inbox (including spam folder).');
           } else {
+            setMsgType('error');
             setMsg(`Login failed: ${error.message}`);
           }
         } else {
+          // Reset failed attempts on successful login
+          setFailedAttempts(0);
           setMsgType('success');
           setMsg('Welcome back! 🎮 Loading your data...');
         }
@@ -178,19 +201,6 @@ export const Auth: React.FC = () => {
     } catch (error: unknown) {
       setMsgType('error');
       const errorMessage = error instanceof Error ? error.message : 'Failed to resend activation email. Please try again later.';
-      setMsg(errorMessage);
-    }
-  };
-
-  const handleForgotPassword = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    try {
-      await supabase.auth.resetPasswordForEmail(email);
-      setMsgType('success');
-      setMsg('🔑 Password reset email sent! Please check your inbox to reset your password.');
-    } catch (error: unknown) {
-      setMsgType('error');
-      const errorMessage = error instanceof Error ? error.message : 'Failed to send password reset email. Please try again later.';
       setMsg(errorMessage);
     }
   };
@@ -284,7 +294,7 @@ export const Auth: React.FC = () => {
 
               {/* Show appropriate action buttons based on message */}
               <div className="flex flex-wrap gap-2 mt-2">
-                {(msg.includes('already registered') || msg.includes('not confirmed')) && (
+                {(msg.includes('already registered') || msg.includes('not confirmed') || msg.includes('Invalid password') || msg.includes('attempts')) && (
                   <>
                     <button
                       type="button"
@@ -297,7 +307,7 @@ export const Auth: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={handleForgotPassword}
+                      onClick={() => onForgotPassword?.()}
                       className="text-xs bg-white/10 text-white px-3 py-1.5 rounded-lg hover:bg-white/20 transition-colors"
                       title="Reset password"
                     >

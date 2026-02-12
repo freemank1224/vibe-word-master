@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
+import { PasswordReset } from './components/PasswordReset';
+import { PasswordForgotRequest } from './components/PasswordForgotRequest';
 import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats } from './services/dataService';
 import {
   loadLocalBackup,
@@ -82,6 +84,25 @@ const App: React.FC = () => {
 
   // Admin Console State
   const [showAdminConsole, setShowAdminConsole] = useState(false);
+
+  // Password Reset State
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [showPasswordForgot, setShowPasswordForgot] = useState(false);
+
+  // Check for password reset in URL hash
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.includes('type=recovery')) {
+      // Extract access_token from hash
+      const params = new URLSearchParams(hash.substring(1));
+      const accessToken = params.get('access_token');
+      if (accessToken) {
+        setResetToken(accessToken);
+        // Clear any existing session when resetting password
+        supabase.auth.signOut();
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -978,11 +999,21 @@ const App: React.FC = () => {
     );
   }
 
+  // Password reset page has highest priority
+  if (resetToken) {
+    return <PasswordReset accessToken={resetToken} onClose={() => setResetToken(null)} />;
+  }
+
+  // Password forgot request page
+  if (showPasswordForgot) {
+    return <PasswordForgotRequest onBackToLogin={() => setShowPasswordForgot(false)} />;
+  }
+
   if (!session) {
     if (showLanding) {
       return <LandingPage onStart={() => setShowLanding(false)} />;
     }
-    return <Auth />;
+    return <Auth onForgotPassword={() => setShowPasswordForgot(true)} />;
   }
 
   if (loadingData && words.length === 0 && sessions.length === 0) {
