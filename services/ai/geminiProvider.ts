@@ -214,19 +214,45 @@ export class GeminiProvider implements AIService {
       }));
 
       const prompt = `
-        As an expert language tutor, select exactly ${targetCount} words for the next vocabulary test.
-        
-        Prioritize:
-        1. Words with high error counts.
-        2. Words never tested or not tested recently (spaced repetition).
-        3. Words that are "stale" (tested long ago).
-        
-        Data:
-        Words: ${JSON.stringify(wordStats)}
-        Recent Sessions: ${JSON.stringify(sessionSummary)}
-        
-        Return STRICTLY a JSON array of strings containing ONLY the IDs of the selected words.
-        Example: ["id1", "id2", "id3"]
+        You are an adaptive learning algorithm specializing in vocabulary optimization.
+
+        === OBJECTIVE ===
+        Select exactly ${targetCount} words for the next test session based on error patterns and forgetting curves.
+
+        === ERROR COUNT INTERPRETATION ===
+        The error_count field uses fine-grained tracking to indicate difficulty:
+        - 0.0: Perfect (no errors ever) - LOW PRIORITY
+        - 0.3: Used hint, 0 mistakes (slight difficulty) - MEDIUM-LOW PRIORITY
+        - 0.5: Used hint, 1 mistake (moderate difficulty) - MEDIUM PRIORITY
+        - 0.8: Used hint, 2 mistakes (significant difficulty) - MEDIUM-HIGH PRIORITY
+        - 1.0+: Multiple errors or completely failed (critical difficulty) - HIGH PRIORITY
+
+        === SELECTION STRATEGY ===
+        1. Priority Scale (error_count × urgency_weight):
+           - error_count ≥ 3.0: CRITICAL (40% weight)
+           - error_count 1.0-2.9: HIGH (30% weight)
+           - error_count 0.3-0.9: MEDIUM (20% weight)
+           - error_count 0.0-0.2: LOW (10% weight)
+
+        2. Apply Forgetting Curve:
+           - Words not tested in ≥7 days: +20% priority
+           - Words not tested in 3-6 days: +10% priority
+           - Recently tested words (≤2 days): Base priority only
+
+        3. Ensure Diversity:
+           - At least 30% from high-priority words (error_count ≥ 1.0)
+           - At most 20% from low-priority words (error_count < 0.3)
+           - Avoid testing the same word twice in one session
+
+        === WORD CANDIDATES ===
+        ${JSON.stringify(wordStats)}
+
+        === RECENT SESSIONS ===
+        ${JSON.stringify(sessionSummary)}
+
+        === OUTPUT FORMAT ===
+        Return STRICTLY a JSON array of word IDs (no other text):
+        ["id1", "id2", "id3", ...]
       `;
 
       // Create a timeout promise (15s to handle slow connections)

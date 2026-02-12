@@ -6,6 +6,7 @@ import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../s
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
 import { aiService } from '../services/ai';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
+import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 
@@ -217,40 +218,40 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     
                     if (aiQueue.length < targetCount) {
                         const remaining = targetCount - aiQueue.length;
-                        const remainderPool = availablePool.filter(w => !optimizedIds.includes(w.id));
-                        for (let i = remainderPool.length - 1; i > 0; i--) {
-                            const j = Math.floor(Math.random() * (i + 1));
-                            [remainderPool[i], remainderPool[j]] = [remainderPool[j], remainderPool[i]];
-                        }
-                        aiQueue.push(...remainderPool.slice(0, remaining));
+                        // 使用自适应算法填充而非随机
+                        const adaptiveFiller = adaptiveWordSelector.calculateQueue(
+                            allWords,
+                            availablePool.filter(w => !optimizedIds.includes(w.id)),
+                            remaining,
+                            sessions
+                        );
+                        aiQueue.push(...adaptiveFiller);
                     }
 
-                    for (let i = aiQueue.length - 1; i > 0; i--) {
-                        const j = Math.floor(Math.random() * (i + 1));
-                        [aiQueue[i], aiQueue[j]] = [aiQueue[j], aiQueue[i]];
-                    }
-                    
                     setQueue(aiQueue);
                     setIsOptimizing(false);
                     return;
                 }
             } catch (e: any) {
-                console.warn("AI Selection failed, falling back to random:", e);
+                console.warn("AI Selection failed, falling back to adaptive algorithm:", e);
                 setNotification({
                     type: 'error',
-                    message: `AI Optimization Unavailable: ${e?.message || 'Unknown error'}. Switching to Standard Mode.`
+                    message: `AI Optimization Unavailable: ${e?.message || 'Unknown error'}. Using Adaptive Algorithm.`
                 });
                 setTimeout(() => setNotification(null), 4000);
             }
         }
 
-        // Standard Random Shuffle (Fallback or Default)
-        const shuffled = [...availablePool];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        setQueue(shuffled.slice(0, targetCount));
+        // Standard Mode (or AI fallback): Use Adaptive Algorithm
+        console.log('🔄 [TestMode] Using adaptive word selection algorithm...');
+        const adaptiveQueue = adaptiveWordSelector.calculateQueue(
+            allWords,
+            availablePool,
+            targetCount,
+            sessions
+        );
+
+        setQueue(adaptiveQueue);
         setIsOptimizing(false);
     };
 
