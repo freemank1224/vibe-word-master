@@ -25,12 +25,15 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
 
   const getCellColor = (stat?: DayStats) => {
     if (!stat || stat.total === 0) return 'bg-dark-charcoal/50 text-text-dark border-mid-charcoal/30 hover:border-mid-charcoal';
-    
+
     // Calculate rate based on points if available, else simple correct/total
-    const rate = stat.points !== undefined 
-      ? stat.points / (stat.total * 3) 
+    let rate = stat.points !== undefined
+      ? stat.points / (stat.total * 3)
       : stat.correct / stat.total;
-    
+
+    // CRITICAL: Clamp rate to valid range [0, 1] to prevent >100% or <0%
+    rate = Math.max(0, Math.min(1, rate));
+
     if (stat.total < 10 || rate < 0.5) {
       return 'bg-red-500/40 text-red-400 border-red-500/60';
     }
@@ -101,20 +104,31 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
         {days.map(d => {
           const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           const stat = stats[dateStr];
-          
+          const isFrozen = stat?.is_frozen ?? false;
+
           return (
-            <div 
-              key={d} 
+            <div
+              key={d}
               className={`aspect-square rounded-xl border-2 flex flex-col items-center justify-center transition-all duration-300 cursor-default group relative hover:scale-[1.2] hover:z-50 hover:shadow-xl ${getCellColor(stat)} ${dateStr === flashingDate ? 'animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite] z-40' : ''}`}
             >
               <span className="text-base font-mono font-bold z-10">{d}</span>
-              
+
               {/* Tile Glow Effect */}
               <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-10 bg-white transition-opacity pointer-events-none"></div>
-              
+
+              {/* Frozen Badge */}
+              {stat && stat.total > 0 && isFrozen && (
+                <div className="absolute top-1 right-1 text-[8px] font-mono text-blue-400 opacity-60">
+                  🔒
+                </div>
+              )}
+
               {stat && stat.total > 0 && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover:block z-[60] bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
-                    <p className="font-bold text-white mb-1">Activity Log</p>
+                    <p className="font-bold text-white mb-1 flex items-center gap-2">
+                        Activity Log
+                        {isFrozen && <span className="text-[10px] opacity-60">🔒 FROZEN</span>}
+                    </p>
                     <div className="space-y-0.5">
                         <p className="text-text-dark flex justify-between gap-4">
                             <span>Correct:</span>
@@ -127,20 +141,30 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                         <p className="text-text-dark flex justify-between gap-4 pt-1 border-t border-mid-charcoal/30 mt-1">
                             <span>Accuracy:</span>
                             <span className="text-electric-green font-bold font-mono">
-                                {stat.points !== undefined 
-                                    ? Math.round((stat.points / (stat.total * 3)) * 100) 
-                                    : Math.round((stat.correct / stat.total) * 100)}%
+                                {(() => {
+                                    const accuracy = stat.points !== undefined
+                                        ? (stat.points / (stat.total * 3)) * 100
+                                        : (stat.correct / stat.total) * 100;
+                                    // CRITICAL: Clamp accuracy to valid range [0, 100]
+                                    const clampedAccuracy = Math.max(0, Math.min(100, accuracy));
+                                    return Math.round(clampedAccuracy);
+                                })()}%
                             </span>
                         </p>
                     </div>
                     <div className="h-1 w-full bg-mid-charcoal mt-2 rounded-full overflow-hidden">
-                        <div 
-                            className="h-full bg-electric-blue transition-all duration-500" 
-                            style={{ 
-                                width: `${stat.points !== undefined 
-                                    ? (stat.points / (stat.total * 3)) * 100 
-                                    : (stat.correct / stat.total) * 100}%` 
-                            }} 
+                        <div
+                            className="h-full bg-electric-blue transition-all duration-500"
+                            style={{
+                                width: `${(() => {
+                                    const accuracy = stat.points !== undefined
+                                        ? (stat.points / (stat.total * 3)) * 100
+                                        : (stat.correct / stat.total) * 100;
+                                    // CRITICAL: Clamp accuracy to valid range [0, 100]
+                                    const clampedAccuracy = Math.max(0, Math.min(100, accuracy));
+                                    return clampedAccuracy;
+                                })()}%`
+                            }}
                         ></div>
                     </div>
                 </div>

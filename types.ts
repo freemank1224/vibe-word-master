@@ -29,7 +29,7 @@ export interface InputSession {
   targetCount: number;
   deleted?: boolean;
   libraryTag?: string; // Which library this session belongs to (Custom, CET-4, etc.)
-  syncStatus?: 'synced' | 'pending' | 'failed'; // ☁️ Cloud sync status for UI
+  syncStatus?: 'synced' | 'syncing' | 'pending' | 'failed' | 'conflict'; // ☁️ Cloud sync status for UI
 }
 
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';
@@ -39,4 +39,5 @@ export interface DayStats {
   total: number;
   correct: number;
   points?: number; // Added aggregate points
+  is_frozen?: boolean; // Whether this day's stats are frozen (immutable)
 }

@@ -756,7 +756,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       const correctCount = results.filter(r => r.correct).length;
       const totalPoints = results.reduce((sum, r) => sum + r.score, 0);
       const maxPoints = queue.length * 3;
-      const accuracy = maxPoints > 0 ? Math.round((totalPoints / maxPoints) * 100) : 0;
+      // CRITICAL: Clamp accuracy to valid range [0, 100] to prevent >100% display
+      const accuracy = maxPoints > 0 ? Math.max(0, Math.min(100, Math.round((totalPoints / maxPoints) * 100))) : 0;
       
       const getEmoji = (acc: number) => {
           if (acc === 100) return '🏆';

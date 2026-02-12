@@ -189,7 +189,9 @@ const App: React.FC = () => {
                   date: s.date,
                   total: s.total_count || s.total,  // Use total_count from DB
                   correct: s.correct_count || s.correct,  // Use correct_count from DB
-                  points: s.points || s.total_points || 0  // Use points from DB
+                  // FIXED: Use total_points first (new accurate field), fallback to legacy points
+                  points: s.total_points ?? s.points ?? 0,
+                  is_frozen: s.is_frozen || false  // Include freeze status
               };
           });
           setDailyStats(statsMap);
