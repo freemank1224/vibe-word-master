@@ -124,7 +124,8 @@ export const fetchUserData = async (userId: string) => {
       wordCount: sessionWords.length,
       targetCount: s.target_count,
       deleted: s.deleted || false,
-      libraryTag
+      libraryTag,
+      syncStatus: 'synced' as const  // ✅ 云端数据都是已同步的
     };
   }).filter(s => s.wordCount > 0); // Remove sessions that have no active words (Zombies)
 

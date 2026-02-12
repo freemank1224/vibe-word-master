@@ -726,7 +726,7 @@ const App: React.FC = () => {
           // 云端较新 → 应用云端数据
           if (result.cloudData) {
             setSessions(prev => prev.map(s =>
-              s.id === sessionId ? result.cloudData!.session : s
+              s.id === sessionId ? { ...result.cloudData!.session, syncStatus: 'synced' as const } : s
             ));
             setWords(prev => {
               const oldIds = prev
@@ -747,10 +747,30 @@ const App: React.FC = () => {
           }
           showNotification('📥 已应用云端最新数据', 'success');
         } else if (result.action === 'skipped') {
+          // 数据相同，确保 syncStatus 为 synced
+          setSessions(prev => prev.map(s =>
+            s.id === sessionId ? { ...s, syncStatus: 'synced' as const } : s
+          ));
           showNotification('✅ 数据已同步，无需操作', 'success');
         }
       } else {
-        // 冲突 → 显示对话框
+        // 同步失败/冲突 → 更新 syncStatus 为 failed
+        console.error('[ManualSync] Sync failed:', result.action, result.message);
+
+        // 更新本地备份的 syncStatus
+        const updatedBackup = {
+          ...localBackup!,
+          sessions: localBackup!.sessions.map(s =>
+            s.id === sessionId ? { ...s, syncStatus: 'failed' as const } : s
+          )
+        };
+        saveLocalBackup(updatedBackup);
+
+        // 更新当前 session 的 syncStatus
+        setSessions(prev => prev.map(s =>
+          s.id === sessionId ? { ...s, syncStatus: 'failed' as const } : s
+        ));
+
         if (result.action === 'conflict' && result.conflictData) {
           setConflictModal({
             sessionId,
@@ -758,7 +778,7 @@ const App: React.FC = () => {
             local: result.conflictData.local
           });
         } else {
-          showNotification(`❌ ${result.message}`, 'error');
+          showNotification(`❌ 同步失败: ${result.message}`, 'error');
         }
       }
     } catch (error) {
@@ -1508,10 +1528,10 @@ const SessionMatrix: React.FC<{
                   title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
                 >
                   <span className={`material-symbols-outlined ${syncingSessionId === s.id ? 'animate-spin' : ''} ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>
-                    {syncingSessionId === s.id ? 'cloud_sync' : (
-                      s.syncStatus === 'synced' ? 'cloud_done' :
-                      s.syncStatus === 'pending' ? 'cloud_off' :
-                      'cloud_error'
+                    {syncingSessionId === s.id ? 'refresh' : (
+                      s.syncStatus === 'synced' ? 'check_box' :
+                      s.syncStatus === 'pending' ? 'check_box_outline_blank' :
+                      'error'
                     )}
                   </span>
                 </button>
@@ -1721,10 +1741,10 @@ const Dashboard: React.FC<{
                                   title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
                                 >
                                   <span className={`material-symbols-outlined text-lg ${syncingSessionId === s.id ? 'animate-spin' : ''}`}>
-                                    {syncingSessionId === s.id ? 'cloud_sync' : (
-                                      s.syncStatus === 'synced' ? 'cloud_done' :
-                                      s.syncStatus === 'pending' ? 'cloud_off' :
-                                      'cloud_error'
+                                    {syncingSessionId === s.id ? 'refresh' : (
+                                      s.syncStatus === 'synced' ? 'check_box' :
+                                      s.syncStatus === 'pending' ? 'check_box_outline_blank' :
+                                      'error'
                                     )}
                                   </span>
                                 </button>

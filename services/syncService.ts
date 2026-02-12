@@ -239,7 +239,11 @@ export const syncSessionToCloud = async (
       .maybeSingle(); // 使用 maybeSingle，不存在时返回 null 而不是报错
 
     if (fetchError) {
-      console.error('[SyncService] Error fetching cloud session:', fetchError);
+      console.error('[SyncService] ❌ Error fetching cloud session:', fetchError);
+      console.error('[SyncService]    Error code:', fetchError.code);
+      console.error('[SyncService]    Error message:', fetchError.message);
+      console.error('[SyncService]    Error details:', fetchError.details);
+      console.error('[SyncService]    Error hint:', fetchError.hint);
       return {
         success: false,
         action: 'error',
@@ -265,7 +269,11 @@ export const syncSessionToCloud = async (
       .or('deleted.eq.false,deleted.is.null');
 
     if (wordsError) {
-      console.error('[SyncService] Error fetching cloud words:', wordsError);
+      console.error('[SyncService] ❌ Error fetching cloud words:', wordsError);
+      console.error('[SyncService]    Error code:', wordsError.code);
+      console.error('[SyncService]    Error message:', wordsError.message);
+      console.error('[SyncService]    Error details:', wordsError.details);
+      console.error('[SyncService]    Error hint:', wordsError.hint);
       return {
         success: false,
         action: 'error',
@@ -351,7 +359,10 @@ export const syncSessionToCloud = async (
     }
 
   } catch (error) {
-    console.error('[SyncService] Sync failed:', error);
+    console.error('[SyncService] ❌ Sync failed with exception:', error);
+    console.error('[SyncService]    Error name:', (error as any).name);
+    console.error('[SyncService]    Error message:', (error as Error).message);
+    console.error('[SyncService]    Error stack:', (error as any).stack);
     return {
       success: false,
       action: 'error',
@@ -383,9 +394,17 @@ const uploadNewSession = async (
       .select()
       .single();
 
-    if (sessionError) throw sessionError;
+    if (sessionError) {
+      console.error('[SyncService] ❌ Session insert error:', sessionError);
+      console.error('[SyncService]    Error code:', sessionError.code);
+      console.error('[SyncService]    Error message:', sessionError.message);
+      console.error('[SyncService]    Error details:', sessionError.details);
+      console.error('[SyncService]    Error hint:', sessionError.hint);
+      throw sessionError;
+    }
 
     // 2. 批量插入 Words（不包含图片数据）
+    console.log(`[SyncService] 📝 Preparing to insert ${words.length} words...`);
     const wordsPayload = words.map(w => ({
       id: w.id,
       user_id: userId,
@@ -408,9 +427,16 @@ const uploadNewSession = async (
       .from('words')
       .insert(wordsPayload);
 
-    if (wordsError) throw wordsError;
+    if (wordsError) {
+      console.error('[SyncService] ❌ Words insert error:', wordsError);
+      console.error('[SyncService]    Error code:', wordsError.code);
+      console.error('[SyncService]    Error message:', wordsError.message);
+      console.error('[SyncService]    Error details:', wordsError.details);
+      console.error('[SyncService]    Error hint:', wordsError.hint);
+      throw wordsError;
+    }
 
-    console.log(`[SyncService] Uploaded new session ${session.id} with ${words.length} words`);
+    console.log(`[SyncService] ✅ Uploaded new session ${session.id} with ${words.length} words`);
 
     return {
       success: true,
@@ -419,7 +445,10 @@ const uploadNewSession = async (
     };
 
   } catch (error) {
-    console.error('[SyncService] Upload failed:', error);
+    console.error('[SyncService] ❌ Upload failed with exception:', error);
+    console.error('[SyncService]    Error name:', (error as any).name);
+    console.error('[SyncService]    Error message:', (error as Error).message);
+    console.error('[SyncService]    Error stack:', (error as any).stack);
     return {
       success: false,
       action: 'error',
@@ -437,6 +466,8 @@ const updateCloudSession = async (
   words: WordEntry[]
 ): Promise<SyncResult> => {
   try {
+    console.log(`[SyncService] 🔄 Updating session ${session.id} with ${words.length} words`);
+
     // 1. 更新 Session 元数据
     const { error: sessionError } = await supabase
       .from('sessions')
@@ -448,7 +479,14 @@ const updateCloudSession = async (
       .eq('id', session.id)
       .eq('user_id', userId);
 
-    if (sessionError) throw sessionError;
+    if (sessionError) {
+      console.error('[SyncService] ❌ Session update error:', sessionError);
+      console.error('[SyncService]    Error code:', sessionError.code);
+      console.error('[SyncService]    Error message:', sessionError.message);
+      console.error('[SyncService]    Error details:', sessionError.details);
+      console.error('[SyncService]    Error hint:', sessionError.hint);
+      throw sessionError;
+    }
 
     // 2. 更新或插入 Words（使用 upsert）
     const wordsPayload = words.map(w => ({
@@ -471,23 +509,45 @@ const updateCloudSession = async (
 
     // Supabase 的 upsert 不支持批量，我们分批处理
     const BATCH_SIZE = 100;
+    const totalBatches = Math.ceil(wordsPayload.length / BATCH_SIZE);
+    console.log(`[SyncService] 📦 Will process ${wordsPayload.length} words in ${totalBatches} batches`);
+
     for (let i = 0; i < wordsPayload.length; i += BATCH_SIZE) {
       const batch = wordsPayload.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+
+      console.log(`[SyncService] 📝 Processing batch ${batchNum}/${totalBatches} (${batch.length} words)`);
 
       // 先删除已存在的 words
       const wordIds = batch.map(w => w.id);
-      await supabase
+      const { error: deleteError } = await supabase
         .from('words')
         .delete()
         .in('id', wordIds)
         .eq('user_id', userId);
+
+      if (deleteError) {
+        console.error('[SyncService] ❌ Batch delete error:', deleteError);
+        console.error('[SyncService]    Error code:', deleteError.code);
+        console.error('[SyncService]    Error message:', deleteError.message);
+        console.error('[SyncService]    Error details:', deleteError.details);
+        console.error('[SyncService]    Error hint:', deleteError.hint);
+        throw deleteError;
+      }
 
       // 再插入新数据
       const { error: wordsError } = await supabase
         .from('words')
         .insert(batch);
 
-      if (wordsError) throw wordsError;
+      if (wordsError) {
+        console.error('[SyncService] ❌ Batch insert error:', wordsError);
+        console.error('[SyncService]    Error code:', wordsError.code);
+        console.error('[SyncService]    Error message:', wordsError.message);
+        console.error('[SyncService]    Error details:', wordsError.details);
+        console.error('[SyncService]    Error hint:', wordsError.hint);
+        throw wordsError;
+      }
     }
 
     console.log(`[SyncService] Updated session ${session.id} with ${words.length} words`);
@@ -499,7 +559,10 @@ const updateCloudSession = async (
     };
 
   } catch (error) {
-    console.error('[SyncService] Update failed:', error);
+    console.error('[SyncService] ❌ Update failed with exception:', error);
+    console.error('[SyncService]    Error name:', (error as any).name);
+    console.error('[SyncService]    Error message:', (error as Error).message);
+    console.error('[SyncService]    Error stack:', (error as any).stack);
     return {
       success: false,
       action: 'error',

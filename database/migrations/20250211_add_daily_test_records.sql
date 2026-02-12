@@ -3,6 +3,7 @@
 -- ================================================================
 -- Purpose: Support incremental statistics calculation
 -- This table records each test session, enabling accurate aggregation
+-- NOTE: All dates are calculated using Beijing Time (UTC+8)
 -- ================================================================
 
 -- Create daily_test_records table
@@ -13,7 +14,7 @@ CREATE TABLE IF NOT EXISTS public.daily_test_records (
     test_count INTEGER NOT NULL,           -- Number of words in this test
     correct_count INTEGER NOT NULL,        -- Number of correct answers in this test
     points NUMERIC NOT NULL,               -- Points earned in this test
-    timezone_offset INTEGER,               -- User's timezone offset in hours
+    timezone_offset INTEGER,               -- User's timezone offset in hours (for reference)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
 
     -- Foreign Keys
@@ -41,6 +42,7 @@ CREATE INDEX IF NOT EXISTS daily_test_records_user_date_idx ON public.daily_test
 
 -- ================================================================
 -- Updated RPC Function: Record Test and Sync Stats (Incremental)
+-- Uses Beijing Time (UTC+8) for all date calculations
 -- ================================================================
 CREATE OR REPLACE FUNCTION record_test_and_sync_stats(
     p_test_date DATE DEFAULT NULL,
@@ -62,7 +64,6 @@ AS $$
 DECLARE
     v_user_id UUID;
     v_test_date DATE;
-    v_offset INTEGER;
     v_test_count_val INTEGER;
     v_correct_count_val INTEGER;
     v_points_val NUMERIC;
@@ -70,28 +71,12 @@ BEGIN
     -- Get current user ID
     v_user_id := auth.uid();
 
-    -- Determine timezone offset
-    IF p_timezone_offset_hours IS NOT NULL THEN
-        v_offset := p_timezone_offset_hours;
-    ELSE
-        -- Fallback: try to get from user_settings
-        SELECT timezone_offset INTO v_offset
-        FROM public.user_settings
-        WHERE user_id = v_user_id
-        LIMIT 1;
-
-        -- If still null, default to UTC (0)
-        IF v_offset IS NULL THEN
-            v_offset := 0;
-        END IF;
-    END IF;
-
-    -- Determine test date
+    -- Determine test date (using Beijing Time UTC+8)
     IF p_test_date IS NOT NULL THEN
         v_test_date := p_test_date;
     ELSE
-        -- Calculate today's date based on timezone
-        v_test_date := CURRENT_DATE AT TIME ZONE INTERVAL '1 hour' * v_offset;
+        -- Calculate today's date in Beijing Time (UTC+8)
+        v_test_date := (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE;
     END IF;
 
     -- Get test parameters (with defaults)
@@ -103,7 +88,7 @@ BEGIN
     INSERT INTO public.daily_test_records (
         user_id, test_date, test_count, correct_count, points, timezone_offset
     ) VALUES (
-        v_user_id, v_test_date, v_test_count_val, v_correct_count_val, v_points_val, v_offset
+        v_user_id, v_test_date, v_test_count_val, v_correct_count_val, v_points_val, p_timezone_offset_hours
     );
 
     -- Step 2: Calculate aggregated stats from test records
@@ -133,12 +118,12 @@ BEGIN
         daily_stats.total_points
     INTO synced_date, total_tests, correct_tests, total_points;
 
-    -- Step 3: Also calculate unique words for reference
+    -- Step 3: Also calculate unique words for reference (using Beijing Time)
     SELECT COUNT(DISTINCT text)
     INTO unique_words
     FROM public.words
     WHERE user_id = v_user_id
-        AND DATE(last_tested AT TIME ZONE INTERVAL '1 hour' * v_offset) = v_test_date
+        AND (last_tested AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE = v_test_date
         AND (deleted = false OR deleted IS NULL);
 
     RETURN NEXT;
@@ -147,6 +132,7 @@ $$;
 
 -- ================================================================
 -- Updated RPC Function: Get Today's Stats (Aggregated from records)
+-- Uses Beijing Time (UTC+8) for all date calculations
 -- ================================================================
 CREATE OR REPLACE FUNCTION get_todays_stats(p_timezone_offset_hours INTEGER DEFAULT NULL)
 RETURNS TABLE(
@@ -161,28 +147,13 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_user_id UUID;
-    v_offset INTEGER;
     v_today DATE;
 BEGIN
     -- Get current user ID
     v_user_id := auth.uid();
 
-    -- Determine timezone offset
-    IF p_timezone_offset_hours IS NOT NULL THEN
-        v_offset := p_timezone_offset_hours;
-    ELSE
-        SELECT timezone_offset INTO v_offset
-        FROM public.user_settings
-        WHERE user_id = v_user_id
-        LIMIT 1;
-
-        IF v_offset IS NULL THEN
-            v_offset := 0;
-        END IF;
-    END IF;
-
-    -- Calculate today's date
-    v_today := CURRENT_DATE AT TIME ZONE INTERVAL '1 hour' * v_offset;
+    -- Calculate today's date in Beijing Time (UTC+8)
+    v_today := (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE;
 
     -- Get aggregated stats from test records
     SELECT
@@ -193,7 +164,7 @@ BEGIN
         (SELECT COUNT(DISTINCT w.text)
          FROM public.words w
          WHERE w.user_id = v_user_id
-            AND DATE(w.last_tested AT TIME ZONE INTERVAL '1 hour' * v_offset) = v_today
+            AND (w.last_tested AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE = v_today
             AND (w.deleted = false OR w.deleted IS NULL)
         )::BIGINT
     INTO test_date, total_tests, correct_tests, total_points, unique_words
@@ -207,6 +178,7 @@ $$;
 
 -- ================================================================
 -- Helper Function: Recalculate Historical Stats
+-- Uses Beijing Time (UTC+8) for all date calculations
 -- ================================================================
 -- Run this once after migration to backfill historical data from words table
 CREATE OR REPLACE FUNCTION backfill_daily_stats_from_words(
@@ -232,14 +204,14 @@ BEGIN
     v_user_id := auth.uid();
 
     -- Default to last 30 days if not specified
-    v_start_date := COALESCE(p_start_date, CURRENT_DATE - INTERVAL '30 days');
-    v_end_date := COALESCE(p_end_date, CURRENT_DATE);
+    v_start_date := COALESCE(p_start_date, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE - INTERVAL '30 days');
+    v_end_date := COALESCE(p_end_date, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE);
 
     -- Loop through each date
     FOR v_date IN
         SELECT generate_series(v_start_date, v_end_date, INTERVAL '1 day')::DATE
     LOOP
-        -- Calculate stats from words table (for historical data)
+        -- Calculate stats from words table (for historical data, using Beijing Time)
         SELECT
             COUNT(*),
             COUNT(*) FILTER (WHERE correct = true),
@@ -247,7 +219,7 @@ BEGIN
         INTO v_word_count, v_correct_count, v_points
         FROM public.words
         WHERE user_id = v_user_id
-            AND DATE(last_tested AT TIME ZONE INTERVAL '1 hour' * 0) = v_date
+            AND (last_tested AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE = v_date
             AND (deleted = false OR deleted IS NULL);
 
         -- Only insert if there's data
@@ -261,7 +233,7 @@ BEGIN
                 INSERT INTO public.daily_test_records (
                     user_id, test_date, test_count, correct_count, points, timezone_offset
                 ) VALUES (
-                    v_user_id, v_date, v_word_count, v_correct_count, v_points, 0
+                    v_user_id, v_date, v_word_count, v_correct_count, v_points, 8
                 );
 
                 -- Update daily_stats
@@ -287,6 +259,7 @@ $$;
 -- After applying this migration:
 -- 1. New tests will be recorded in daily_test_records
 -- 2. Stats will be calculated incrementally from test records
--- 3. To backfill historical data, run: SELECT * FROM backfill_daily_stats_from_words();
--- 4. Old sync_todays_stats_with_timezone function is kept for compatibility
+-- 3. All dates use Beijing Time (UTC+8) via 'Asia/Shanghai' timezone
+-- 4. To backfill historical data, run: SELECT * FROM backfill_daily_stats_from_words();
+-- 5. Old sync_todays_stats_with_timezone function is kept for compatibility
 -- ================================================================
