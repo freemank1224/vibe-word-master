@@ -1,0 +1,39 @@
+Total messages: 38 (Errors: 0, Warnings: 1)
+Returning 36 messages for level "info"
+
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ✅ Pronunciation service initialized with Supabase proxy support @ http://localhost:3007/services/pronunciationService.ts:363
+[LOG] 📡 Proxy URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation @ http://localhost:3007/services/pronunciationService.ts:364
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [SyncStatusChecker] Checking sync status for loaded sessions... @ http://localhost:3007/App.tsx?t=1771002764275:428
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443

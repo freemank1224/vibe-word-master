@@ -53,3 +53,19 @@ export interface DayStatsWithVersion extends DayStats {
   _conflict?: boolean;  // Whether this record resulted from a conflict merge
   _resolved?: 'local' | 'server' | 'merged';  // How the conflict was resolved
 }
+
+/**
+ * Pending sync item for offline queue (Phase C)
+ * Stores test data locally when sync fails, for retry when connection is restored
+ */
+export interface PendingSyncItem {
+  id: string;  // UUID for tracking
+  date: string;  // Test date (YYYY-MM-DD)
+  testCount: number;  // Total words tested
+  correctCount: number;  // Correct answers
+  points: number;  // Points earned
+  expectedVersion: number;  // Version for conflict detection
+  timestamp: number;  // When created (ms)
+  retryCount?: number;  // Current retry attempt
+  lastError?: string;  // Last error message
+}

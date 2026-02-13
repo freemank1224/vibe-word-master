@@ -1,0 +1,163 @@
+Total messages: 168 (Errors: 2, Warnings: 6)
+Returning 160 messages for level "info"
+
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ✅ Pronunciation service initialized with Supabase proxy support @ http://localhost:3007/services/pronunciationService.ts:363
+[LOG] 📡 Proxy URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation @ http://localhost:3007/services/pronunciationService.ts:364
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [SyncStatusChecker] Checking sync status for loaded sessions... @ http://localhost:3007/App.tsx?t=1771002764275:428
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ✅ Pronunciation service initialized with Supabase proxy support @ http://localhost:3007/services/pronunciationService.ts:363
+[LOG] 📡 Proxy URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation @ http://localhost:3007/services/pronunciationService.ts:364
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [SyncStatusChecker] Checking sync status for loaded sessions... @ http://localhost:3007/App.tsx?t=1771002764275:428
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx?t=1771002764275:443
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3007/@vite/client:963
+[ERROR] WebSocket connection to 'ws://localhost:3007/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3007/@vite/client:1034
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[WARNING] Supabase Environment Variables Missing or Invalid! @ http://localhost:3007/lib/supabaseClient.ts:5
+[WARNING] Please make sure SUPABASE_URL and SUPABASE_ANON_KEY are set in your .env file @ http://localhost:3007/lib/supabaseClient.ts:6
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ⚠️ Supabase URL not found, will use direct API access (may fail in production) @ http://localhost:3007/services/pronunciationService.ts:366
+[LOG] 💡 To fix: Ensure VITE_SUPABASE_URL is set in .env file @ http://localhost:3007/services/pronunciationService.ts:367
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3007/@vite/client:963
+[ERROR] WebSocket connection to 'ws://localhost:3007/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3007/@vite/client:1034
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ✅ Pronunciation service initialized with Supabase proxy support @ http://localhost:3007/services/pronunciationService.ts:363
+[LOG] 📡 Proxy URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation @ http://localhost:3007/services/pronunciationService.ts:364
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [SyncStatusChecker] Checking sync status for loaded sessions... @ http://localhost:3007/App.tsx:428
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session c2c1f4b2-5e20-47f0-84b4-c26a973f72d9: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 44675c93-c4ed-4e1b-9e6e-5661f7cec251: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session aeae1709-f952-4ac4-b523-862b5f1860f9: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 2fc6c0aa-228b-4f5d-b2d3-c7029fb1c95c: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 7d44b421-df34-4502-87c9-b0c424343693: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session ae1ad27b-814d-4643-a054-9daca6d0fab4: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session 1ca148b1-6803-4ec0-9c3b-2f314890eb0c: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session cebf0cbf-4372-4db3-a04e-dcc7220905c0: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [SyncStatusChecker] Session c4993bb1-f67c-4f4f-ad33-904d8cbb0b43: synced (not in backup) @ http://localhost:3007/App.tsx:443
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] [fetchUserData] Loaded 506 words for user @ http://localhost:3007/services/dataService.ts:57
+[LOG] ⏸️ Cancelled speech synthesis @ http://localhost:3007/services/pronunciationService.ts:307
+[LOG] 🗑️ Cleared 0 cache entries @ http://localhost:3007/services/audioCache.ts:112
+[LOG] 🗑️ Cleared all audio caches (memory + persistent) @ http://localhost:3007/services/pronunciationService.ts:327
+[LOG] ⏸️ Cancelled speech synthesis @ http://localhost:3007/services/pronunciationService.ts:307
+[LOG] 🔄 [TestMode] Using adaptive word selection algorithm... @ http://localhost:3007/components/TestModeV2.tsx:232
+[LOG] 🎯 [Adaptive Selector] {totalCandidates: 8, selectedCount: 5, errorDistribution: Object, avgUrgency: 7.73, topSelectedWords: Array(5)} @ http://localhost:3007/services/adaptiveWordSelector.ts:147
+[LOG] ⏸️ Cancelled speech synthesis @ http://localhost:3007/services/pronunciationService.ts:307
+[LOG] ⏸️ Cancelled speech synthesis @ http://localhost:3007/services/pronunciationService.ts:307
+[LOG] ⏸️ Cancelled speech synthesis @ http://localhost:3007/services/pronunciationService.ts:307
+[LOG] 🔍 Checking persistent cache for "graphic"... @ http://localhost:3007/services/pronunciationService.ts:127
+[LOG] ❌ No persistent cache found for "graphic" @ http://localhost:3007/services/pronunciationService.ts:138
+[LOG] 🔊 Trying source: Supabase Proxy for "graphic" @ http://localhost:3007/services/pronunciationService.ts:149
+[LOG] 🌐 URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation?word=graphic&source=youdao&lang=en @ http://localhost:3007/services/pronunciationService.ts:164
+[LOG] 🆕 Creating new audio element for "graphic" @ http://localhost:3007/services/pronunciationService.ts:197
+[LOG] 🎵 Audio ready to play for "graphic" @ http://localhost:3007/services/pronunciationService.ts:210
+[LOG] ▶️ Playing audio for "graphic" @ http://localhost:3007/services/pronunciationService.ts:239
+[LOG] ✅ Playback completed for "graphic" @ http://localhost:3007/services/pronunciationService.ts:213
+[LOG] 📢 playAudioFromUrl returned: true @ http://localhost:3007/services/pronunciationService.ts:166
+[LOG] ✅ Success using: Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:168
+[LOG] 💾 Saving to cache: word="graphic", lang="en", url="https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation?word=graphic&source=youdao&lang=en", source="Supabase Proxy" @ http://localhost:3007/services/pronunciationService.ts:169
+[LOG] 💾 Cached URL for "graphic" from Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:171
+[LOG] 🎯 Cache HIT for "graphic" (Supabase Proxy) @ http://localhost:3007/services/audioCache.ts:55
+[LOG] ✅ Cache verification: SAVED @ http://localhost:3007/services/pronunciationService.ts:173
+[LOG] Pronunciation played using: Supabase Proxy @ http://localhost:3007/services/dictionaryService.ts:4

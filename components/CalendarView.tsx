@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { DayStats } from '../types';
+import { getShanghaiDateString } from '../utils/timezone';
 
 interface CalendarViewProps {
   stats: Record<string, DayStats>;
@@ -9,6 +10,7 @@ interface CalendarViewProps {
 export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
   const [viewDate, setViewDate] = useState(new Date());
   const [flashingDate, setFlashingDate] = useState<string | null>(null);
+  const shanghaiToday = getShanghaiDateString();
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -102,7 +104,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
         {days.map(d => {
           const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           const stat = stats[dateStr];
-          const isFrozen = stat?.is_frozen ?? false;
+          const isFrozen = (stat?.is_frozen ?? false) || dateStr < shanghaiToday;
 
           return (
             <div

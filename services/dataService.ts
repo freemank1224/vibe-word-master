@@ -431,7 +431,8 @@ export const syncDailyStats = async () => {
 export const recordTestAndSyncStats = async (
     testCount: number,
     correctCount: number,
-    points: number
+  points: number,
+  expectedVersion?: number
 ) => {
     const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
 
@@ -450,7 +451,8 @@ export const recordTestAndSyncStats = async (
         p_correct_count: correctCount,
         p_points: points,
         p_timezone_offset_hours: offsetHours,
-        p_client_date: clientDate  // ✅ Send client's calculated date
+      p_client_date: clientDate,
+      p_expected_version: expectedVersion ?? null
     });
 
     if (error) {

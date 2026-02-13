@@ -4,6 +4,7 @@ import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
 import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
+import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
   loadLocalBackup,
   saveLocalBackup,
@@ -32,7 +33,7 @@ import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
-import { getShanghaiDateString, isTodayInShanghai } from './utils/timezone';
+import { getShanghaiDateString } from './utils/timezone';
 
 // Define Test Configuration State
 interface TestConfig {
@@ -55,6 +56,7 @@ const App: React.FC = () => {
 
   // 同步状态
   const [syncingSessionId, setSyncingSessionId] = useState<string | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);  // ✅ NEW (Phase C): Pending sync queue count
   const [conflictModal, setConflictModal] = useState<{
     sessionId: string;
     cloud: InputSession;
@@ -184,6 +186,7 @@ const App: React.FC = () => {
 
           // Map DB daily_stats array to Record<string, DayStats>
           const statsMap: Record<string, DayStats> = {};
+            const shanghaiToday = getShanghaiDateString();
           stats.forEach((s: any) => {
               statsMap[s.date] = {
                   date: s.date,
@@ -191,7 +194,7 @@ const App: React.FC = () => {
                   correct: s.correct_count || s.correct,  // Use correct_count from DB
                   // FIXED: Use total_points first (new accurate field), fallback to legacy points
                   points: s.total_points ?? s.points ?? 0,
-                  is_frozen: s.is_frozen || false  // Include freeze status
+                is_frozen: s.is_frozen || s.date < shanghaiToday
               };
           });
           setDailyStats(statsMap);
@@ -207,6 +210,129 @@ const App: React.FC = () => {
   useEffect(() => {
       refreshData();
   }, [refreshData]);
+
+  // ✅ NEW (Phase C): Process offline sync queue on login
+  useEffect(() => {
+    const processQueue = async () => {
+      if (session?.user) {
+        const count = getPendingSyncCount();
+        if (count > 0) {
+          console.log(`[App] Found ${count} pending syncs, processing...`);
+
+          try {
+            const result = await processPendingSyncs();
+
+            if (result.success > 0) {
+              // Refresh stats after successful sync
+              const stats = await fetchUserStats(session.user.id);
+              const statsMap: Record<string, DayStats> = {};
+              const shanghaiToday = getShanghaiDateString();
+              stats.forEach((s: any) => {
+                  statsMap[s.date] = {
+                      date: s.date,
+                      total: s.total_count || s.total,
+                      correct: s.correct_count || s.correct,
+                      points: s.total_points ?? s.points ?? 0,
+                  is_frozen: s.is_frozen || s.date < shanghaiToday
+                  };
+              });
+              setDailyStats(statsMap);
+
+              showNotification(
+                  `✅ 离线队列同步完成：${result.success} 条测试记录`,
+                  'success'
+              );
+            }
+
+            if (result.failed > 0) {
+              showNotification(
+                  `⚠️ ${result.failed} 条测试记录同步失败（超过重试次数）`,
+                  'error'
+              );
+            }
+
+            // Update pending count
+            setPendingSyncCount(getPendingSyncCount());
+          } catch (error) {
+            console.error('[App] Failed to process pending syncs:', error);
+          }
+        }
+
+        // Initial count update
+        setPendingSyncCount(getPendingSyncCount());
+      }
+    };
+
+    processQueue();
+  }, [session?.user?.id]);  // Trigger on login
+
+  // ✅ NEW (Phase C): Update pending sync count periodically
+  useEffect(() => {
+    const updateCount = () => {
+      setPendingSyncCount(getPendingSyncCount());
+    };
+
+    // Update every 5 seconds
+    const interval = setInterval(updateCount, 5000);
+
+    return () => clearInterval(interval);
+  }, [session?.user?.id]);
+
+  // ✅ NEW (Phase C): Periodic queue processing (every 60 seconds)
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const interval = setInterval(async () => {
+      const count = getPendingSyncCount();
+      if (count > 0) {
+        console.log('[App] Periodic queue processing...');
+        await processPendingSyncs();
+        const stats = await fetchUserStats(session.user.id);
+        const statsMap: Record<string, DayStats> = {};
+        const shanghaiToday = getShanghaiDateString();
+        stats.forEach((s: any) => {
+            statsMap[s.date] = {
+                date: s.date,
+                total: s.total_count || s.total,
+                correct: s.correct_count || s.correct,
+                points: s.total_points ?? s.points ?? 0,
+            is_frozen: s.is_frozen || s.date < shanghaiToday
+            };
+        });
+        setDailyStats(statsMap);
+      }
+    }, 60000);  // 60 seconds
+
+    return () => clearInterval(interval);
+  }, [session?.user?.id]);
+
+  // ✅ NEW (Phase C): Periodic queue processing (every 60 seconds)
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const interval = setInterval(async () => {
+      const count = getPendingSyncCount();
+      if (count > 0) {
+        console.log('[App] Periodic queue processing...');
+        await processPendingSyncs();
+        const stats = await fetchUserStats(session.user.id);
+        const statsMap: Record<string, DayStats> = {};
+        const shanghaiToday = getShanghaiDateString();
+        stats.forEach((s: any) => {
+            statsMap[s.date] = {
+                date: s.date,
+                total: s.total_count || s.total,
+                correct: s.correct_count || s.correct,
+                points: s.total_points ?? s.points ?? 0,
+            is_frozen: s.is_frozen || s.date < shanghaiToday
+            };
+        });
+        setDailyStats(statsMap);
+      }
+    }, 60000);  // 60 seconds
+
+    return () => clearInterval(interval);
+  }, [session?.user?.id]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -350,6 +476,16 @@ const App: React.FC = () => {
 
       console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} points (Shanghai date: ${today})`);
 
+      // ✅ NEW (Phase D): Read-only protection - today must remain writable; if today is frozen, block writes
+      if (dailyStats[today]?.is_frozen) {
+        console.error('[updateLocalStats] ❌ Attempted to modify frozen day:', today);
+        showNotification(
+          '❌ 今日统计已冻结，无法继续修改。',
+          'error'
+        );
+        return;  // Reject modification
+      }
+
       // Update local stats immediately for instant UI feedback (optimistic update)
       setDailyStats(prev => {
           const current = prev[today] || { date: today, total: 0, correct: 0, points: 0 };
@@ -447,6 +583,23 @@ const App: React.FC = () => {
               }
 
               console.error('[updateLocalStats] ❌ Failed to sync with database:', err);
+
+              // ✅ NEW (Phase C): Enqueue to offline queue for retry
+              const currentStats = dailyStats[today];
+              const currentVersion = currentStats?.version || 0;
+              await enqueuePendingSync({
+                  date: today,
+                  testCount: results.length,
+                  correctCount: correctCount,
+                  points: currentTestPoints,
+                  expectedVersion: currentVersion,
+                  timestamp: Date.now()
+              });
+
+              showNotification(
+                  '⚠️ 同步失败，数据已保存到离线队列，将在下次连接时重试',
+                  'warning'
+              );
               // Keep local optimistic update on error
           }
       }
@@ -1117,6 +1270,16 @@ const App: React.FC = () => {
               : 'error'}
           </span>
           <p className="font-medium">{notification.message}</p>
+        </div>
+      )}
+
+      {/* ✅ NEW (Phase C): Pending Sync Queue Indicator */}
+      {pendingSyncCount > 0 && (
+        <div className="fixed top-4 right-4 z-[150] px-4 py-2 rounded-lg shadow-lg bg-yellow-500/90 border border-yellow-500 text-white flex items-center gap-2 animate-in slide-in-from-right-4 fade-in duration-300">
+          <span className="material-symbols-outlined text-lg">sync_problem</span>
+          <span className="text-sm font-medium">
+            {pendingSyncCount === 1 ? '1 条待同步' : `${pendingSyncCount} 条待同步`}
+          </span>
         </div>
       )}
 

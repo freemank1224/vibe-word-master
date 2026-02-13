@@ -1,0 +1,19 @@
+Total messages: 18 (Errors: 0, Warnings: 1)
+Returning 16 messages for level "info"
+
+[WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ https://cdn.tailwindcss.com/?plugins=forms,typography,aspect-ratio:67
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3007/node_modules/.vite/deps/react-dom_client.js?v=626dc717:20102
+[LOG] Loading local dictionary... @ http://localhost:3007/services/ai/localProvider.ts:11
+[LOG] 📦 Loaded 0 cached entries from localStorage @ http://localhost:3007/services/audioCache.ts:163
+[LOG] ✅ Pronunciation service initialized with Supabase proxy support @ http://localhost:3007/services/pronunciationService.ts:363
+[LOG] 📡 Proxy URL: https://mkdxdlsjisqazermmfoe.supabase.co/functions/v1/pronunciation @ http://localhost:3007/services/pronunciationService.ts:364
+[LOG] 🌐 Available pronunciation sources: @ http://localhost:3007/services/pronunciationService.ts:369
+[LOG]    0. Supabase Proxy @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    1. Youdao Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    2. iCiba Dictionary (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    3. Dict.cn (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    4. Edu.123听力 (CN) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    5. Vocabulary.com @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG]    999. Browser TTS (Optimized) @ http://localhost:3007/services/pronunciationService.ts:371
+[LOG] Local dictionary loaded successfully. @ http://localhost:3007/services/ai/localProvider.ts:20
+[LOG] 🎤 Loaded 191 voices for Web Speech API @ http://localhost:3007/services/pronunciationService.ts:358
