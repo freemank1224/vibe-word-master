@@ -1214,3 +1214,16 @@ export const verifyLibraryStatus = async (userId: string, libraryTags: string[])
   
   return result;
 };
+
+/**
+ * Custom error for version conflicts (Phase B)
+ */
+export class VersionConflictError extends Error {
+    constructor(
+        message: string,
+        public readonly clientVersion: number
+    ) {
+        super(message);
+        this.name = 'VersionConflictError';
+    }
+}

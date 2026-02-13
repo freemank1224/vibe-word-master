@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
 import {
   loadLocalBackup,
   saveLocalBackup,
@@ -367,31 +367,85 @@ const App: React.FC = () => {
       // 🔄 Record test to database and wait for confirmation
       if (session?.user) {
           try {
+              // ✅ NEW (Phase B): Get current version for optimistic locking
+              const currentStats = dailyStats[today];
+              const currentVersion = currentStats?.version || 0;
+
               const dbStats = await recordTestAndSyncStats(
                   results.length,
                   correctCount,
-                  currentTestPoints
+                  currentTestPoints,
+                  currentVersion  // ✅ NEW: Send expected version
               );
 
               if (dbStats) {
                   console.log('[updateLocalStats] ✅ Database sync completed:', dbStats);
 
-                  // Update local state with accurate database values
-                  // The database now returns CORRECT incremental statistics!
-                  setDailyStats(prev => {
-                      const newStats = { ...prev };
-                      newStats[today] = {
-                          date: today,
-                          total: dbStats.total_tests || results.length,
-                          correct: dbStats.correct_tests || correctCount,
-                          points: dbStats.total_points || currentTestPoints
-                      };
-                      return newStats;
-                  });
+                  // ✅ NEW (Phase B): Handle conflict detection result
+                  if (dbStats.conflict_detected) {
+                      console.warn('[updateLocalStats] ⚠️ Version conflict detected and auto-merged by database:', {
+                          client: currentVersion,
+                          server: dbStats.version
+                      });
+
+                      // Conflict was auto-merged, update local state with merged data
+                      setDailyStats(prev => {
+                          const newStats = { ...prev };
+                          newStats[today] = {
+                              date: today,
+                              total: dbStats.total_tests || results.length,
+                              correct: dbStats.correct_tests || correctCount,
+                              points: dbStats.total_points || currentTestPoints,
+                              version: dbStats.version,
+                              updated_at: new Date().toISOString(),
+                              _conflict: true,
+                              _resolved: 'merged'
+                          };
+                          return newStats;
+                      });
+
+                      // Show user notification about conflict
+                      showNotification(
+                          `⚠️ 版本冲突已自动解决：两个设备同时测试，数据已合并 (total: ${dbStats.total_tests}, correct: ${dbStats.correct_tests})`,
+                          'warning'
+                      );
+                  } else {
+                      // Normal sync without conflict
+                      // Update local state with accurate database values
+                      setDailyStats(prev => {
+                          const newStats = { ...prev };
+                          newStats[today] = {
+                              date: today,
+                              total: dbStats.total_tests || results.length,
+                              correct: dbStats.correct_tests || correctCount,
+                              points: dbStats.total_points || currentTestPoints,
+                              version: dbStats.version,
+                              updated_at: new Date().toISOString()
+                          };
+                          return newStats;
+                      });
+                  }
               } else {
                   console.warn('[updateLocalStats] ⚠️ Database returned null, keeping local optimistic update');
               }
           } catch (err) {
+              // ✅ NEW (Phase B): Handle version conflict errors
+              if (err instanceof VersionConflictError) {
+                  console.error('[updateLocalStats] ❌ Version conflict error:', {
+                      clientVersion: (err as VersionConflictError).clientVersion,
+                      error: err.message
+                  });
+
+                  // Show user notification
+                  showNotification(
+                      `⚠️ 检测到并发修改：请刷新页面查看最新数据`,
+                      'warning'
+                  );
+
+                  // Keep local optimistic update - user should refresh to see server state
+                  return;
+              }
+
               console.error('[updateLocalStats] ❌ Failed to sync with database:', err);
               // Keep local optimistic update on error
           }

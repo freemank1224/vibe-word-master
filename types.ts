@@ -41,4 +41,15 @@ export interface DayStats {
   /** @deprecated points field is deprecated for UI display (kept for backward compatibility). Accuracy now uses correct/total calculation only. */
   points?: number;
   is_frozen?: boolean; // Whether this day's stats are frozen (immutable)
+  version?: number; // Version number for optimistic locking (Phase B)
+  updated_at?: string; // Last update timestamp (ISO 8601) for conflict detection
+}
+
+/**
+ * Extended DayStats with version control metadata
+ * Used for handling version conflicts
+ */
+export interface DayStatsWithVersion extends DayStats {
+  _conflict?: boolean;  // Whether this record resulted from a conflict merge
+  _resolved?: 'local' | 'server' | 'merged';  // How the conflict was resolved
 }
