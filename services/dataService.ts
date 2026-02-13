@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 import { WordEntry, InputSession } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
+import { getShanghaiDateString } from '../utils/timezone';
 
 // Helper to get current user ID
 export const getCurrentUserId = async (): Promise<string | null> => {
@@ -434,6 +435,9 @@ export const recordTestAndSyncStats = async (
 ) => {
     const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
 
+    // ✅ Get client's calculated date using unified Shanghai timezone
+    const clientDate = getShanghaiDateString();  // Uses Asia/Shanghai timezone (UTC+8)
+
     // Get current user ID
     const { data: { user } } = await supabase.auth.getUser();
     if (!user?.id) {
@@ -445,7 +449,8 @@ export const recordTestAndSyncStats = async (
         p_test_count: testCount,
         p_correct_count: correctCount,
         p_points: points,
-        p_timezone_offset_hours: offsetHours
+        p_timezone_offset_hours: offsetHours,
+        p_client_date: clientDate  // ✅ Send client's calculated date
     });
 
     if (error) {
@@ -456,8 +461,18 @@ export const recordTestAndSyncStats = async (
         return null;
     }
 
-    // Return the synced stats (first row if multiple)
-    return Array.isArray(data) && data.length > 0 ? data[0] : data;
+    const result = Array.isArray(data) && data.length > 0 ? data[0] : data;
+
+    // ✅ Check for date mismatch warning from server
+    if (result?.date_mismatch) {
+        console.error('[recordTestAndSyncStats] ⚠️ Date mismatch detected!', {
+            client: clientDate,
+            server: result.synced_date
+        });
+        // TODO: Show user notification if needed
+    }
+
+    return result;
 };
 
 /**

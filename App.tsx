@@ -32,7 +32,7 @@ import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
-
+import { getShanghaiDateString, isTodayInShanghai } from './utils/timezone';
 
 // Define Test Configuration State
 interface TestConfig {
@@ -340,18 +340,15 @@ const App: React.FC = () => {
   // ✨ NEW: Helper to update stats with incremental recording
   // This uses the new daily_test_records table for accurate incremental statistics
   const updateLocalStats = async (results: { correct: boolean; score: number }[]) => {
-      // CRITICAL: Use client's local timezone for consistency with calendar view
-      const d = new Date();
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const today = `${year}-${month}-${day}`;
+      // ✅ CRITICAL: Use unified Shanghai timezone for consistency with database
+      // This ensures data is recorded to the correct date regardless of device timezone settings
+      const today = getShanghaiDateString();  // Uses Asia/Shanghai timezone (UTC+8)
 
       // Calculate test results
       const correctCount = results.filter(r => r.correct).length;
       const currentTestPoints = results.reduce((sum, r) => sum + (r.score || 0), 0);
 
-      console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} points`);
+      console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} points (Shanghai date: ${today})`);
 
       // Update local stats immediately for instant UI feedback (optimistic update)
       setDailyStats(prev => {

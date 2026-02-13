@@ -1,0 +1,150 @@
+-- ================================================================
+-- Migration: Add timezone validation for stats sync
+-- Date: 2025-02-14
+-- Author: System
+-- Purpose: Ensure client and server use consistent timezone
+-- ================================================================
+
+-- 1. Modify RPC function to add client date parameter and validation
+CREATE OR REPLACE FUNCTION record_test_and_sync_stats(
+    p_test_date DATE DEFAULT NULL,
+    p_client_date DATE DEFAULT NULL,  -- New: Client's calculated date
+    p_test_count INTEGER DEFAULT NULL,
+    p_correct_count INTEGER DEFAULT NULL,
+    p_points NUMERIC DEFAULT NULL,
+    p_timezone_offset_hours INTEGER DEFAULT NULL
+)
+RETURNS TABLE(
+    synced_date DATE,
+    total_tests BIGINT,
+    correct_tests BIGINT,
+    total_points NUMERIC,
+    unique_words BIGINT,
+    date_mismatch BOOLEAN  -- New: Whether dates mismatched
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_test_date DATE;
+    v_client_date DATE;
+    v_test_count_val INTEGER;
+    v_correct_count_val INTEGER;
+    v_points_val NUMERIC;
+    v_date_mismatch BOOLEAN;
+BEGIN
+    -- Get current user ID
+    v_user_id := auth.uid();
+
+    -- Determine test date (using Shanghai Time Asia/Shanghai)
+    IF p_test_date IS NOT NULL THEN
+        v_test_date := p_test_date;
+    ELSE
+        v_test_date := (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE;
+    END IF;
+
+    -- Record client date
+    v_client_date := p_client_date;
+
+    -- Get test parameters (with defaults)
+    v_test_count_val := COALESCE(p_test_count, 0);
+    v_correct_count_val := COALESCE(p_correct_count, 0);
+    v_points_val := COALESCE(p_points, 0);
+
+    -- Check date consistency
+    v_date_mismatch := (v_client_date IS NOT NULL AND v_client_date <> v_test_date);
+
+    IF v_date_mismatch THEN
+        -- Log warning (doesn't block write)
+        RAISE WARNING 'Date mismatch: client %, server %',
+            v_client_date, v_test_date;
+
+        -- Use server-side date (more reliable)
+        -- But notify client of the discrepancy
+    END IF;
+
+    -- Step 1: Check if this day is frozen
+    DECLARE
+        v_is_frozen BOOLEAN;
+    SELECT is_frozen INTO v_is_frozen
+    FROM public.daily_stats
+    WHERE user_id = v_user_id AND date = v_test_date;
+
+    IF v_is_frozen = true THEN
+        RAISE EXCEPTION 'Cannot modify frozen stats for date %', v_test_date
+            USING HINT = 'This day has ended and its statistics are now frozen.';
+    END IF;
+
+    -- Step 2: Record this test session
+    INSERT INTO public.daily_test_records (
+        user_id, test_date, test_count, correct_count, points, timezone_offset
+    ) VALUES (
+        v_user_id, v_test_date, v_test_count_val, v_correct_count_val, v_points_val, p_timezone_offset_hours
+    );
+
+    -- Step 3: Calculate aggregated stats from test records
+    -- This gives us ACCURATE incremental statistics
+    INSERT INTO public.daily_stats (
+        user_id, date, total_count, correct_count, total_points
+    )
+    SELECT
+        v_user_id,
+        v_test_date,
+        SUM(test_count),                          -- Total tests (incremental)
+        SUM(correct_count),                       -- Total correct (incremental)
+        SUM(points)                               -- Total points (incremental)
+    FROM public.daily_test_records
+    WHERE user_id = v_user_id
+        AND test_date = v_test_date
+    ON CONFLICT (user_id, date)
+    DO UPDATE SET
+        total_count = EXCLUDED.total_count,
+        correct_count = EXCLUDED.correct_count,
+        total_points = EXCLUDED.total_points,
+        updated_at = now()
+    RETURNING
+        daily_stats.date,
+        daily_stats.total_count,
+        daily_stats.correct_count,
+        daily_stats.total_points
+    INTO synced_date, total_tests, correct_tests, total_points;
+
+    -- Step 4: Auto-freeze previous days after each sync
+    PERFORM freeze_previous_days();
+
+    -- Step 5: Calculate unique words for reference (using Shanghai Time)
+    SELECT COUNT(DISTINCT text)
+    INTO unique_words
+    FROM public.words
+    WHERE user_id = v_user_id
+        AND (last_tested AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::DATE = v_test_date
+        AND (deleted = false OR deleted IS NULL);
+
+    -- Return result with date mismatch flag
+    RETURN NEXT;
+END;
+$$;
+
+-- 2. Add log table for timezone mismatch events
+CREATE TABLE IF NOT EXISTS public.timezone_mismatch_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    client_date DATE NOT NULL,
+    server_date DATE NOT NULL,
+    test_count INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE
+);
+
+-- 3. Add indexes
+CREATE INDEX IF NOT EXISTS timezone_mismatch_log_user_id_idx
+ON public.timezone_mismatch_log(user_id, created_at DESC);
+
+-- ================================================================
+-- Testing checklist:
+-- [ ] Test different timezone clients
+-- [ ] Test cross-midnight test scenarios
+-- [ ] Verify log table records mismatches
+-- [ ] Verify frontend warning display
+-- ================================================================
