@@ -541,11 +541,13 @@ export const updateWordStatusV2 = async (
     .from('words')
     .update(payload)
     .eq('id', wordId);
-    
+
   if (error) console.error("Error updating word status V2:", error.message);
-  
-  // Sync stats (Fire & Forget)
-  syncDailyStats();
+
+  // NOTE: Stats sync is now handled at test session completion time
+  // via recordTestAndSyncStats(), which records to daily_test_records
+  // and aggregates to daily_stats incrementally.
+  // Individual word updates no longer trigger immediate stats sync.
 };
 
 export const updateWordImage = async (wordId: string, imagePath: string) => {
