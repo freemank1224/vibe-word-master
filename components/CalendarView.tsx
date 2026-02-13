@@ -26,10 +26,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
   const getCellColor = (stat?: DayStats) => {
     if (!stat || stat.total === 0) return 'bg-dark-charcoal/50 text-text-dark border-mid-charcoal/30 hover:border-mid-charcoal';
 
-    // Calculate rate based on points if available, else simple correct/total
-    let rate = stat.points !== undefined
-      ? stat.points / (stat.total * 3)
-      : stat.correct / stat.total;
+    // Simplified: Use correct/total directly (removed points-based calculation for better UX)
+    let rate = stat.total > 0 ? stat.correct / stat.total : 0;
 
     // CRITICAL: Clamp rate to valid range [0, 1] to prevent >100% or <0%
     rate = Math.max(0, Math.min(1, rate));
@@ -142,9 +140,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                             <span>Accuracy:</span>
                             <span className="text-electric-green font-bold font-mono">
                                 {(() => {
-                                    const accuracy = stat.points !== undefined
-                                        ? (stat.points / (stat.total * 3)) * 100
-                                        : (stat.correct / stat.total) * 100;
+                                    // Simplified: Use correct/total directly (removed points-based calculation)
+                                    const accuracy = stat.total > 0 ? (stat.correct / stat.total) * 100 : 0;
                                     // CRITICAL: Clamp accuracy to valid range [0, 100]
                                     const clampedAccuracy = Math.max(0, Math.min(100, accuracy));
                                     return Math.round(clampedAccuracy);
@@ -157,9 +154,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                             className="h-full bg-electric-blue transition-all duration-500"
                             style={{
                                 width: `${(() => {
-                                    const accuracy = stat.points !== undefined
-                                        ? (stat.points / (stat.total * 3)) * 100
-                                        : (stat.correct / stat.total) * 100;
+                                    // Simplified: Use correct/total directly (removed points-based calculation)
+                                    const accuracy = stat.total > 0 ? (stat.correct / stat.total) * 100 : 0;
                                     // CRITICAL: Clamp accuracy to valid range [0, 100]
                                     const clampedAccuracy = Math.max(0, Math.min(100, accuracy));
                                     return clampedAccuracy;

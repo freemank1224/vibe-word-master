@@ -38,6 +38,7 @@ export interface DayStats {
   date: string; // YYYY-MM-DD
   total: number;
   correct: number;
-  points?: number; // Added aggregate points
+  /** @deprecated points field is deprecated for UI display (kept for backward compatibility). Accuracy now uses correct/total calculation only. */
+  points?: number;
   is_frozen?: boolean; // Whether this day's stats are frozen (immutable)
 }
