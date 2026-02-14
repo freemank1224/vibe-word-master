@@ -40,7 +40,118 @@
         body {
             background-color: #1A1A2E;
             color: #E0E0E0;
+            margin: 0;
+            overflow: hidden; /* Prevent scrolling during loading */
         }
+        
+        /* Loading Screen Styles */
+        #loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #1A1A2E;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.5s ease-out;
+        }
+
+        .loader-content {
+            text-align: center;
+            width: 300px;
+        }
+
+        .loader-title {
+            font-family: "Bebas Neue", sans-serif;
+            font-size: 3.5rem;
+            margin-bottom: 2rem;
+            letter-spacing: -0.02em;
+            opacity: 0;
+            
+            /* 采用主页背景空间的主题过渡色 (#BB00FF 和 #00F0FF) */
+            background: linear-gradient(
+                135deg, 
+                #BB00FF 0%, 
+                #00F0FF 50%, 
+                #BB00FF 100%
+            );
+            background-size: 200% 200%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            /* 缓慢流动的动画 */
+            animation: flow 8s linear infinite, fadeInUp 0.8s ease-out forwards;
+            filter: drop-shadow(0 0 15px rgba(0, 240, 255, 0.2));
+        }
+
+        .loader-bar-container {
+            width: 100%;
+            height: 2px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 1px;
+            overflow: hidden;
+            position: relative;
+            opacity: 0;
+            animation: fadeIn 0.8s ease-out 0.3s forwards;
+        }
+
+        .loader-bar {
+            width: 0%;
+            height: 100%;
+            background-color: #00F0FF;
+            border-radius: 1px;
+            transition: width 0.3s ease-out;
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
+        }
+
+        @keyframes flow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        @keyframes shine {
+            to {
+                background-position: 200% center;
+            }
+        }
+
+        .loader-text {
+            font-family: "Space Mono", monospace;
+            color: #00F0FF;
+            font-size: 0.8rem;
+            margin-top: 1rem;
+            height: 1.2em;
+            opacity: 0;
+            animation: fadeIn 0.8s ease-out 0.5s forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes fadeInUp {
+            from { 
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Hide content initially */
+        #root {
+            opacity: 0;
+            transition: opacity 0.5s ease-in;
+        }
+
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
@@ -70,7 +181,101 @@
     </style>
 </head>
 <body>
+    <div id="loading-screen">
+        <div class="loader-content">
+            <h1 class="loader-title">VOCAB MONSTER</h1>
+            <div class="loader-bar-container">
+                <div class="loader-bar" id="progress-bar"></div>
+            </div>
+            <div class="loader-text" id="loading-text">INITIALIZING SYSTEMS...</div>
+        </div>
+    </div>
+
     <div id="root"></div>
+
     <script type="module" src="/index.tsx"></script>
+    
+    <script>
+        // Loading Screen Logic
+        (function() {
+            const progressBar = document.getElementById('progress-bar');
+            const loadingText = document.getElementById('loading-text');
+            const loadingScreen = document.getElementById('loading-screen');
+            const root = document.getElementById('root');
+            const body = document.body;
+            
+            let progress = 0;
+            
+            // 资源检测逻辑
+            function updateLoadingStatus() {
+                const entries = performance.getEntriesByType('resource');
+                const totalEstimated = 25; // 预估总资源数
+                const loadedCount = entries.length;
+                
+                // 基于实际加载情况计算进度，但保留平滑增长
+                const actualProgress = Math.min(90, (loadedCount / totalEstimated) * 90);
+                if (actualProgress > progress) {
+                    progress = actualProgress;
+                }
+
+                // 动态更新文字
+                if (loadingText && entries.length > 0) {
+                    const lastResource = entries[entries.length - 1].name.split('/').pop().split('?')[0];
+                    if (lastResource) {
+                        loadingText.innerText = `LOADING: ${lastResource.toUpperCase().substring(0, 30)}`;
+                    }
+                }
+                updateLoader();
+            }
+            
+            const interval = setInterval(() => {
+                // 使用 90 > progress 避免 HTML 解析器将 < 误认为标签开始
+                if (90 > progress) {
+                    progress += 0.5; // 保底自然增长
+                    updateLoader();
+                }
+                updateLoadingStatus();
+            }, 100);
+
+            function updateLoader() {
+                if (progressBar) progressBar.style.width = `${Math.min(100, progress)}%`;
+            }
+
+            function finishLoading() {
+                clearInterval(interval);
+                progress = 100;
+                updateLoader();
+                if (loadingText) loadingText.innerText = 'MODULES INITIALIZED';
+
+                setTimeout(() => {
+                    if (loadingScreen) {
+                        loadingScreen.style.opacity = '0';
+                        setTimeout(() => {
+                            loadingScreen.style.display = 'none';
+                            if (root) root.style.opacity = '1';
+                            body.style.overflow = 'auto';
+                        }, 500);
+                    }
+                }, 400);
+            }
+
+            // 监听资源和字体加载完毕
+            Promise.all([
+                new Promise(resolve => window.addEventListener('load', resolve)),
+                document.fonts.ready
+            ]).then(() => {
+                // 确保进度条平滑走完最后一段
+                const finishInterval = setInterval(() => {
+                    if (progress >= 100) {
+                        clearInterval(finishInterval);
+                        finishLoading();
+                    } else {
+                        progress += 2;
+                        updateLoader();
+                    }
+                }, 20);
+            });
+        })();
+    </script>
 </body>
 </html>
