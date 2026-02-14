@@ -474,6 +474,22 @@ export const recordTestAndSyncStats = async (
         // TODO: Show user notification if needed
     }
 
+    // ✅ Phase E: Handle conflict detection (server-side merge)
+    if (result?.conflict_detected) {
+        console.warn('[recordTestAndSyncStats] ⚠️ Version conflict detected and auto-merged by server:', {
+            date: result.synced_date,
+            expectedVersion,
+            serverVersion: result.version
+        });
+
+        // Mark as server-merged
+        return {
+            ...result,
+            _conflict: true,
+            _resolved: 'merged' as const
+        };
+    }
+
     return result;
 };
 

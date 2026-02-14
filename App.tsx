@@ -4,6 +4,7 @@ import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
 import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
+import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
   loadLocalBackup,
@@ -184,20 +185,27 @@ const App: React.FC = () => {
           // Initialize Achievements (DB Load)
           setUnlockedAchievements(new Set(achievementIds));
 
-          // Map DB daily_stats array to Record<string, DayStats>
-          const statsMap: Record<string, DayStats> = {};
-            const shanghaiToday = getShanghaiDateString();
+          // ✅ Phase E: Version-aware stats merging with conflict detection
+          const shanghaiToday = getShanghaiDateString();
+
+          // First, map server stats to basic format
+          const serverStatsMap: Record<string, DayStats> = {};
           stats.forEach((s: any) => {
-              statsMap[s.date] = {
+              serverStatsMap[s.date] = {
                   date: s.date,
-                  total: s.total_count || s.total,  // Use total_count from DB
-                  correct: s.correct_count || s.correct,  // Use correct_count from DB
-                  // FIXED: Use total_points first (new accurate field), fallback to legacy points
+                  total: s.total_count || s.total,
+                  correct: s.correct_count || s.correct,
                   points: s.total_points ?? s.points ?? 0,
-                is_frozen: s.is_frozen || s.date < shanghaiToday
+                  is_frozen: s.is_frozen || s.date < shanghaiToday,
+                  version: s.version,
+                  updated_at: s.updated_at
               };
           });
-          setDailyStats(statsMap);
+
+          // Merge with local stats using version-aware logic
+          const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
+
+          setDailyStats(mergedStats);
         })
         .catch((err) => {
             console.error("Data load error:", err);
@@ -223,20 +231,24 @@ const App: React.FC = () => {
             const result = await processPendingSyncs();
 
             if (result.success > 0) {
-              // Refresh stats after successful sync
+              // ✅ Refresh stats after successful sync with version-aware merging
               const stats = await fetchUserStats(session.user.id);
-              const statsMap: Record<string, DayStats> = {};
+              const serverStatsMap: Record<string, DayStats> = {};
               const shanghaiToday = getShanghaiDateString();
               stats.forEach((s: any) => {
-                  statsMap[s.date] = {
+                  serverStatsMap[s.date] = {
                       date: s.date,
                       total: s.total_count || s.total,
                       correct: s.correct_count || s.correct,
                       points: s.total_points ?? s.points ?? 0,
-                  is_frozen: s.is_frozen || s.date < shanghaiToday
+                      is_frozen: s.is_frozen || s.date < shanghaiToday,
+                      version: s.version,
+                      updated_at: s.updated_at
                   };
               });
-              setDailyStats(statsMap);
+
+              const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
+              setDailyStats(mergedStats);
 
               showNotification(
                   `✅ 离线队列同步完成：${result.success} 条测试记录`,
@@ -287,19 +299,24 @@ const App: React.FC = () => {
       if (count > 0) {
         console.log('[App] Periodic queue processing...');
         await processPendingSyncs();
+        // ✅ Refresh stats with version-aware merging
         const stats = await fetchUserStats(session.user.id);
-        const statsMap: Record<string, DayStats> = {};
+        const serverStatsMap: Record<string, DayStats> = {};
         const shanghaiToday = getShanghaiDateString();
         stats.forEach((s: any) => {
-            statsMap[s.date] = {
+            serverStatsMap[s.date] = {
                 date: s.date,
                 total: s.total_count || s.total,
                 correct: s.correct_count || s.correct,
                 points: s.total_points ?? s.points ?? 0,
-            is_frozen: s.is_frozen || s.date < shanghaiToday
+                is_frozen: s.is_frozen || s.date < shanghaiToday,
+                version: s.version,
+                updated_at: s.updated_at
             };
         });
-        setDailyStats(statsMap);
+
+        const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
+        setDailyStats(mergedStats);
       }
     }, 60000);  // 60 seconds
 
@@ -315,19 +332,24 @@ const App: React.FC = () => {
       if (count > 0) {
         console.log('[App] Periodic queue processing...');
         await processPendingSyncs();
+        // ✅ Refresh stats with version-aware merging
         const stats = await fetchUserStats(session.user.id);
-        const statsMap: Record<string, DayStats> = {};
+        const serverStatsMap: Record<string, DayStats> = {};
         const shanghaiToday = getShanghaiDateString();
         stats.forEach((s: any) => {
-            statsMap[s.date] = {
+            serverStatsMap[s.date] = {
                 date: s.date,
                 total: s.total_count || s.total,
                 correct: s.correct_count || s.correct,
                 points: s.total_points ?? s.points ?? 0,
-            is_frozen: s.is_frozen || s.date < shanghaiToday
+                is_frozen: s.is_frozen || s.date < shanghaiToday,
+                version: s.version,
+                updated_at: s.updated_at
             };
         });
-        setDailyStats(statsMap);
+
+        const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
+        setDailyStats(mergedStats);
       }
     }, 60000);  // 60 seconds
 
