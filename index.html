@@ -5,10 +5,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vocab Monster</title>
+    <script>
+        // 根据周几预加载对应的小怪兽
+        const currentDay = new Date().getDay();
+        const monsterPath = `/monsterImages/M${currentDay}.webp`;
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = monsterPath;
+        document.head.appendChild(link);
+    </script>
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
     <link rel="preconnect" href="https://fonts.loli.net">
-    <link href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
-    <link href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <link href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=block" rel="stylesheet" />
+    <link href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" rel="stylesheet" />
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -62,7 +72,26 @@
 
         .loader-content {
             text-align: center;
-            width: 300px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .loader-monster {
+            width: 120px; /* 稍微调大一点提升观感 */
+            height: auto; /* 保持原图比例 */
+            margin-bottom: 2rem;
+            opacity: 0;
+            transform: scale(0.8);
+            filter: drop-shadow(0 0 20px rgba(0, 240, 255, 0.3));
+            image-rendering: -webkit-optimize-contrast;
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .fonts-ready .loader-monster {
+            opacity: 1;
+            transform: scale(1);
+            animation: monsterBreathe 3s ease-in-out infinite;
         }
 
         .loader-title {
@@ -70,7 +99,7 @@
             font-size: 3.5rem;
             margin-bottom: 2rem;
             letter-spacing: -0.02em;
-            opacity: 0;
+            opacity: 0; /* 初始隐藏，防止字体跳变 */
             
             /* 采用主页背景空间的主题过渡色 (#BB00FF 和 #00F0FF) */
             background: linear-gradient(
@@ -83,9 +112,13 @@
             -webkit-background-clip: text;
             background-clip: text;
             -webkit-text-fill-color: transparent;
-            /* 缓慢流动的动画 */
-            animation: flow 8s linear infinite, fadeInUp 0.8s ease-out forwards;
             filter: drop-shadow(0 0 15px rgba(0, 240, 255, 0.2));
+            transition: opacity 0.3s ease-out;
+        }
+
+        /* 仅在字体就绪后触发动画 */
+        .fonts-ready .loader-title {
+            animation: flow 8s linear infinite, fadeInUp 0.8s ease-out forwards;
         }
 
         .loader-bar-container {
@@ -114,10 +147,9 @@
             100% { background-position: 0% 50%; }
         }
 
-        @keyframes shine {
-            to {
-                background-position: 200% center;
-            }
+        @keyframes monsterBreathe {
+            0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 20px rgba(0, 240, 255, 0.3)); }
+            50% { transform: translateY(-10px) scale(1.05); filter: drop-shadow(0 0 35px rgba(187, 0, 255, 0.4)); }
         }
 
         .loader-text {
@@ -126,7 +158,11 @@
             font-size: 0.8rem;
             margin-top: 1rem;
             height: 1.2em;
-            opacity: 0;
+            opacity: 0; /* 初始隐藏 */
+            transition: opacity 0.3s ease-out;
+        }
+
+        .fonts-ready .loader-text {
             animation: fadeIn 0.8s ease-out 0.5s forwards;
         }
 
@@ -183,6 +219,7 @@
 <body>
     <div id="loading-screen">
         <div class="loader-content">
+            <img src="" alt="Mascot" class="loader-monster" id="loader-monster">
             <h1 class="loader-title">VOCAB MONSTER</h1>
             <div class="loader-bar-container">
                 <div class="loader-bar" id="progress-bar"></div>
@@ -201,24 +238,43 @@
             const progressBar = document.getElementById('progress-bar');
             const loadingText = document.getElementById('loading-text');
             const loadingScreen = document.getElementById('loading-screen');
+            const monsterImg = document.getElementById('loader-monster');
             const root = document.getElementById('root');
             const body = document.body;
             
             let progress = 0;
+
+            // 设置当天对应的小怪兽图片
+            if (monsterImg) {
+                const day = new Date().getDay();
+                monsterImg.src = `/monsterImages/M${day}.webp`;
+            }
+
+            // 字体挂载超时保护：如果 3 秒内字体没加载完，强行显示
+            const fontTimeout = setTimeout(() => {
+                if (loadingScreen && !loadingScreen.classList.contains('fonts-ready')) {
+                    loadingScreen.classList.add('fonts-ready');
+                    console.warn('Font loading timed out, falling back to system fonts.');
+                }
+            }, 3000);
+
+            // 监测字体加载完毕
+            document.fonts.ready.then(() => {
+                clearTimeout(fontTimeout);
+                if (loadingScreen) loadingScreen.classList.add('fonts-ready');
+            });
             
             // 资源检测逻辑
             function updateLoadingStatus() {
                 const entries = performance.getEntriesByType('resource');
-                const totalEstimated = 25; // 预估总资源数
+                const totalEstimated = 25; 
                 const loadedCount = entries.length;
                 
-                // 基于实际加载情况计算进度，但保留平滑增长
                 const actualProgress = Math.min(90, (loadedCount / totalEstimated) * 90);
                 if (actualProgress > progress) {
                     progress = actualProgress;
                 }
 
-                // 动态更新文字
                 if (loadingText && entries.length > 0) {
                     const lastResource = entries[entries.length - 1].name.split('/').pop().split('?')[0];
                     if (lastResource) {
@@ -229,9 +285,8 @@
             }
             
             const interval = setInterval(() => {
-                // 使用 90 > progress 避免 HTML 解析器将 < 误认为标签开始
                 if (90 > progress) {
-                    progress += 0.5; // 保底自然增长
+                    progress += 0.5;
                     updateLoader();
                 }
                 updateLoadingStatus();
@@ -259,10 +314,15 @@
                 }, 400);
             }
 
-            // 监听资源和字体加载完毕
-            Promise.all([
-                new Promise(resolve => window.addEventListener('load', resolve)),
-                document.fonts.ready
+            // 监听资源和字体加载完毕，增加 8 秒兜底超时
+            const loadTimeout = new Promise(resolve => setTimeout(resolve, 8000));
+            
+            Promise.race([
+                Promise.all([
+                    new Promise(resolve => window.addEventListener('load', resolve)),
+                    document.fonts.ready
+                ]),
+                loadTimeout
             ]).then(() => {
                 // 确保进度条平滑走完最后一段
                 const finishInterval = setInterval(() => {
