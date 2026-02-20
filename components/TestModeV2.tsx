@@ -555,7 +555,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           correct: success,
           score: score,
           error_count_increment: errorCountDelta,  // 传给 dataService 的增量，内部会加到 error_count 上
-          best_time_ms: success ? (Date.now() - wordStartTime) : undefined
+          best_time_ms: success ? (Date.now() - wordStartTime) : undefined,
+          hasUsedHint: hasUsedHintSnapshot,  // Error decay: whether user used hints
+          consecutiveCorrect: currentWordSnapshot?.consecutive_correct || 0  // Error decay: current consecutive correct count
       };
 
       try {
@@ -573,10 +575,38 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       // 2. Real-time Local Update (for Calendar/Library synchronization)
       if (onUpdateWord) {
           const updatedErrorCount = errorCountBefore + errorCountDelta;  // 使用快照的值计算新error_count
+
+          // Error decay logic for local update
+          let newConsecutiveCorrect = (currentWordSnapshot?.consecutive_correct || 0);
+          let shouldRemoveMistakeTag = false;
+
+          if (success && !hasUsedHintSnapshot && score >= 3) {
+            // Increment consecutive correct
+            newConsecutiveCorrect += 1;
+            // Check if threshold reached (default: 3)
+            if (newConsecutiveCorrect >= 3 && updatedErrorCount > 0) {
+              // Apply error decay
+              updatedErrorCount = Math.max(0, updatedErrorCount - 1);
+              newConsecutiveCorrect = 0;
+              if (updatedErrorCount === 0) {
+                shouldRemoveMistakeTag = true;
+              }
+            }
+          } else {
+            // Reset on incorrect or hint usage
+            newConsecutiveCorrect = 0;
+          }
+
+          // Calculate new tags
+          let newTags = currentWordSnapshot.tags || [];
           // If 0 score (failed), we optimistically add the tag locally too
-          const newTags = !success && !(currentWordSnapshot.tags || []).includes('Mistake')
-            ? [...(currentWordSnapshot.tags || []), 'Mistake']
-            : currentWordSnapshot.tags;
+          if (!success && !newTags.includes('Mistake')) {
+            newTags = [...newTags, 'Mistake'];
+          }
+          // If error decay removed the error, remove Mistake tag
+          if (shouldRemoveMistakeTag && newTags.includes('Mistake')) {
+            newTags = newTags.filter((t: string) => t !== 'Mistake');
+          }
 
           onUpdateWord(currentWordSnapshot.id, {
               correct: success,
@@ -584,6 +614,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
               tested: true,
               last_tested: Date.now(),
               error_count: updatedErrorCount,
+              consecutive_correct: newConsecutiveCorrect,
               tags: newTags
           });
       }

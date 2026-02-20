@@ -147,7 +147,8 @@ export const fetchUserData = async (userId: string) => {
     definition_cn: w.definition_cn || null,
     definition_en: w.definition_en || null,
     deleted: w.deleted || false,
-    tags: w.tags || ['Custom']
+    tags: w.tags || ['Custom'],
+    consecutive_correct: w.consecutive_correct || 0
   }));
 
   return { sessions, words };
@@ -528,28 +529,135 @@ export const updateWordStatus = async (wordId: string, correct: boolean) => {
   syncDailyStats();
 };
 
+/**
+ * Error Decay Mechanism Configuration
+ */
+const ERROR_DECAY_CONFIG = {
+  threshold: 3, // Number of consecutive correct answers (without hints) to trigger error decay
+  decrementAmount: 1 // How much to reduce error_count when threshold is reached
+};
+
+/**
+ * Apply error decay mechanism: reduce error_count when user consistently answers correctly
+ * @param wordId - The word ID
+ * @param currentErrorCount - Current error_count
+ * @param currentConsecutiveCorrect - Current consecutive_correct count
+ * @returns Updated error_count and consecutive_correct
+ */
+const applyErrorDecay = async (
+  wordId: string,
+  currentErrorCount: number,
+  currentConsecutiveCorrect: number
+): Promise<{ newErrorCount: number; newConsecutiveCorrect: number; shouldRemoveMistakeTag: boolean }> => {
+  const newConsecutiveCorrect = currentConsecutiveCorrect + 1;
+  let newErrorCount = currentErrorCount;
+  let shouldRemoveMistakeTag = false;
+
+  // Check if threshold reached
+  if (newConsecutiveCorrect >= ERROR_DECAY_CONFIG.threshold && currentErrorCount > 0) {
+    newErrorCount = Math.max(0, currentErrorCount - ERROR_DECAY_CONFIG.decrementAmount);
+    // Reset consecutive_correct after successful decay
+    const finalConsecutiveCorrect = 0;
+
+    console.log('🎉 [Error Decay] Reducing error_count:', {
+      wordId,
+      oldErrorCount: currentErrorCount,
+      newErrorCount: newErrorCount,
+      threshold: ERROR_DECAY_CONFIG.threshold
+    });
+
+    // If error_count reached 0, mark for Mistake tag removal
+    if (newErrorCount === 0) {
+      shouldRemoveMistakeTag = true;
+      console.log('✨ [Error Decay] Removing Mistake tag for word:', wordId);
+    }
+
+    return { newErrorCount, newConsecutiveCorrect: finalConsecutiveCorrect, shouldRemoveMistakeTag };
+  }
+
+  return { newErrorCount, newConsecutiveCorrect: newConsecutiveCorrect, shouldRemoveMistakeTag };
+};
+
+/**
+ * Remove Mistake tag from a word
+ */
+const removeMistakeTag = async (wordId: string): Promise<void> => {
+  // First, get current tags
+  const { data: currentWord } = await supabase
+    .from('words')
+    .select('tags')
+    .eq('id', wordId)
+    .single();
+
+  if (!currentWord) return;
+
+  const currentTags = currentWord.tags || ['Custom'];
+  const newTags = currentTags.filter((t: string) => t !== 'Mistake');
+
+  // Only update if tags changed
+  if (newTags.length !== currentTags.length) {
+    const { error } = await supabase
+      .from('words')
+      .update({ tags: newTags.length > 0 ? newTags : ['Custom'] })
+      .eq('id', wordId);
+
+    if (error) {
+      console.error('[Error Decay] Failed to remove Mistake tag:', error.message);
+    } else {
+      console.log('✨ [Error Decay] Mistake tag removed successfully for word:', wordId);
+    }
+  }
+};
+
 export const updateWordStatusV2 = async (
-  wordId: string, 
-  updates: { 
-    correct: boolean, 
+  wordId: string,
+  updates: {
+    correct: boolean,
     score?: number,
-    error_count_increment?: number, 
+    error_count_increment?: number,
     best_time_ms?: number,
     phonetic?: string,
     audio_url?: string,
     language?: string,
     definition_cn?: string,
-    definition_en?: string
+    definition_en?: string,
+    // New parameters for error decay
+    hasUsedHint?: boolean,
+    consecutiveCorrect?: number
   }
 ) => {
   const { data: currentWord } = await supabase
     .from('words')
-    .select('error_count, best_time_ms')
+    .select('error_count, best_time_ms, consecutive_correct, tags')
     .eq('id', wordId)
     .single();
 
-  const new_error_count = (currentWord?.error_count || 0) + (updates.error_count_increment || 0);
-  
+  const currentErrorCount = currentWord?.error_count || 0;
+  const currentConsecutiveCorrect = currentWord?.consecutive_correct || 0;
+
+  // Calculate new error_count (basic increment)
+  let new_error_count = currentErrorCount + (updates.error_count_increment || 0);
+  let new_consecutive_correct = currentConsecutiveCorrect;
+  let shouldRemoveMistakeTag = false;
+
+  // Error Decay Logic: Only apply if correct AND no hint was used
+  if (updates.correct && !updates.hasUsedHint && updates.score && updates.score >= 3) {
+    const decayResult = await applyErrorDecay(wordId, new_error_count, newConsecutiveCorrect);
+    new_error_count = decayResult.newErrorCount;
+    new_consecutive_correct = decayResult.newConsecutiveCorrect;
+    shouldRemoveMistakeTag = decayResult.shouldRemoveMistakeTag;
+  } else {
+    // Reset consecutive_correct on incorrect answer or hint usage
+    if (new_consecutive_correct > 0) {
+      console.log('🔄 [Error Decay] Resetting consecutive_correct:', {
+        wordId,
+        previousValue: new_consecutive_correct,
+        reason: updates.hasUsedHint ? 'hint used' : 'incorrect answer'
+      });
+    }
+    new_consecutive_correct = 0;
+  }
+
   let new_best_time = currentWord?.best_time_ms;
   if (updates.correct && updates.best_time_ms) {
     new_best_time = new_best_time ? Math.min(new_best_time, updates.best_time_ms) : updates.best_time_ms;
@@ -561,7 +669,8 @@ export const updateWordStatusV2 = async (
     tested: true,
     last_tested: new Date().toISOString(),
     error_count: new_error_count,
-    best_time_ms: new_best_time
+    best_time_ms: new_best_time,
+    consecutive_correct: new_consecutive_correct
   };
 
   if (updates.phonetic) payload.phonetic = updates.phonetic;
@@ -576,6 +685,11 @@ export const updateWordStatusV2 = async (
     .eq('id', wordId);
 
   if (error) console.error("Error updating word status V2:", error.message);
+
+  // Remove Mistake tag if error_count reached 0
+  if (shouldRemoveMistakeTag) {
+    await removeMistakeTag(wordId);
+  }
 
   // NOTE: Stats sync is now handled at test session completion time
   // via recordTestAndSyncStats(), which records to daily_test_records

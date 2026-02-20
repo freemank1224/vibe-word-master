@@ -20,6 +20,7 @@ export interface WordEntry {
   deleted?: boolean;
   tags?: string[];
   score?: number; // Added for point system (3 for direct, 2.4 for hint)
+  consecutive_correct?: number; // Error decay mechanism: consecutive correct answers without hints
 }
 
 export interface InputSession {
