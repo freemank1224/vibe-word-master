@@ -36,6 +36,60 @@ import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
 import { getShanghaiDateString } from './utils/timezone';
 
+// --- Tooltip Component ---
+interface TooltipProps {
+    content: React.ReactNode;
+    children: React.ReactNode;
+    className?: string;
+}
+
+const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) => {
+    const [isVisible, setIsVisible] = useState(false);
+    const [position, setPosition] = useState<'top' | 'bottom'>('top');
+    const targetRef = useRef<HTMLDivElement>(null);
+
+    const handleMouseEnter = () => {
+        if (targetRef.current) {
+            const rect = targetRef.current.getBoundingClientRect();
+            const spaceTop = rect.top;
+            const spaceBottom = window.innerHeight - rect.bottom;
+            setPosition(spaceTop > spaceBottom ? 'bottom' : 'top');
+        }
+        setIsVisible(true);
+    };
+
+    return (
+        <div
+            ref={targetRef}
+            className={`relative inline-block ${className}`}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={() => setIsVisible(false)}
+        >
+            {children}
+            {isVisible && (
+                <div
+                    className={`absolute left-1/2 -translate-x-1/2 w-64 z-[9999] animate-in fade-in zoom-in-95 duration-200 ${
+                        position === 'top'
+                            ? 'bottom-full mb-2'
+                            : 'top-full mt-2'
+                    }`}
+                >
+                    <div className="bg-dark-charcoal border border-mid-charcoal rounded-lg px-3 py-2 shadow-xl">
+                                                        <div className={`absolute left-1/2 -translate-x-1/2 w-2 h-2 bg-dark-charcoal border border-mid-charcoal rotate-45 ${
+                                                            position === 'top'
+                                                                ? 'bottom-full -translate-y-1/2 border-b-0 border-r-0'
+                                                                : 'top-full -translate-y-1/2 border-t-0 border-l-0'
+                                                        }`}></div>
+                                                        <div className="text-xs text-text-light leading-relaxed">
+                                                            {content}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                };
+
 // Define Test Configuration State
 interface TestConfig {
   sessionIds?: string[];
@@ -2106,6 +2160,46 @@ const LibraryMode: React.FC<{
     onRefresh?: () => void;
 }> = ({ words, onClose, onTest, userId, onRefresh }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+    // Helper function to determine error severity level
+    // 辅助函数：确定错误严重度等级
+    const getErrorSeverity = (errorCount: number): {
+        level: 'none' | 'low' | 'medium' | 'high' | 'critical'
+        color: string
+        label: string
+        icon: string
+    } => {
+        if (errorCount === 0) return {
+            level: 'none',
+            color: 'text-electric-green',
+            label: 'Perfect',
+            icon: 'check_circle'
+        }
+        if (errorCount < 0.5) return {
+            level: 'low',
+            color: 'text-yellow-400',
+            label: 'Minor',
+            icon: 'info'
+        }
+        if (errorCount < 1.0) return {
+            level: 'medium',
+            color: 'text-orange-400',
+            label: 'Moderate',
+            icon: 'warning'
+        }
+        if (errorCount < 2.0) return {
+            level: 'high',
+            color: 'text-red-400',
+            label: 'Severe',
+            icon: 'error'
+        }
+        return {
+            level: 'critical',
+            color: 'text-red-600',
+            label: 'Critical',
+            icon: 'dangerous'
+        }
+    };
     
     // Persist library selection to localStorage
     const [selectedLibraries, setSelectedLibraries] = useState<Set<string>>(() => {
@@ -2144,6 +2238,12 @@ const LibraryMode: React.FC<{
     const [randomCount, setRandomCount] = useState<string>('10');
     const [isMouseDown, setIsMouseDown] = useState(false);
 
+    // Advanced Filter States
+    // 高级过滤状态
+    const [filterMistakeOnly, setFilterMistakeOnly] = useState(false);
+    const [filterMinErrorCount, setFilterMinErrorCount] = useState<number | null>(null);
+    const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+
     // Derived Libraries Option List
     const availableLibraries = useMemo(() => {
         const libs = new Set<string>();
@@ -2167,16 +2267,31 @@ const LibraryMode: React.FC<{
     }, [libraryFilteredWords]);
 
     const filteredWords = useMemo(() => {
-        const result = sortedWords.filter((w: WordEntry) => w.text.toLowerCase().includes(searchTerm.toLowerCase()));
+        let result = sortedWords.filter((w: WordEntry) => w.text.toLowerCase().includes(searchTerm.toLowerCase()));
+
+        // Apply Mistake Bank filter
+        // 应用错词库过滤
+        if (filterMistakeOnly) {
+            result = result.filter(w => w.tags?.includes('Mistake'));
+        }
+
+        // Apply minimum error count filter
+        // 应用最小错误计数过滤
+        if (filterMinErrorCount !== null) {
+            result = result.filter(w => w.error_count >= filterMinErrorCount);
+        }
+
         console.log('[LibraryMode] Filter stats:', {
             totalWords: words.length,
             libraryFiltered: libraryFilteredWords.length,
             sortedWords: sortedWords.length,
             searchTerm: searchTerm || '(empty)',
+            mistakeOnly: filterMistakeOnly,
+            minErrorCount: filterMinErrorCount,
             filteredWords: result.length
         });
         return result;
-    }, [sortedWords, searchTerm, words.length, libraryFilteredWords.length]);
+    }, [sortedWords, searchTerm, words.length, libraryFilteredWords.length, filterMistakeOnly, filterMinErrorCount]);
 
     // Group by letter
     const grouped = useMemo(() => {
@@ -2280,7 +2395,7 @@ const LibraryMode: React.FC<{
                     </div>
                 </div>
 
-                <LibrarySelector 
+                <LibrarySelector
                     selectedLibraries={selectedLibraries}
                     onChange={setSelectedLibraries}
                     availableLibraries={availableLibraries}
@@ -2289,6 +2404,154 @@ const LibraryMode: React.FC<{
                         if (onRefresh) onRefresh();
                     }}
                 />
+
+                {/* Advanced Filters Panel */}
+                {/* 高级过滤面板 */}
+                <div className="bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-headline text-xl text-electric-blue flex items-center gap-2">
+                            <span className="material-symbols-outlined">filter_list</span>
+                            FILTERS
+                        </h3>
+                        <button
+                            onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                            className="text-text-dark hover:text-electric-blue transition-colors"
+                        >
+                            <span className="material-symbols-outlined">
+                                {showAdvancedFilters ? 'expand_less' : 'expand_more'}
+                            </span>
+                        </button>
+                    </div>
+
+                    {showAdvancedFilters && (
+                        <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                            {/* Real-time Statistics */}
+                            {/* 实时统计 */}
+                            <div className="bg-dark-charcoal/50 rounded-lg p-3 space-y-2">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-text-dark uppercase">Mistake Words</span>
+                                    <span className="font-mono text-sm text-red-400">
+                                        {words.filter(w => w.tags?.includes('Mistake')).length}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-text-dark uppercase">High Risk (≥2)</span>
+                                    <span className="font-mono text-sm text-orange-400">
+                                        {words.filter(w => w.error_count >= 2).length}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-text-dark uppercase">Visible</span>
+                                    <span className="font-mono text-sm text-electric-blue">
+                                        {sortedWords.filter(w => w.text.toLowerCase().includes(searchTerm.toLowerCase())).length}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Mistake Bank Filter */}
+                            {/* 错词库过滤 */}
+                            <label className="flex items-center gap-3 cursor-pointer group">
+                                <div className="relative">
+                                    <input
+                                        type="checkbox"
+                                        checked={filterMistakeOnly}
+                                        onChange={(e) => setFilterMistakeOnly(e.target.checked)}
+                                        className="sr-only"
+                                    />
+                                    <div className={`w-5 h-5 rounded border-2 transition-all flex items-center justify-center
+                                        ${filterMistakeOnly
+                                            ? 'bg-red-500 border-red-500'
+                                            : 'border-mid-charcoal group-hover:border-red-400'
+                                        }`}
+                                    >
+                                        {filterMistakeOnly && (
+                                            <span className="material-symbols-outlined text-charcoal text-sm">check</span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex-1">
+                                    <div className="text-sm text-text-light group-hover:text-white transition-colors">
+                                        Mistake Bank Only
+                                    </div>
+                                    <div className="text-[10px] text-text-dark font-mono uppercase">
+                                        Show only words with errors
+                                    </div>
+                                </div>
+                            </label>
+
+                            {/* Minimum Error Count Slider */}
+                            {/* 最小错误计数滑块 */}
+                            <div className="space-y-2">
+                                <div className="flex justify-between items-center">
+                                    <label className="text-sm text-text-light">
+                                        Min Error Count
+                                    </label>
+                                    <span className={`font-mono text-sm px-2 py-0.5 rounded ${
+                                        filterMinErrorCount
+                                            ? 'bg-orange-500/20 text-orange-400'
+                                            : 'bg-mid-charcoal text-text-dark'
+                                    }`}>
+                                        {filterMinErrorCount ? `≥ ${filterMinErrorCount}` : 'All'}
+                                    </span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="5"
+                                    step="0.5"
+                                    value={filterMinErrorCount || 0}
+                                    onChange={(e) => {
+                                        const val = parseFloat(e.target.value);
+                                        setFilterMinErrorCount(val > 0 ? val : null);
+                                    }}
+                                    className="w-full h-2 bg-dark-charcoal rounded-lg appearance-none cursor-pointer
+                                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
+                                        [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-400
+                                        [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-all
+                                        [&::-webkit-slider-thumb]:hover:bg-orange-300"
+                                />
+                                <div className="flex justify-between text-[10px] text-text-dark font-mono">
+                                    <span>0</span>
+                                    <span>1</span>
+                                    <span>2</span>
+                                    <span>3</span>
+                                    <span>4</span>
+                                    <span>5+</span>
+                                </div>
+                            </div>
+
+                            {/* Reset Button */}
+                            {/* 重置按钮 */}
+                            <button
+                                onClick={() => {
+                                    setFilterMistakeOnly(false);
+                                    setFilterMinErrorCount(null);
+                                }}
+                                className="w-full px-4 py-2 rounded-lg border border-mid-charcoal text-text-dark hover:text-electric-blue hover:border-electric-blue transition-all font-mono text-xs uppercase"
+                            >
+                                Reset Filters
+                            </button>
+
+                            {/* Status Icons Legend */}
+                            {/* 状态图标图例 */}
+                            <div className="mt-4 pt-4 border-t border-mid-charcoal space-y-2">
+                                <div className="text-[10px] text-text-dark uppercase tracking-wide mb-2">Status Icons</div>
+
+                                <div className="flex items-center gap-2 text-xs">
+                                    <span className="material-symbols-outlined text-sm text-red-400">error</span>
+                                    <span className="text-text-light">Error Count</span>
+                                    <span className="text-text-dark ml-auto text-[10px]">Higher = more errors</span>
+                                </div>
+
+                                <div className="flex items-center gap-2 text-xs">
+                                    <span className="material-symbols-outlined text-sm text-red-500">bookmark</span>
+                                    <span className="text-text-light">In Mistake Bank</span>
+                                    <span className="text-text-dark ml-auto text-[10px]">Added for review</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
 
                 <div className="bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg flex-1 flex flex-col">
                     <div className="flex justify-between items-center mb-4">
@@ -2394,25 +2657,48 @@ const LibraryMode: React.FC<{
                                         <span className="text-[10px] font-mono text-text-dark opacity-50 ml-auto">{grouped[letter].length} items</span>
                                     </div>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                                        {grouped[letter].map(word => (
-                                            <div 
-                                                key={word.id} 
-                                                onClick={() => toggleSelection(word.id)}
-                                                className={`px-4 py-3 rounded-lg border cursor-pointer transition-all flex items-center justify-between group relative overflow-hidden ${
-                                                    selectedIds.has(word.id) 
-                                                    ? 'bg-electric-blue/10 border-electric-blue shadow-[inset_0_0_10px_rgba(0,240,255,0.1)]' 
-                                                    : 'bg-light-charcoal border-mid-charcoal hover:border-text-light'
-                                                }`}
-                                            >
-                                                <div className="flex items-center gap-3 overflow-hidden">
-                                                    <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors flex-shrink-0 ${selectedIds.has(word.id) ? 'bg-electric-blue border-electric-blue' : 'border-text-dark bg-transparent'}`}>
-                                                        {selectedIds.has(word.id) && <span className="material-symbols-outlined text-charcoal text-[10px] font-bold">check</span>}
+                                        {grouped[letter].map(word => {
+                                            const severity = getErrorSeverity(word.error_count);
+                                            return (
+                                                <div
+                                                    key={word.id}
+                                                    onClick={() => toggleSelection(word.id)}
+                                                    className={`px-4 py-4 min-h-[70px] rounded-lg border cursor-pointer transition-all flex flex-col justify-center gap-2 group relative overflow-hidden ${
+                                                        selectedIds.has(word.id)
+                                                        ? 'bg-electric-blue/10 border-electric-blue shadow-[inset_0_0_10px_rgba(0,240,255,0.1)]'
+                                                        : 'bg-light-charcoal border-mid-charcoal hover:border-text-light'
+                                                    }`}
+                                                >
+                                                    {/* Main Content: Checkbox + Word */}
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors flex-shrink-0 ${selectedIds.has(word.id) ? 'bg-electric-blue border-electric-blue' : 'border-text-dark bg-transparent'}`}>
+                                                            {selectedIds.has(word.id) && <span className="material-symbols-outlined text-charcoal text-[10px] font-bold">check</span>}
+                                                        </div>
+                                                        <span className={`font-mono text-sm truncate ${selectedIds.has(word.id) ? 'text-white' : 'text-text-light'}`}>{word.text}</span>
                                                     </div>
-                                                    <span className={`font-mono truncate ${selectedIds.has(word.id) ? 'text-white' : 'text-text-light'}`}>{word.text}</span>
+
+                                                    {/* Status Indicators */}
+                                                    <div className="flex items-center justify-end gap-2 flex-wrap">
+                                                        {/* Error Count Indicator - displays value directly */}
+                                                        {word.error_count > 0 && (
+                                                            <div className={`flex items-center gap-1 ${severity.color}`}>
+                                                                <span className="material-symbols-outlined text-sm">
+                                                                    {severity.icon}
+                                                                </span>
+                                                                <span className="text-xs font-mono">{word.error_count.toFixed(1)}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Mistake Bank Tag - no tooltip */}
+                                                        {word.tags?.includes('Mistake') && (
+                                                            <span className="material-symbols-outlined text-red-500 text-sm">
+                                                                bookmark
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </div>
-                                                {word.correct && <span className="material-symbols-outlined text-electric-green text-sm opacity-50 group-hover:opacity-100" title="Mastered">check_circle</span>}
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             );
