@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WordEntry, InputSession } from '../types';
-import { updateWordStatusV2, updateWordMetadata } from '../services/dataService'; 
+import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
@@ -9,6 +9,7 @@ import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface TestModeV2Props {
   allWords: WordEntry[];
@@ -520,20 +521,22 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       // 计算error_count增量（严格追踪策略，使用小数）
       let errorCountDelta = 0;
+      const errorTrackingConfig = WORD_LEARNING_CONFIG.errorTracking;
 
       if (score === 0) {
           // 完全答错：+1
-          errorCountDelta = 1.0;
+          errorCountDelta = errorTrackingConfig.completeFailurePenalty;
       } else if (hasUsedHintSnapshot) {
           // Hint模式：根据错误次数精细递增
+          const hintPenalties = errorTrackingConfig.hintPenalties;
           if (currentHintAttemptsSnapshot === 0) {
-              errorCountDelta = 0.3;  // hint模式下0次错误，轻微困难
+              errorCountDelta = hintPenalties.zeroErrors;  // hint模式下0次错误，轻微困难
           } else if (currentHintAttemptsSnapshot === 1) {
-              errorCountDelta = 0.5;  // hint模式下1次错误，需要提示
+              errorCountDelta = hintPenalties.oneError;  // hint模式下1次错误，需要提示
           } else if (currentHintAttemptsSnapshot === 2) {
-              errorCountDelta = 0.8;  // hint模式下2次错误，明显困难
+              errorCountDelta = hintPenalties.twoErrors;  // hint模式下2次错误，明显困难
           } else {
-              errorCountDelta = 1.0;  // hint模式下3次及以上，严重困难
+              errorCountDelta = hintPenalties.threePlusErrors;  // hint模式下3次及以上，严重困难
           }
       } else {
           // 不用hint且答对：不增加error_count
@@ -574,19 +577,20 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       // 2. Real-time Local Update (for Calendar/Library synchronization)
       if (onUpdateWord) {
-          const updatedErrorCount = errorCountBefore + errorCountDelta;  // 使用快照的值计算新error_count
+          let updatedErrorCount = errorCountBefore + errorCountDelta;  // 使用快照的值计算新error_count
 
           // Error decay logic for local update
           let newConsecutiveCorrect = (currentWordSnapshot?.consecutive_correct || 0);
           let shouldRemoveMistakeTag = false;
+          const errorDecayConfig = WORD_LEARNING_CONFIG.errorDecay;
 
           if (success && !hasUsedHintSnapshot && score >= 3) {
             // Increment consecutive correct
             newConsecutiveCorrect += 1;
-            // Check if threshold reached (default: 3)
-            if (newConsecutiveCorrect >= 3 && updatedErrorCount > 0) {
+            // Check if threshold reached (using config)
+            if (newConsecutiveCorrect >= errorDecayConfig.consecutiveCorrectThreshold && updatedErrorCount > 0) {
               // Apply error decay
-              updatedErrorCount = Math.max(0, updatedErrorCount - 1);
+              updatedErrorCount = Math.max(0, updatedErrorCount - errorDecayConfig.decrementAmount);
               newConsecutiveCorrect = 0;
               if (updatedErrorCount === 0) {
                 shouldRemoveMistakeTag = true;

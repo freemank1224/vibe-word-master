@@ -6,6 +6,7 @@
  */
 
 import { WordEntry, InputSession } from '@/types';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface UrgencyScore {
   errorUrgency: number;      // 错误紧急度 (0-40分)
@@ -22,8 +23,8 @@ interface ScoredWord {
 
 export class AdaptiveWordSelector {
   private config = {
-    temperature: 2.0,        // Softmax 温度参数，控制随机性（越高越随机）
-    shuffleRate: 0.3,         // 轻微乱序的交换概率
+    temperature: WORD_LEARNING_CONFIG.adaptiveSelection.softmaxTemperature,
+    shuffleRate: WORD_LEARNING_CONFIG.adaptiveSelection.shuffleRate,
   };
 
   /**
@@ -76,25 +77,32 @@ export class AdaptiveWordSelector {
    * 分数越高，表示该单词越需要被测试
    */
   private calculateUrgency(word: WordEntry): number {
+    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
     const now = Date.now();
     const daysSinceTested = word.last_tested
       ? (now - word.last_tested) / (1000 * 60 * 60 * 24)
-      : 30; // 未测试过默认30天
+      : adaptiveConfig.defaultDaysSinceLastTest; // Use config for default days
 
-    // 1. 错误紧急度（0-40分）
+    // 1. 错误紧急度（0-maxErrorUrgencyScore分）
     // error_count 越高，紧急度越高
     // 精细差异：0.3/0.5/0.8/1.0 都会被合理计算
-    const errorUrgency = Math.min(40, word.error_count * 8);
+    const errorUrgency = Math.min(
+      adaptiveConfig.maxErrorUrgencyScore,
+      word.error_count * adaptiveConfig.errorUrgencyMultiplier
+    );
 
-    // 2. 遗忘风险（0-35分）
+    // 2. 遗忘风险（0-maxForgettingRiskScore分）
     // 基于 last_tested 和 error_count 估算遗忘概率
     const forgettingRisk = this.calculateForgettingRisk(daysSinceTested, word.error_count);
 
-    // 3. 新鲜度奖励（0-15分）
+    // 3. 新鲜度奖励（0-maxFreshnessBonusScore分）
     // 长时间未测试的单词获得加分
-    const freshnessBonus = Math.min(15, daysSinceTested * 0.5);
+    const freshnessBonus = Math.min(
+      adaptiveConfig.maxFreshnessBonusScore,
+      daysSinceTested * 0.5
+    );
 
-    // 4. 总分（0-90分）
+    // 4. 总分
     const total = errorUrgency + forgettingRisk + freshnessBonus;
 
     return total;
@@ -105,18 +113,20 @@ export class AdaptiveWordSelector {
    *
    * @param daysSince - 距离上次测试的天数
    * @param errorCount - 错误次数
-   * @returns 遗忘风险分数（0-35）
+   * @returns 遗忘风险分数（0-maxForgettingRiskScore）
    */
   private calculateForgettingRisk(daysSince: number, errorCount: number): number {
+    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
+
     // 基础遗忘曲线：基于记忆衰减模型
     // error_count 越高，遗忘越快（需要更频繁复习）
     const effectiveInterval = Math.max(1, 7 - errorCount);
     const retentionRate = Math.exp(-daysSince / effectiveInterval);
 
-    // 转换为 0-35 分的遗忘风险
-    const forgettingRisk = (1 - retentionRate) * 35;
+    // 转换为 0-maxForgettingRiskScore 分的遗忘风险
+    const forgettingRisk = (1 - retentionRate) * adaptiveConfig.maxForgettingRiskScore;
 
-    return Math.max(0, Math.min(35, forgettingRisk));
+    return Math.max(0, Math.min(adaptiveConfig.maxForgettingRiskScore, forgettingRisk));
   }
 
   /**

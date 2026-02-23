@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { importDictionaryWords, verifyAllLibraries, LibraryVerificationResult, DICTIONARY_CONFIG, fetchLocalWordList } from '../services/dataService';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 // Use centralized dictionary config
 const DICTIONARIES = DICTIONARY_CONFIG;
 
-// Completeness threshold - library must have at least this % of words to be "installed"
-const COMPLETENESS_THRESHOLD = 90;
+// Completeness threshold from config - library must have at least this % of words to be "installed"
+const COMPLETENESS_THRESHOLD = WORD_LEARNING_CONFIG.library.completenessThreshold;
 
 interface LibrarySelectorProps {
     selectedLibraries: Set<string>;

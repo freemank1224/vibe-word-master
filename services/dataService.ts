@@ -4,6 +4,7 @@ import { WordEntry, InputSession } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
 import { getShanghaiDateString } from '../utils/timezone';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 // Helper to get current user ID
 export const getCurrentUserId = async (): Promise<string | null> => {
@@ -530,15 +531,8 @@ export const updateWordStatus = async (wordId: string, correct: boolean) => {
 };
 
 /**
- * Error Decay Mechanism Configuration
- */
-const ERROR_DECAY_CONFIG = {
-  threshold: 3, // Number of consecutive correct answers (without hints) to trigger error decay
-  decrementAmount: 1 // How much to reduce error_count when threshold is reached
-};
-
-/**
  * Apply error decay mechanism: reduce error_count when user consistently answers correctly
+ * Uses WORD_LEARNING_CONFIG.errorDecay for configuration
  * @param wordId - The word ID
  * @param currentErrorCount - Current error_count
  * @param currentConsecutiveCorrect - Current consecutive_correct count
@@ -549,27 +543,32 @@ const applyErrorDecay = async (
   currentErrorCount: number,
   currentConsecutiveCorrect: number
 ): Promise<{ newErrorCount: number; newConsecutiveCorrect: number; shouldRemoveMistakeTag: boolean }> => {
+  const errorDecayConfig = WORD_LEARNING_CONFIG.errorDecay;
   const newConsecutiveCorrect = currentConsecutiveCorrect + 1;
   let newErrorCount = currentErrorCount;
   let shouldRemoveMistakeTag = false;
 
-  // Check if threshold reached
-  if (newConsecutiveCorrect >= ERROR_DECAY_CONFIG.threshold && currentErrorCount > 0) {
-    newErrorCount = Math.max(0, currentErrorCount - ERROR_DECAY_CONFIG.decrementAmount);
+  // Check if threshold reached (using config)
+  if (newConsecutiveCorrect >= errorDecayConfig.consecutiveCorrectThreshold && currentErrorCount > 0) {
+    newErrorCount = Math.max(0, currentErrorCount - errorDecayConfig.decrementAmount);
     // Reset consecutive_correct after successful decay
     const finalConsecutiveCorrect = 0;
 
-    console.log('🎉 [Error Decay] Reducing error_count:', {
-      wordId,
-      oldErrorCount: currentErrorCount,
-      newErrorCount: newErrorCount,
-      threshold: ERROR_DECAY_CONFIG.threshold
-    });
+    if (WORD_LEARNING_CONFIG.debug.logErrorDecay) {
+      console.log('🎉 [Error Decay] Reducing error_count:', {
+        wordId,
+        oldErrorCount: currentErrorCount,
+        newErrorCount: newErrorCount,
+        threshold: errorDecayConfig.consecutiveCorrectThreshold
+      });
+    }
 
     // If error_count reached 0, mark for Mistake tag removal
     if (newErrorCount === 0) {
       shouldRemoveMistakeTag = true;
-      console.log('✨ [Error Decay] Removing Mistake tag for word:', wordId);
+      if (WORD_LEARNING_CONFIG.debug.logErrorDecay) {
+        console.log('✨ [Error Decay] Removing Mistake tag for word:', wordId);
+      }
     }
 
     return { newErrorCount, newConsecutiveCorrect: finalConsecutiveCorrect, shouldRemoveMistakeTag };
@@ -737,15 +736,16 @@ export const generateSRSQueue = (
 
     // 2. Error Recall (30%) - Words not in initial selection
     const pool = allWords.filter(w => !selectedWordIds.includes(w.id));
-    
+    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
+
     // Calculate weights for all words in pool
-    // Weight = error_count * 10 + (time since last tested in days)
+    // Weight = error_count * legacyErrorWeight + (time since last tested in days)
     const scoredPool = pool.map(w => {
-        const daysSinceLast = w.last_tested 
+        const daysSinceLast = w.last_tested
             ? (Date.now() - w.last_tested) / (1000 * 60 * 60 * 24)
-            : 30; // Assume 30 days if never tested
-        
-        const score = (w.error_count * 5) + daysSinceLast;
+            : adaptiveConfig.defaultDaysSinceLastTest; // Use config for default days
+
+        const score = (w.error_count * adaptiveConfig.legacyErrorWeight) + daysSinceLast;
         return { word: w, score };
     });
 
@@ -754,7 +754,7 @@ export const generateSRSQueue = (
     const errorRecallPool = scoredPool
         .sort((a, b) => b.score - a.score)
         .slice(0, errorRecallCount * 2); // Get a slightly larger pool to sample from
-    
+
     const shuffledErrorRecall = errorRecallPool
         .sort(() => Math.random() - 0.5)
         .slice(0, errorRecallCount)
@@ -764,9 +764,9 @@ export const generateSRSQueue = (
     // Priority: Higher error_count words should generally appear earlier
     const finalQueue = [...shuffledSelected, ...shuffledErrorRecall].sort((a, b) => {
         // We want a mix but weighted towards higher error count
-        // Random element to keep it fresh
-        const valA = (a.error_count * 2) + Math.random() * 10;
-        const bValB = (b.error_count * 2) + Math.random() * 10;
+        // Random element to keep it fresh (use legacy random bonus from config)
+        const valA = (a.error_count * 2) + Math.random() * adaptiveConfig.legacyRandomBonus;
+        const bValB = (b.error_count * 2) + Math.random() * adaptiveConfig.legacyRandomBonus;
         return bValB - valA;
     });
 
