@@ -5,6 +5,7 @@ import { Badge } from './Achievements/Badge';
 import { cleanExistingWords, CleanupStats } from '../services/wordCleanupService';
 import { supabase } from '../lib/supabaseClient';
 import { AISettings, AEServiceProvider } from '../services/ai/settings';
+import { ProgressPieChart, MasteryPieChart } from './Charts';
 
 interface AccountPanelProps {
   user: any;
@@ -50,6 +51,7 @@ const IssueRow: React.FC<{
 export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, onClose, onLogout }) => {
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanupStats | null>(null);
+  const [activeChartTab, setActiveChartTab] = useState<'progress' | 'mastery'>('progress');
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('vibe_ai_selection') === 'true';
@@ -269,7 +271,71 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
         {/* 滚动内容区 */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden p-8 space-y-10 custom-scrollbar">
-          
+
+          {/* 学习进度可视化 */}
+          <div className="space-y-4">
+            <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Learning Analytics</h3>
+
+            {/* 标签切换 */}
+            <div className="flex gap-2 bg-dark-charcoal p-1.5 rounded-2xl border border-mid-charcoal/30">
+              <button
+                onClick={() => setActiveChartTab('progress')}
+                className={`flex-1 py-2.5 px-4 rounded-xl font-mono text-xs uppercase tracking-wider transition-all duration-300 ${
+                  activeChartTab === 'progress'
+                    ? 'bg-electric-blue text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]'
+                    : 'text-text-dark hover:text-white'
+                }`}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <span className="material-symbols-outlined text-sm">analytics</span>
+                  Test Coverage
+                </span>
+              </button>
+              <button
+                onClick={() => setActiveChartTab('mastery')}
+                className={`flex-1 py-2.5 px-4 rounded-xl font-mono text-xs uppercase tracking-wider transition-all duration-300 ${
+                  activeChartTab === 'mastery'
+                    ? 'bg-electric-green text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+                    : 'text-text-dark hover:text-white'
+                }`}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <span className="material-symbols-outlined text-sm">school</span>
+                  Mastery Level
+                </span>
+              </button>
+            </div>
+
+            {/* 饼状图展示区域 */}
+            <div className="bg-light-charcoal/30 p-6 rounded-3xl border border-mid-charcoal/50">
+              {activeChartTab === 'progress' ? (
+                <div className="flex flex-col items-center">
+                  <div className="text-center mb-4">
+                    <p className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-1">
+                      Vocabulary Coverage
+                    </p>
+                    <p className="text-xs text-text-light leading-relaxed">
+                      Track your progress through the entire word library
+                    </p>
+                  </div>
+                  <ProgressPieChart words={words} />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center">
+                  <div className="text-center mb-4">
+                    <p className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-1">
+                      Word Mastery Distribution
+                    </p>
+                    <p className="text-xs text-text-light leading-relaxed">
+                      See how many words you've mastered vs still learning
+                    </p>
+                  </div>
+                  <MasteryPieChart words={words} />
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* 核心统计卡片组 */}
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-light-charcoal/50 p-5 rounded-3xl border border-mid-charcoal/50">
