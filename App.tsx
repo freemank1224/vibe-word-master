@@ -2027,7 +2027,7 @@ const Dashboard: React.FC<{
             <h3 className="font-headline text-2xl text-text-light tracking-widest">RECENT SESSIONS</h3>
             <div className="flex items-center gap-4">
                 {showAllSessions && selectedSessionIds.size > 0 && (
-                    <button 
+                    <button
                         onClick={() => onDeleteSessions(Array.from(selectedSessionIds))}
                         className="text-xs font-mono text-red-500 hover:text-red-400 uppercase flex items-center gap-1 transition-colors"
                     >
@@ -2044,7 +2044,7 @@ const Dashboard: React.FC<{
                 )}
             </div>
           </div>
-          
+
           <div className="bg-dark-charcoal/50 p-1 rounded-2xl border border-mid-charcoal/30">
             {sessions.length === 0 ? (
                 <div className="p-12 border-2 border-dashed border-mid-charcoal rounded-xl text-center text-text-dark h-96 flex flex-col items-center justify-center">
@@ -2120,6 +2120,35 @@ const Dashboard: React.FC<{
             )}
           </div>
         </div>
+
+        {/* Word Library Section */}
+        <div className="space-y-4">
+          <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
+            <h3 className="font-headline text-2xl text-text-light tracking-widest">WORD LIBRARY</h3>
+            <div className="flex items-center gap-4">
+              <span className="text-xs font-mono text-text-dark opacity-50">{words.length} TOTAL</span>
+            </div>
+          </div>
+
+          <div
+            onClick={onOpenLibrary}
+            className="bg-light-charcoal py-4 px-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden flex flex-col justify-center min-h-[130px]"
+          >
+            <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70">Browse and manage your full collection alphabetically.</p>
+
+            <div className="flex items-center justify-between relative z-10 pr-1">
+              <div className="flex items-center gap-3">
+                <div className="bg-dark-charcoal p-1.5 rounded-lg border border-mid-charcoal group-hover:border-electric-blue/50 transition-colors">
+                  <span className="font-mono text-electric-blue font-bold text-lg">{words.length}</span>
+                </div>
+                <span className="font-mono text-[9px] text-text-dark uppercase tracking-tighter">Total Entries</span>
+              </div>
+              <div className="bg-electric-blue/20 p-1 rounded-full text-electric-blue group-hover:bg-electric-blue group-hover:text-charcoal transition-all">
+                <span className="material-symbols-outlined text-xl">arrow_forward</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="lg:col-span-4 flex flex-col gap-4">
@@ -2128,27 +2157,6 @@ const Dashboard: React.FC<{
         <LeaderboardPanel stats={stats} words={words} />
 
         <AchievementsPanel words={words} sessions={sessions} className="flex-1" />
-
-        {/* Word Library Card */}
-        <div 
-            onClick={onOpenLibrary}
-            className="flex-1 bg-light-charcoal py-4 px-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden flex flex-col justify-center min-h-[130px]"
-        >
-            <h3 className="font-headline text-xl text-text-light mb-0.5 tracking-widest uppercase group-hover:text-electric-blue transition-colors">Word Library</h3>
-            <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70">Browse and manage your full collection alphabetically.</p>
-            
-            <div className="flex items-center justify-between relative z-10 pr-1">
-                <div className="flex items-center gap-3">
-                    <div className="bg-dark-charcoal p-1.5 rounded-lg border border-mid-charcoal group-hover:border-electric-blue/50 transition-colors">
-                        <span className="font-mono text-electric-blue font-bold text-lg">{words.length}</span>
-                    </div>
-                    <span className="font-mono text-[9px] text-text-dark uppercase tracking-tighter">Total Entries</span>
-                </div>
-                <div className="bg-electric-blue/20 p-1 rounded-full text-electric-blue group-hover:bg-electric-blue group-hover:text-charcoal transition-all">
-                    <span className="material-symbols-outlined text-xl">arrow_forward</span>
-                </div>
-            </div>
-        </div>
       </div>
     </div>
   );

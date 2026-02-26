@@ -175,7 +175,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
 
   if (loading) {
     return (
-      <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[500px] flex items-center justify-center">
+      <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[420px] flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-electric-blue border-t-transparent mb-4"></div>
           <p className="text-text-dark font-mono text-sm">Loading leaderboard...</p>
@@ -193,7 +193,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
         : 'no_data';
 
     return (
-      <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[500px] flex flex-col">
+      <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[420px] flex flex-col">
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
           <div className="flex flex-col">
@@ -321,12 +321,10 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
     );
   }
 
-  // Top 3 entries
-  const top3 = entries.slice(0, 3);
   const currentUserEntry = entries.find(e => e.is_current_user);
 
   return (
-    <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl flex flex-col min-h-[500px]">
+    <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl flex flex-col min-h-[420px]">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div className="flex flex-col">
@@ -361,29 +359,6 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
             <span className="material-symbols-outlined">chevron_right</span>
           </button>
         </div>
-      </div>
-
-      {/* Top 3 Podium */}
-      <div className="flex justify-center items-end gap-4 mb-8 py-4">
-        {top3.map((entry, index) => (
-          <div
-            key={entry.user_id}
-            className={`flex flex-col items-center ${index === 0 ? 'scale-110' : ''}`}
-          >
-            <div className={`text-4xl mb-2 ${getRankColor(entry.rank_position)}`}>
-              {getRankIcon(entry.rank_position)}
-            </div>
-            <div className={`text-center ${index === 0 ? 'transform -translate-y-2' : ''}`}>
-              <div className={`font-bold text-sm ${entry.is_current_user ? 'text-electric-blue' : 'text-white'}`}>
-                {entry.display_name}
-                {entry.is_current_user && <span className="ml-1 text-xs">(You)</span>}
-              </div>
-              <div className="font-mono text-xs text-electric-blue">
-                {Math.round(entry.total_score)} pts
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
 
       {/* Rankings List */}
