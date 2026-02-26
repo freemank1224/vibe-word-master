@@ -70,3 +70,87 @@ export interface PendingSyncItem {
   retryCount?: number;  // Current retry attempt
   lastError?: string;  // Last error message
 }
+
+// ================================================================
+// Leaderboard Types
+// ================================================================
+
+/**
+ * Leaderboard entry returned from database
+ * Represents a single user's ranking for a specific date
+ */
+export interface LeaderboardEntry {
+  user_id: string;
+  rank_position: number;
+  total_score: number;
+  test_count_score: number;
+  new_words_score: number;
+  accuracy_score: number;
+  difficulty_score: number;
+  tests_completed: number;
+  new_words_added: number;
+  accuracy_rate: number;
+  avg_difficulty: number;
+  display_name?: string;  // Computed from email (masked for privacy)
+  is_current_user?: boolean;
+}
+
+/**
+ * User's rank history for trend visualization
+ */
+export interface RankHistoryEntry {
+  rank_date: string;
+  rank_position: number;
+  total_score: number;
+  percentile: number;
+}
+
+/**
+ * Current user's ranking summary
+ */
+export interface CurrentUserRanking {
+  rank_date: string;
+  rank_position: number;
+  total_score: number;
+  percentile: number;
+  tests_completed: number;
+  new_words_added: number;
+  accuracy_rate: number;
+  avg_difficulty: number;
+}
+
+/**
+ * Leaderboard configuration type
+ * Derived from wordLearningConfig.ts
+ */
+export interface LeaderboardConfig {
+  weights: {
+    testCount: number;
+    newWords: number;
+    accuracy: number;
+    difficulty: number;
+  };
+  normalization: {
+    testCountCap: number;
+    newWordsCap: number;
+    difficultyCap: number;
+  };
+  qualification: {
+    minTestsPerDay: number;
+    minAccuracy: number;
+  };
+  display: {
+    topRankCount: number;
+    includeSelf: boolean;
+    showPercentile: boolean;
+  };
+  cache: {
+    ttlSeconds: number;
+    staleWhileRevalidate: boolean;
+  };
+  privacy: {
+    maskEmail: boolean;
+    showRankPosition: boolean;
+    showPercentile: boolean;
+  };
+}

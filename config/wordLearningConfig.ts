@@ -263,6 +263,71 @@ export const WORD_LEARNING_CONFIG = {
      */
     logTestResults: true,
   },
+
+  // ============================================
+  // 8. LEADERBOARD CONFIGURATION
+  // 8. 排行榜配置
+  // ============================================
+  leaderboard: {
+    /**
+     * Weight coefficients for scoring factors (must sum to 1.0)
+     * 评分因子的权重系数（总和必须为 1.0）
+     */
+    weights: {
+      testCount: 0.25,      // Words tested (25%) / 测试单词数权重
+      newWords: 0.20,       // New words added (20%) / 新增单词权重
+      accuracy: 0.30,       // Accuracy rate (30%) / 正确率权重
+      difficulty: 0.25,     // Word difficulty (25%) / 单词难度权重
+    },
+
+    /**
+     * Normalization caps (values beyond these are capped at 100% score)
+     * 归一化上限（超过这些值的分数将被限制为 100%）
+     */
+    normalization: {
+      testCountCap: 100,    // Tests for full score / 满分测试词数
+      newWordsCap: 20,      // New words for full score / 满分新增词数
+      difficultyCap: 3,     // Avg error_count for full difficulty score / 满分难度平均错误数
+    },
+
+    /**
+     * Minimum qualification thresholds
+     * 参与排行榜的最低门槛
+     */
+    qualification: {
+      minTestsPerDay: 10,   // Minimum tests to qualify / 最低测试次数
+      minAccuracy: 0.0,     // Minimum accuracy (0-1, 0 = no minimum) / 最低正确率
+    },
+
+    /**
+     * Display settings
+     * 显示设置
+     */
+    display: {
+      topRankCount: 100,    // Players to display / 显示玩家数量
+      includeSelf: true,    // Always show current user even if below top / 始终显示当前用户
+      showPercentile: true, // Show percentile calculation / 显示百分位排名
+    },
+
+    /**
+     * Cache settings (for frontend)
+     * 缓存设置（前端）
+     */
+    cache: {
+      ttlSeconds: 300,      // Cache leaderboard data for 5 minutes / 缓存5分钟
+      staleWhileRevalidate: true, // Show stale data while refreshing / 显示过期数据同时刷新
+    },
+
+    /**
+     * Privacy settings
+     * 隐私设置
+     */
+    privacy: {
+      maskEmail: true,      // Mask email addresses / 隐藏邮箱地址
+      showRankPosition: true, // Show absolute rank / 显示绝对排名
+      showPercentile: true, // Show relative percentile / 显示相对百分位
+    },
+  },
 } as const;
 
 /**
@@ -289,6 +354,13 @@ Object.freeze(WORD_LEARNING_CONFIG.ui);
 Object.freeze(WORD_LEARNING_CONFIG.ui.coverageSlider);
 Object.freeze(WORD_LEARNING_CONFIG.library);
 Object.freeze(WORD_LEARNING_CONFIG.debug);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.weights);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.normalization);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.qualification);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.display);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.cache);
+Object.freeze(WORD_LEARNING_CONFIG.leaderboard.privacy);
 
 /**
  * Export config with safe type casting for use in components

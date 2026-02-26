@@ -23,6 +23,7 @@ import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import TestModeV2 from './components/TestModeV2';
+import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from './services/dictionaryService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
@@ -2123,7 +2124,9 @@ const Dashboard: React.FC<{
 
       <div className="lg:col-span-4 flex flex-col gap-4">
         <CalendarView stats={stats} />
-        
+
+        <LeaderboardPanel stats={stats} words={words} />
+
         <AchievementsPanel words={words} sessions={sessions} className="flex-1" />
 
         {/* Word Library Card */}
