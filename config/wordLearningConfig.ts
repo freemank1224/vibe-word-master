@@ -84,34 +84,82 @@ export const WORD_LEARNING_CONFIG = {
   // ============================================
   adaptiveSelection: {
     /**
+     * Weight distribution for urgency score factors (%)
+     * 紧急度评分因子的权重分布（百分比）
+     * Weights will be automatically normalized to sum to 100%
+     * 权重会自动归一化，确保总和为100%
+     *
+     * Default: 45:40:15 (Error:Forgetting:Freshness)
+     * 默认：45:40:15（错误:遗忘:新鲜）
+     */
+    weights: {
+      /**
+       * Error urgency weight (based on error_count)
+       * 错误紧急度权重（基于 error_count）
+       * Range: 0-100, will be normalized
+       * 范围：0-100，会归一化
+       * Default: 45
+       */
+      errorUrgency: 45,
+
+      /**
+       * Forgetting risk weight (based on days since last test)
+       * 遗忘风险权重（基于距离上次测试的天数）
+       * Range: 0-100, will be normalized
+       * 范围：0-100，会归一化
+       * Default: 40
+       */
+      forgettingRisk: 40,
+
+      /**
+       * Freshness bonus weight (for words not tested recently)
+       * 新鲜度奖励权重（针对长时间未测试的单词）
+       * Range: 0-100, will be normalized
+       * 范围：0-100，会归一化
+       * Default: 15
+       */
+      freshnessBonus: 15,
+    },
+
+    /**
+     * Base score scale (total urgency score will be normalized to this value)
+     * 基础分数缩放（总分将归一化到此值）
+     * Default: 100 (makes percentages directly interpretable)
+     * 默认：100（使百分比可直接解释）
+     */
+    baseScoreScale: 100,
+
+    /**
      * Error urgency multiplier
      * 错误紧急度乘数
      * Higher values = error_count has more influence on selection priority
      * 更高值 = error_count 对选择优先级的影响更大
-     * Formula: min(40, error_count × this multiplier)
-     * 公式：min(40, error_count × 乘数)
+     * Formula: min(maxErrorUrgencyScore, error_count × this multiplier)
+     * 公式：min(maxErrorUrgencyScore, error_count × 乘数)
      * Default: 8
      */
     errorUrgencyMultiplier: 8,
 
     /**
-     * Maximum error urgency score (capped at this value)
-     * 最大错误紧急度分数（上限值）
-     * Default: 40
+     * DEPRECATED: Use weights.errorUrgency instead
+     * 已弃用：请使用 weights.errorUrgency
+     * Automatically calculated from weights and baseScoreScale
+     * 根据权重和 baseScoreScale 自动计算
+     * @deprecated
      */
     maxErrorUrgencyScore: 40,
 
     /**
-     * Forgetting risk score range (0 to this value)
-     * 遗忘风险分数范围（0 到此值）
-     * Default: 35
+     * DEPRECATED: Use weights.forgettingRisk instead
+     * 已弃用：请使用 weights.forgettingRisk
+     * @deprecated
      */
     maxForgettingRiskScore: 35,
 
     /**
-     * Freshness bonus for words not tested recently (0 to this value)
-     * 长时间未测试单词的新鲜度奖励（0 到此值）
-     * Default: 15
+     * DEPRECATED: Use weights.freshnessBonus instead
+     * 已弃用：请使用 weights.freshnessBonus
+     * @deprecated
      */
     maxFreshnessBonusScore: 15,
 
@@ -349,6 +397,7 @@ Object.freeze(WORD_LEARNING_CONFIG.errorTracking);
 Object.freeze(WORD_LEARNING_CONFIG.errorTracking.hintPenalties);
 Object.freeze(WORD_LEARNING_CONFIG.errorDecay);
 Object.freeze(WORD_LEARNING_CONFIG.adaptiveSelection);
+Object.freeze(WORD_LEARNING_CONFIG.adaptiveSelection.weights);
 Object.freeze(WORD_LEARNING_CONFIG.scoring);
 Object.freeze(WORD_LEARNING_CONFIG.ui);
 Object.freeze(WORD_LEARNING_CONFIG.ui.coverageSlider);

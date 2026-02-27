@@ -4,7 +4,6 @@ import { updateWordStatusV2, updateWordMetadata } from '../services/dataService'
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
-import { aiService } from '../services/ai';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
 import { LargeWordInput } from './LargeWordInput';
@@ -170,90 +169,34 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     const generateQueue = async () => {
         setIsOptimizing(true);
         const targetCount = Math.max(1, Math.round((availablePool.length * coverage) / 100));
-        
-        // Check for AI Optimization
-        const isAiEnabled = localStorage.getItem('vibe_ai_selection') === 'true';
-        
-        if (isAiEnabled) {
-            try {
-                // 1. Build Candidate Pools
-                const currentIds = new Set(availablePool.map(w => w.id));
 
-                const historyCandidates = allWords.filter(w => !currentIds.has(w.id) && !w.deleted);
+        // Check for Smart Selection (formerly AI Selection)
+        const smartSelectionEnabled = localStorage.getItem('vibe_ai_selection') === 'true';
 
-                const mistakeCandidates = allWords.filter(w => 
-                    !currentIds.has(w.id) && !w.deleted && 
-                    ((w.tags && w.tags.includes('Mistake')) || w.error_count > 0 || (w.score !== undefined && w.score < 3))
-                );
+        if (smartSelectionEnabled) {
+            // Smart Selection: Use Adaptive Algorithm
+            // ONLY selects from user's checked words (availablePool)
+            console.log('🧠 [TestMode] Using Smart Selection (adaptive algorithm)...');
+            const smartQueue = adaptiveWordSelector.calculateQueue(
+                allWords,
+                availablePool,  // 用户勾选的单词范围
+                targetCount,     // = availablePool.length × coverage
+                sessions
+            );
 
-                // 2. Create the "Smart Report" List (Limit to 100 for token efficiency)
-                const finalCandidates: WordEntry[] = [...availablePool];
-                
-                // Fill up to 100 with mistakes first
-                if (finalCandidates.length < 100) {
-                    const sortedMistakes = mistakeCandidates.sort((a,b) => b.error_count - a.error_count);
-                    for (const m of sortedMistakes) {
-                        if (finalCandidates.length >= 100) break;
-                        if (!finalCandidates.find(w => w.id === m.id)) {
-                            finalCandidates.push(m);
-                        }
-                    }
-                }
+            console.log(`✓ Selected ${smartQueue.length} words from ${availablePool.length} checked words (${coverage}% coverage)`);
+            setQueue(smartQueue);
+            setIsOptimizing(false);
+        } else {
+            // Random Selection: Shuffle and pick from available pool
+            console.log('🎲 [TestMode] Using Random Selection...');
+            const shuffled = [...availablePool].sort(() => Math.random() - 0.5);
+            const randomQueue = shuffled.slice(0, Math.min(targetCount, shuffled.length));
 
-                // Fill remainder with history (stale words first)
-                if (finalCandidates.length < 100) {
-                    const sortedHistory = historyCandidates.sort((a,b) => (a.last_tested || 0) - (b.last_tested || 0));
-                    for (const h of sortedHistory) {
-                        if (finalCandidates.length >= 100) break;
-                        if (!finalCandidates.find(w => w.id === h.id)) {
-                            finalCandidates.push(h);
-                        } 
-                    }
-                }
-
-                // 3. Call AI Service
-                const optimizedIds = await aiService.optimizeWordSelection(finalCandidates, sessions, targetCount);
-
-                if (optimizedIds && optimizedIds.length > 0) {
-                    const aiQueue = allWords.filter(w => optimizedIds.includes(w.id));
-                    
-                    if (aiQueue.length < targetCount) {
-                        const remaining = targetCount - aiQueue.length;
-                        // 使用自适应算法填充而非随机
-                        const adaptiveFiller = adaptiveWordSelector.calculateQueue(
-                            allWords,
-                            availablePool.filter(w => !optimizedIds.includes(w.id)),
-                            remaining,
-                            sessions
-                        );
-                        aiQueue.push(...adaptiveFiller);
-                    }
-
-                    setQueue(aiQueue);
-                    setIsOptimizing(false);
-                    return;
-                }
-            } catch (e: any) {
-                console.warn("AI Selection failed, falling back to adaptive algorithm:", e);
-                setNotification({
-                    type: 'error',
-                    message: `AI Optimization Unavailable: ${e?.message || 'Unknown error'}. Using Adaptive Algorithm.`
-                });
-                setTimeout(() => setNotification(null), 4000);
-            }
+            console.log(`✓ Selected ${randomQueue.length} words from ${availablePool.length} checked words (${coverage}% coverage)`);
+            setQueue(randomQueue);
+            setIsOptimizing(false);
         }
-
-        // Standard Mode (or AI fallback): Use Adaptive Algorithm
-        console.log('🔄 [TestMode] Using adaptive word selection algorithm...');
-        const adaptiveQueue = adaptiveWordSelector.calculateQueue(
-            allWords,
-            availablePool,
-            targetCount,
-            sessions
-        );
-
-        setQueue(adaptiveQueue);
-        setIsOptimizing(false);
     };
 
     generateQueue();

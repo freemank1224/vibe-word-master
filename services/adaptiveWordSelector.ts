@@ -8,11 +8,31 @@
 import { WordEntry, InputSession } from '@/types';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
+/**
+ * Normalized weight configuration (sums to 1.0)
+ * 归一化的权重配置（总和为1.0）
+ */
+interface NormalizedWeights {
+  errorUrgency: number;      // 0-1, will be multiplied by baseScoreScale
+  forgettingRisk: number;    // 0-1
+  freshnessBonus: number;    // 0-1
+}
+
+/**
+ * Maximum scores calculated from normalized weights
+ * 根据归一化权重计算的最大分数
+ */
+interface MaxScores {
+  maxErrorUrgencyScore: number;
+  maxForgettingRiskScore: number;
+  maxFreshnessBonusScore: number;
+}
+
 interface UrgencyScore {
-  errorUrgency: number;      // 错误紧急度 (0-40分)
-  forgettingRisk: number;     // 遗忘风险 (0-35分)
-  freshnessBonus: number;     // 新鲜度奖励 (0-15分)
-  total: number;              // 总分 (0-90分)
+  errorUrgency: number;      // 错误紧急度
+  forgettingRisk: number;     // 遗忘风险
+  freshnessBonus: number;     // 新鲜度奖励
+  total: number;              // 总分
 }
 
 interface ScoredWord {
@@ -26,6 +46,35 @@ export class AdaptiveWordSelector {
     temperature: WORD_LEARNING_CONFIG.adaptiveSelection.softmaxTemperature,
     shuffleRate: WORD_LEARNING_CONFIG.adaptiveSelection.shuffleRate,
   };
+
+  private normalizedWeights: NormalizedWeights;
+  private maxScores: MaxScores;
+
+  constructor() {
+    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
+
+    // Calculate and cache normalized weights
+    // 计算并缓存归一化权重
+    this.normalizedWeights = this.normalizeWeights(
+      adaptiveConfig.weights.errorUrgency,
+      adaptiveConfig.weights.forgettingRisk,
+      adaptiveConfig.weights.freshnessBonus
+    );
+
+    // Calculate maximum scores for each factor
+    // 计算每个因子的最大分数
+    this.maxScores = this.calculateMaxScores(this.normalizedWeights);
+
+    // Log configuration for debugging
+    // 输出配置用于调试
+    if (WORD_LEARNING_CONFIG.debug.logAdaptiveSelector) {
+      console.log('[AdaptiveWordSelector] Initialized with weights:', {
+        input: adaptiveConfig.weights,
+        normalized: this.normalizedWeights,
+        maxScores: this.maxScores
+      });
+    }
+  }
 
   /**
    * 计算测试队列（主入口）
@@ -73,6 +122,51 @@ export class AdaptiveWordSelector {
   }
 
   /**
+   * Normalize weights to sum to 1.0 (100%)
+   * 将权重归一化，使其总和为1.0（100%）
+   * @private
+   */
+  private normalizeWeights(
+    errorUrgency: number,
+    forgettingRisk: number,
+    freshnessBonus: number
+  ): NormalizedWeights {
+    const total = errorUrgency + forgettingRisk + freshnessBonus;
+
+    // Avoid division by zero
+    // 避免除以零
+    if (total === 0) {
+      console.warn('[AdaptiveWordSelector] All weights are zero, using equal distribution');
+      return {
+        errorUrgency: 1/3,
+        forgettingRisk: 1/3,
+        freshnessBonus: 1/3
+      };
+    }
+
+    return {
+      errorUrgency: errorUrgency / total,
+      forgettingRisk: forgettingRisk / total,
+      freshnessBonus: freshnessBonus / total
+    };
+  }
+
+  /**
+   * Calculate maximum scores from normalized weights
+   * 根据归一化权重计算最大分数
+   * @private
+   */
+  private calculateMaxScores(weights: NormalizedWeights): MaxScores {
+    const baseScale = WORD_LEARNING_CONFIG.adaptiveSelection.baseScoreScale;
+
+    return {
+      maxErrorUrgencyScore: weights.errorUrgency * baseScale,
+      maxForgettingRiskScore: weights.forgettingRisk * baseScale,
+      maxFreshnessBonusScore: weights.freshnessBonus * baseScale
+    };
+  }
+
+  /**
    * 计算单词紧急度分数（0-90分）
    * 分数越高，表示该单词越需要被测试
    */
@@ -83,26 +177,26 @@ export class AdaptiveWordSelector {
       ? (now - word.last_tested) / (1000 * 60 * 60 * 24)
       : adaptiveConfig.defaultDaysSinceLastTest; // Use config for default days
 
-    // 1. 错误紧急度（0-maxErrorUrgencyScore分）
+    // 1. 错误紧急度（使用动态计算的最大分数）
     // error_count 越高，紧急度越高
     // 精细差异：0.3/0.5/0.8/1.0 都会被合理计算
     const errorUrgency = Math.min(
-      adaptiveConfig.maxErrorUrgencyScore,
+      this.maxScores.maxErrorUrgencyScore,
       word.error_count * adaptiveConfig.errorUrgencyMultiplier
     );
 
-    // 2. 遗忘风险（0-maxForgettingRiskScore分）
+    // 2. 遗忘风险（使用动态计算的最大分数）
     // 基于 last_tested 和 error_count 估算遗忘概率
     const forgettingRisk = this.calculateForgettingRisk(daysSinceTested, word.error_count);
 
-    // 3. 新鲜度奖励（0-maxFreshnessBonusScore分）
+    // 3. 新鲜度奖励（使用动态计算的最大分数）
     // 长时间未测试的单词获得加分
     const freshnessBonus = Math.min(
-      adaptiveConfig.maxFreshnessBonusScore,
+      this.maxScores.maxFreshnessBonusScore,
       daysSinceTested * 0.5
     );
 
-    // 4. 总分
+    // 4. 总分（自动等于 baseScoreScale）
     const total = errorUrgency + forgettingRisk + freshnessBonus;
 
     return total;
@@ -116,17 +210,15 @@ export class AdaptiveWordSelector {
    * @returns 遗忘风险分数（0-maxForgettingRiskScore）
    */
   private calculateForgettingRisk(daysSince: number, errorCount: number): number {
-    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
-
     // 基础遗忘曲线：基于记忆衰减模型
     // error_count 越高，遗忘越快（需要更频繁复习）
     const effectiveInterval = Math.max(1, 7 - errorCount);
     const retentionRate = Math.exp(-daysSince / effectiveInterval);
 
-    // 转换为 0-maxForgettingRiskScore 分的遗忘风险
-    const forgettingRisk = (1 - retentionRate) * adaptiveConfig.maxForgettingRiskScore;
+    // 转换为 0-maxForgettingRiskScore 分的遗忘风险（使用动态计算的最大分数）
+    const forgettingRisk = (1 - retentionRate) * this.maxScores.maxForgettingRiskScore;
 
-    return Math.max(0, Math.min(adaptiveConfig.maxForgettingRiskScore, forgettingRisk));
+    return Math.max(0, Math.min(this.maxScores.maxForgettingRiskScore, forgettingRisk));
   }
 
   /**

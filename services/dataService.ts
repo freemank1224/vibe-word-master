@@ -641,7 +641,7 @@ export const updateWordStatusV2 = async (
 
   // Error Decay Logic: Only apply if correct AND no hint was used
   if (updates.correct && !updates.hasUsedHint && updates.score && updates.score >= 3) {
-    const decayResult = await applyErrorDecay(wordId, new_error_count, newConsecutiveCorrect);
+    const decayResult = await applyErrorDecay(wordId, new_error_count, new_consecutive_correct);
     new_error_count = decayResult.newErrorCount;
     new_consecutive_correct = decayResult.newConsecutiveCorrect;
     shouldRemoveMistakeTag = decayResult.shouldRemoveMistakeTag;
