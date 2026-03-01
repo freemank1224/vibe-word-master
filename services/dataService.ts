@@ -6,6 +6,42 @@ import { aiService } from './ai';
 import { getShanghaiDateString } from '../utils/timezone';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
+const triggerPronunciationGeneration = async (word: string, lang: string = 'en'): Promise<void> => {
+  try {
+    const supabaseUrl = process.env.SUPABASE_URL || (import.meta as any)?.env?.VITE_SUPABASE_URL;
+    if (!supabaseUrl) return;
+    const uniquenessMode = WORD_LEARNING_CONFIG.pronunciation.uniquenessMode;
+    const endpoint = `${supabaseUrl}/functions/v1/pronunciation?word=${encodeURIComponent(word)}&lang=${encodeURIComponent(lang)}&uniqueness_mode=${encodeURIComponent(uniquenessMode)}`;
+    await fetch(endpoint, { method: 'GET' });
+  } catch (error) {
+    console.warn(`[pronunciation-trigger] failed for ${word}:`, error);
+  }
+};
+
+const triggerPronunciationBatch = (items: { text: string; language?: string | null }[]) => {
+  if (!items || items.length === 0) return;
+  const uniqueMap = new Map<string, { text: string; language?: string | null }>();
+  for (const item of items) {
+    const key = `${item.text.toLowerCase().trim()}::${(item.language || 'en').trim()}`;
+    if (!uniqueMap.has(key)) uniqueMap.set(key, item);
+  }
+
+  const queue = Array.from(uniqueMap.values());
+  const concurrency = 2;
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next) break;
+      await triggerPronunciationGeneration(next.text, next.language || 'en');
+    }
+  };
+
+  for (let i = 0; i < concurrency; i++) {
+    void worker();
+  }
+};
+
 // Helper to get current user ID
 export const getCurrentUserId = async (): Promise<string | null> => {
   const { data: { user } } = await supabase.auth.getUser();
@@ -229,6 +265,10 @@ export const saveSessionData = async (
         throw wordsError;
     }
     wordsData = data;
+
+    if (wordsData?.length) {
+      triggerPronunciationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
+    }
   }
 
 
@@ -325,6 +365,9 @@ export const modifySession = async (
                 throw insError;
             }
             if (data) newWordsData.push(...data);
+            if (data?.length) {
+              triggerPronunciationBatch(data.map((w: any) => ({ text: w.text, language: w.language })));
+            }
         }
     }
 
@@ -1102,6 +1145,7 @@ export const importDictionaryWords = async (userId: string, words: string[], tag
           } else {
             insertedCount += chunk.length;
             console.log(`[importDictionaryWords] ✓ Inserted batch ${Math.floor(i / CHUNK_SIZE) + 1}: ${chunk.length} words (total: ${insertedCount}/${inserts.length})`);
+            triggerPronunciationBatch(chunk.map((w: any) => ({ text: w.text, language: w.language })));
           }
       }
       console.log(`[importDictionaryWords] ✅ Completed: Inserted ${insertedCount}/${inserts.length} new words for ${tag}`);

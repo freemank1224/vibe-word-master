@@ -392,7 +392,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         const success = await playWordAudioService(word.text, word.language || 'en');
         
         if (!success) {
-            console.warn("Speech synthesis failed for:", word.text);
+            console.warn("Pronunciation playback failed for:", word.text);
         }
         
     } catch (e) {

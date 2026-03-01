@@ -4,6 +4,7 @@ import { aiService } from './ai';
 import { compressToWebP } from '../utils/imageUtils';
 import { getMascotPrompt } from '../utils/mascotDescriptions';
 import { AISettings } from './ai/settings';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 export interface AdminStats {
   totalWords: number;
@@ -17,6 +18,23 @@ export type GenerationStatus = 'idle' | 'running' | 'paused';
 class AdminService {
   private _status: GenerationStatus = 'idle';
   private _stopSignal = false;
+
+  private getSupabaseUrl(): string | null {
+    const processEnv = (process as any)?.env;
+    if (processEnv?.SUPABASE_URL) return processEnv.SUPABASE_URL;
+
+    const viteEnv = (import.meta as any)?.env;
+    if (viteEnv?.VITE_SUPABASE_URL) return viteEnv.VITE_SUPABASE_URL;
+
+    if (typeof window !== 'undefined' && (window as any).env?.VITE_SUPABASE_URL) {
+      return (window as any).env.VITE_SUPABASE_URL;
+    }
+    return null;
+  }
+
+  private normalizeWord(text: string): string {
+    return text.toLowerCase().trim().replace(/\s+/g, ' ');
+  }
 
   get status() {
     return this._status;
@@ -260,6 +278,140 @@ class AdminService {
 
   stopGeneration() {
     this._stopSignal = true;
+  }
+
+  async replaceAllPronunciations(
+    onProgress: (msg: string) => void,
+    runId?: string,
+    options?: { forceRegenerate?: boolean }
+  ): Promise<{ runId: string }> {
+    if (!WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement) {
+      throw new Error('Manual pronunciation batch replacement is disabled by config.');
+    }
+
+    const { data: authData } = await supabase.auth.getUser();
+    const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
+
+    if (userEmail !== superAdminEmail) {
+      throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run global replacement.`);
+    }
+
+    onProgress(`Admin verified: ${userEmail}`);
+    onProgress('Starting global replacement job for all users...');
+
+    const uniquenessMode = WORD_LEARNING_CONFIG.pronunciation.uniquenessMode;
+    const concurrency = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.batchReplacementConcurrency);
+    const maxRequestsPerMinute = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.maxRequestsPerMinute);
+    const forceRegenerate = options?.forceRegenerate === true;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    if (!accessToken) {
+      throw new Error('Authentication token missing. Please re-login and try again.');
+    }
+
+    const effectiveRunId = runId || crypto.randomUUID();
+
+    const { data, error } = await supabase.functions.invoke('pronunciation-rebuild', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: {
+        run_id: effectiveRunId,
+        uniqueness_mode: uniquenessMode,
+        concurrency,
+        max_requests_per_minute: maxRequestsPerMinute,
+        force_regenerate: forceRegenerate,
+      }
+    });
+
+    if (error) {
+      const errorMessage = (error.message || '').toLowerCase();
+      if (errorMessage.includes('401')) {
+        throw new Error('401 Unauthorized: session token invalid/expired. Please logout and login again, then retry.');
+      }
+      throw new Error(error.message || 'Failed to invoke pronunciation-rebuild function');
+    }
+
+    if (!data?.ok) {
+      const backendError = String(data?.error || '');
+      if (backendError.includes('Missing bearer token') || backendError.includes('Invalid token')) {
+        throw new Error('Authentication failed: please re-login and retry global replacement.');
+      }
+      if (backendError.includes('Permission denied')) {
+        throw new Error(`Permission denied: only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run this action.`);
+      }
+      throw new Error(data?.error || 'Global replacement function returned failed state');
+    }
+
+    onProgress(`Global replacement done. total=${data.total} generated=${data.generated} skipped=${data.skipped} failed=${data.failed}`);
+    return { runId: data.run_id || effectiveRunId };
+  }
+
+  async purgeAllMinimaxPronunciations(onProgress: (msg: string) => void): Promise<{ deletedAssets: number; deletedStorageObjects: number }> {
+    if (!WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement) {
+      throw new Error('Manual pronunciation batch replacement is disabled by config.');
+    }
+
+    const { data: authData } = await supabase.auth.getUser();
+    const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
+
+    if (userEmail !== superAdminEmail) {
+      throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run global replacement.`);
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    if (!accessToken) {
+      throw new Error('Authentication token missing. Please re-login and try again.');
+    }
+
+    onProgress('Purging all Minimax pronunciation assets and storage...');
+
+    const { data, error } = await supabase.functions.invoke('pronunciation-rebuild', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: {
+        action: 'purge_minimax',
+      }
+    });
+
+    if (error) {
+      throw new Error(error.message || 'Failed to invoke pronunciation-rebuild purge action');
+    }
+
+    if (!data?.ok) {
+      throw new Error(data?.error || 'Purge action returned failed state');
+    }
+
+    const deletedAssets = Number(data?.deleted_assets || 0);
+    const deletedStorageObjects = Number(data?.deleted_storage_objects || 0);
+    onProgress(`Purge complete. assets=${deletedAssets}, storageObjects=${deletedStorageObjects}`);
+    return { deletedAssets, deletedStorageObjects };
+  }
+
+  async stopPronunciationReplacement(runId?: string) {
+    this._stopSignal = true;
+
+    if (!runId) return;
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    if (!accessToken) return;
+
+    await supabase.functions.invoke('pronunciation-rebuild', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: {
+        action: 'cancel',
+        run_id: runId,
+      }
+    });
   }
 
   async getStats(): Promise<AdminStats> {

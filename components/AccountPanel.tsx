@@ -1,11 +1,12 @@
-import React, { useMemo, useEffect, useState } from 'react';
+import React, { useMemo, useEffect, useState, useRef } from 'react';
 import { WordEntry, InputSession } from '../types';
 import { calculateAchievements, ACHIEVEMENTS } from '../services/achievementService';
 import { Badge } from './Achievements/Badge';
-import { cleanExistingWords, CleanupStats } from '../services/wordCleanupService';
 import { supabase } from '../lib/supabaseClient';
 import { AISettings, AEServiceProvider } from '../services/ai/settings';
 import { ProgressPieChart, MasteryPieChart } from './Charts';
+import { adminService } from '../services/adminService';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface AccountPanelProps {
   user: any;
@@ -15,43 +16,18 @@ interface AccountPanelProps {
   onLogout: () => void;
 }
 
-const IssueRow: React.FC<{ 
-    issue: { id: string, text: string }, 
-    onFix: (text: string) => void, 
-    onDelete: () => void 
-}> = ({ issue, onFix, onDelete }) => {
-    const [text, setText] = useState(issue.text);
-    return (
-        <div className="flex gap-2 items-center bg-dark-charcoal p-2 rounded-xl border border-mid-charcoal group">
-            <input 
-                type="text" 
-                value={text} 
-                onChange={(e) => setText(e.target.value)}
-                className="flex-1 bg-transparent border-none text-white font-mono text-sm focus:ring-0 p-1"
-            />
-            <button 
-                onClick={() => onFix(text)}
-                disabled={text === issue.text}
-                className="p-1.5 text-electric-green hover:bg-electric-green/10 rounded-lg disabled:opacity-20 transition-all"
-                title="Save Fix"
-            >
-                <span className="material-symbols-outlined text-lg">check</span>
-            </button>
-            <button 
-                onClick={onDelete}
-                className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
-                title="Remove Word"
-            >
-                <span className="material-symbols-outlined text-lg">delete</span>
-            </button>
-        </div>
-    );
-};
-
 export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, onClose, onLogout }) => {
-  const [isCleaning, setIsCleaning] = useState(false);
-  const [cleanupResult, setCleanupResult] = useState<CleanupStats | null>(null);
   const [activeChartTab, setActiveChartTab] = useState<'progress' | 'mastery'>('progress');
+  const [isReplacingPronunciation, setIsReplacingPronunciation] = useState(false);
+  const [replaceSwitchOn, setReplaceSwitchOn] = useState(false);
+  const [minimaxConnected, setMinimaxConnected] = useState<boolean | null>(null);
+  const [replaceRunId, setReplaceRunId] = useState<string | null>(null);
+  const [replaceProgress, setReplaceProgress] = useState<{ status: string; total: number; done: number; generated: number; skipped: number; failed: number; message?: string } | null>(null);
+  const [isPurgingMinimax, setIsPurgingMinimax] = useState(false);
+  const [isDispatchingReplacement, setIsDispatchingReplacement] = useState(false);
+  const replaceSwitchRef = useRef(false);
+  const replacementLoopRef = useRef(false);
+  const replaceRetryingRef = useRef(false);
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('vibe_ai_selection') === 'true';
@@ -108,56 +84,303 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     };
   }, [words, sessions]);
 
-  const handleCleanup = async () => {
-    if (!user?.id || isCleaning) return;
-    
-    setIsCleaning(true);
-    setCleanupResult(null);
-    try {
-        const result = await cleanExistingWords(user.id);
-        setCleanupResult(result);
-        // We might want to refresh the data after cleanup
-        if (typeof window !== 'undefined') {
-            // Ideally we'd call refreshData from App.tsx, but since we're in a modal
-            // and don't have that prop, we can just suggest a reload or wait for next mount.
-            // For now, let's just show the result.
+  const isSuperAdmin = (user?.email || '').toLowerCase() === WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
+
+  useEffect(() => {
+    replaceSwitchRef.current = replaceSwitchOn;
+  }, [replaceSwitchOn]);
+
+  useEffect(() => {
+    let timer: any = null;
+    if (!replaceRunId || !replaceSwitchOn) return;
+
+    const poll = async () => {
+      const { data } = await supabase
+        .from('pronunciation_rebuild_runs')
+        .select('status,total,done,generated,skipped,failed,message,updated_at')
+        .eq('run_id', replaceRunId)
+        .maybeSingle();
+
+      if (data) {
+        setReplaceProgress(prev => ({
+          status: data.status,
+          total: Math.max(prev?.total || 0, data.total || 0),
+          done: Math.max(prev?.done || 0, data.done || 0),
+          generated: Math.max(prev?.generated || 0, data.generated || 0),
+          skipped: Math.max(prev?.skipped || 0, data.skipped || 0),
+          failed: Math.max(prev?.failed || 0, data.failed || 0),
+          message: data.message || ''
+        }));
+
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+          setIsReplacingPronunciation(false);
+          setIsDispatchingReplacement(false);
+          setReplaceSwitchOn(false);
+          replaceSwitchRef.current = false;
+          return;
         }
-    } catch (e) {
-        alert("Cleanup failed. Check console.");
+
+        const updatedAtMs = data.updated_at ? Date.parse(data.updated_at) : 0;
+        const staleMs = updatedAtMs > 0 ? Date.now() - updatedAtMs : 0;
+        if (data.status === 'running' && staleMs > 25000 && !replaceRetryingRef.current && replaceSwitchRef.current) {
+          replaceRetryingRef.current = true;
+          setReplaceProgress(prev => prev ? { ...prev, message: 'Task heartbeat stale, retrying trigger...' } : prev);
+          void adminService.replaceAllPronunciations(() => {}, replaceRunId)
+            .catch((error: any) => {
+              setReplaceProgress(prev => prev ? {
+                ...prev,
+                message: `Retry trigger failed: ${error?.message || 'unknown error'}`
+              } : prev);
+            })
+            .finally(() => {
+              replaceRetryingRef.current = false;
+            });
+        }
+
+      }
+      timer = setTimeout(poll, 1200);
+    };
+
+    poll();
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [replaceRunId, replaceSwitchOn]);
+
+  const checkMinimaxConnectivity = async (): Promise<boolean> => {
+    try {
+      const viteEnv = (import.meta as any)?.env;
+      const supabaseClientUrl = (supabase as any)?.supabaseUrl || (supabase as any)?.url || null;
+      const cachedUrl = typeof window !== 'undefined' ? localStorage.getItem('vibe_supabase_url') : null;
+      const supabaseUrl = viteEnv?.VITE_SUPABASE_URL
+        || (typeof window !== 'undefined' ? (window as any)?.env?.VITE_SUPABASE_URL : null)
+        || cachedUrl
+        || supabaseClientUrl;
+      if (!supabaseUrl) return false;
+      const resp = await fetch(`${supabaseUrl}/functions/v1/pronunciation?word=apple&lang=en&uniqueness_mode=${WORD_LEARNING_CONFIG.pronunciation.uniquenessMode}`);
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const startGlobalPronunciationReplacement = async () => {
+    if (replacementLoopRef.current) return;
+    replacementLoopRef.current = true;
+    setIsReplacingPronunciation(true);
+    setIsDispatchingReplacement(true);
+    setReplaceProgress({ status: 'running', total: 0, done: 0, generated: 0, skipped: 0, failed: 0, message: 'Starting...' });
+
+    const connected = await checkMinimaxConnectivity();
+    setMinimaxConnected(connected);
+
+    if (!connected) {
+      setReplaceProgress({ status: 'failed', total: 0, done: 0, generated: 0, skipped: 0, failed: 0, message: 'Minimax API unreachable' });
+      setIsReplacingPronunciation(false);
+      setIsDispatchingReplacement(false);
+      setReplaceSwitchOn(false);
+      replaceSwitchRef.current = false;
+      replacementLoopRef.current = false;
+      return;
+    }
+
+    const runId = crypto.randomUUID();
+    setReplaceRunId(runId);
+
+    try {
+      setReplaceProgress(prev => ({
+        status: 'running',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: 'Triggering replacement job...'
+      }));
+
+      void adminService.replaceAllPronunciations(() => {}, runId)
+        .then(() => {
+          setReplaceProgress(prev => prev ? { ...prev, message: 'Replacement trigger accepted. Polling progress...' } : prev);
+        })
+        .catch((error: any) => {
+          const message = error?.message || 'Failed to start task';
+          const authOrPermissionError = /permission denied|authentication|401|token/i.test(message);
+          setReplaceProgress(prev => ({
+            status: authOrPermissionError ? 'failed' : (prev?.status || 'running'),
+            total: prev?.total || 0,
+            done: prev?.done || 0,
+            generated: prev?.generated || 0,
+            skipped: prev?.skipped || 0,
+            failed: prev?.failed || 0,
+            message: authOrPermissionError ? message : `Trigger timeout/network issue, continue polling: ${message}`
+          }));
+          if (authOrPermissionError) {
+            setIsReplacingPronunciation(false);
+            setReplaceSwitchOn(false);
+            replaceSwitchRef.current = false;
+          }
+        })
+        .finally(() => {
+          setIsDispatchingReplacement(false);
+        });
+    } catch (error: any) {
+      const message = error?.message || 'Failed to start task';
+      setReplaceProgress(prev => ({
+        status: 'failed',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message
+      }));
+      setIsReplacingPronunciation(false);
+      setIsDispatchingReplacement(false);
+      setReplaceSwitchOn(false);
+      replaceSwitchRef.current = false;
     } finally {
-        setIsCleaning(false);
+      replacementLoopRef.current = false;
     }
   };
 
-  const handleFixIssue = async (id: string, newText: string) => {
-    if (!newText.trim()) return;
+  const forceRegenerateAllPronunciations = async () => {
+    if (!replaceSwitchRef.current || replacementLoopRef.current || isPurgingMinimax) return;
+
+    replacementLoopRef.current = true;
+    setIsDispatchingReplacement(true);
+
+    if (isReplacingPronunciation && replaceRunId) {
+      setReplaceProgress(prev => ({
+        status: 'running',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: 'Stopping current run before force-regenerate...'
+      }));
+      await adminService.stopPronunciationReplacement(replaceRunId);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+    }
+
+    setIsReplacingPronunciation(true);
+    const runId = crypto.randomUUID();
+    setReplaceRunId(runId);
+    setReplaceProgress(prev => ({
+      status: 'running',
+      total: prev?.total || 0,
+      done: prev?.done || 0,
+      generated: prev?.generated || 0,
+      skipped: prev?.skipped || 0,
+      failed: prev?.failed || 0,
+      message: 'Force regenerating all words with current voice...'
+    }));
+
     try {
-        // Update text and reset metadata so it's re-fetched correctly
-        await supabase.from('words').update({ 
-            text: newText.trim(),
-            phonetic: null,
-            audio_url: null,
-            definition_en: null
-        }).eq('id', id);
-        
-        setCleanupResult(prev => prev ? {
-            ...prev,
-            issues: prev.issues.filter(i => i.id !== id)
-        } : null);
-    } catch (e) {
-        alert("Fix failed.");
+      void adminService.replaceAllPronunciations(() => {}, runId, { forceRegenerate: true })
+        .then(() => {
+          setReplaceProgress(prev => prev ? { ...prev, message: 'Force-regenerate trigger accepted. Polling progress...' } : prev);
+        })
+        .catch((error: any) => {
+          setReplaceProgress(prev => ({
+            status: prev?.status || 'running',
+            total: prev?.total || 0,
+            done: prev?.done || 0,
+            generated: prev?.generated || 0,
+            skipped: prev?.skipped || 0,
+            failed: prev?.failed || 0,
+            message: `Trigger timeout/network issue, continue polling: ${error?.message || 'unknown error'}`
+          }));
+        })
+        .finally(() => {
+          setIsDispatchingReplacement(false);
+        });
+    } catch (error: any) {
+      setReplaceProgress(prev => ({
+        status: 'failed',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: error?.message || 'Force regeneration failed'
+      }));
+      setIsReplacingPronunciation(false);
+      setIsDispatchingReplacement(false);
+    } finally {
+      replacementLoopRef.current = false;
     }
   };
 
-  const handleDeleteIssue = async (id: string) => {
+  const purgeAllMinimaxAssets = async () => {
+    if (!replaceSwitchRef.current || isPurgingMinimax || replacementLoopRef.current) return;
+
+    if (isReplacingPronunciation && replaceRunId) {
+      setReplaceProgress(prev => ({
+        status: 'running',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: 'Stopping current run before deleting audio...'
+      }));
+      await adminService.stopPronunciationReplacement(replaceRunId);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      setIsReplacingPronunciation(false);
+      setIsDispatchingReplacement(false);
+    }
+
+    setIsPurgingMinimax(true);
+    setReplaceProgress(prev => ({
+      status: 'running',
+      total: prev?.total || 0,
+      done: prev?.done || 0,
+      generated: prev?.generated || 0,
+      skipped: prev?.skipped || 0,
+      failed: prev?.failed || 0,
+      message: 'Deleting all Minimax audio assets...'
+    }));
+
     try {
-        await supabase.from('words').update({ deleted: true }).eq('id', id);
-        setCleanupResult(prev => prev ? {
-            ...prev,
-            issues: prev.issues.filter(i => i.id !== id)
-        } : null);
-    } catch (e) {
-        alert("Delete failed.");
+      const result = await adminService.purgeAllMinimaxPronunciations(() => {});
+      setReplaceProgress({
+        status: 'completed',
+        total: 0,
+        done: 0,
+        generated: 0,
+        skipped: 0,
+        failed: 0,
+        message: `Deleted Minimax assets=${result.deletedAssets}, storage=${result.deletedStorageObjects}`
+      });
+    } catch (error: any) {
+      setReplaceProgress(prev => ({
+        status: 'failed',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: error?.message || 'Purge failed'
+      }));
+    } finally {
+      setIsPurgingMinimax(false);
+    }
+  };
+
+  const onToggleReplacementSwitch = async () => {
+    const next = !replaceSwitchOn;
+    setReplaceSwitchOn(next);
+    replaceSwitchRef.current = next;
+
+    if (next) {
+      void startGlobalPronunciationReplacement();
+    } else {
+      if (replaceRunId) {
+        void adminService.stopPronunciationReplacement(replaceRunId);
+      }
+      setIsReplacingPronunciation(false);
+      setReplaceProgress(prev => prev ? { ...prev, status: 'cancelled', message: 'Stopped by admin' } : prev);
     }
   };
 
@@ -313,64 +536,77 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
              </div>
           </div>
 
-          {/* Word Library Cleanup Tool */}
-          <div className="space-y-4">
-             <div className="flex justify-between items-center">
-                <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Library Maintenance</h3>
-             </div>
-             <div className="bg-light-charcoal/30 p-6 rounded-3xl border border-mid-charcoal/50">
+          {isSuperAdmin && WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Global Pronunciation</h3>
+              </div>
+              <div className="bg-light-charcoal/30 p-6 rounded-3xl border border-mid-charcoal/50">
                 <p className="text-xs text-text-dark font-mono leading-relaxed mb-6">
-                    Scan your vocabulary for spelling errors and remove single-letter invalid entries.
+                  Admin-only global scan across ALL users. Dedup first, then generate missing pronunciation with Minimax only.
                 </p>
-                
-                {cleanupResult ? (
-                    <div className="bg-dark-charcoal/80 p-4 rounded-2xl border border-electric-blue/30 mb-6 animate-in zoom-in-95 duration-300">
-                        <h4 className="text-[10px] font-mono text-electric-blue uppercase tracking-widest mb-3">Cleanup Report</h4>
-                        <div className="grid grid-cols-2 gap-y-3">
-                            <div className="text-white font-mono text-xs">Corrected:</div>
-                            <div className="text-electric-green font-mono text-xs font-bold text-right">{cleanupResult.corrected}</div>
-                            
-                            <div className="text-white font-mono text-xs">Invalid/Removed:</div>
-                            <div className="text-red-400 font-mono text-xs font-bold text-right">{cleanupResult.deletedSingleLetter}</div>
-                            
-                            <div className="text-white font-mono text-xs">Manual Review:</div>
-                            <div className="text-yellow-400 font-mono text-xs font-bold text-right">{cleanupResult.issues.length}</div>
 
-                            <div className="text-white font-mono text-xs">Processed:</div>
-                            <div className="text-text-dark font-mono text-xs text-right">{cleanupResult.totalProcessed}</div>
-                        </div>
-
-                        {cleanupResult.issues.length > 0 && (
-                            <div className="mt-6 space-y-3 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-                                <p className="text-[10px] text-yellow-500/80 font-mono uppercase">Unresolved Words:</p>
-                                {cleanupResult.issues.map(issue => (
-                                    <IssueRow 
-                                        key={issue.id} 
-                                        issue={issue} 
-                                        onFix={(text) => handleFixIssue(issue.id, text)} 
-                                        onDelete={() => handleDeleteIssue(issue.id)} 
-                                    />
-                                ))}
-                            </div>
-                        )}
+                <div className="bg-dark-charcoal/80 p-4 rounded-2xl border border-electric-blue/30 mb-6">
+                  <h4 className="text-[10px] font-mono text-electric-blue uppercase tracking-widest mb-3">Runtime Status</h4>
+                  <div className="grid grid-cols-2 gap-y-3">
+                    <div className="text-white font-mono text-xs">Minimax API:</div>
+                    <div className={`font-mono text-xs font-bold text-right ${minimaxConnected === true ? 'text-electric-green' : minimaxConnected === false ? 'text-red-400' : 'text-text-dark'}`}>
+                      {minimaxConnected === true ? 'CONNECTED' : minimaxConnected === false ? 'FAILED' : 'UNKNOWN'}
                     </div>
-                ) : null}
+                    <div className="text-white font-mono text-xs">Mode:</div>
+                    <div className="text-electric-blue font-mono text-xs font-bold text-right uppercase">{WORD_LEARNING_CONFIG.pronunciation.uniquenessMode}</div>
+                    <div className="text-white font-mono text-xs">RPM Limit:</div>
+                    <div className="text-yellow-400 font-mono text-xs font-bold text-right">{WORD_LEARNING_CONFIG.pronunciation.maxRequestsPerMinute}</div>
+                    <div className="text-white font-mono text-xs">Progress:</div>
+                    <div className="text-text-dark font-mono text-xs text-right">{replaceProgress ? `${replaceProgress.done}/${replaceProgress.total}` : '0/0'}</div>
+                    <div className="text-white font-mono text-xs">Generated:</div>
+                    <div className="text-electric-green font-mono text-xs font-bold text-right">{replaceProgress?.generated || 0}</div>
+                    <div className="text-white font-mono text-xs">Skipped (Dedup):</div>
+                    <div className="text-electric-blue font-mono text-xs font-bold text-right">{replaceProgress?.skipped || 0}</div>
+                    <div className="text-white font-mono text-xs">Failed:</div>
+                    <div className="text-red-400 font-mono text-xs font-bold text-right">{replaceProgress?.failed || 0}</div>
+                  </div>
+                  {replaceProgress?.message && (
+                    <p className="mt-3 text-[10px] text-text-dark font-mono">{replaceProgress.message}</p>
+                  )}
+                </div>
 
-                <button 
-                    onClick={handleCleanup}
-                    disabled={isCleaning}
-                    className={`w-full py-4 rounded-2xl font-headline tracking-widest transition-all flex items-center justify-center gap-3
-                        ${isCleaning 
-                            ? 'bg-mid-charcoal text-gray-500 cursor-not-allowed' 
-                            : 'bg-electric-blue/10 border border-electric-blue/30 text-electric-blue hover:bg-electric-blue hover:text-charcoal'}`}
-                >
-                    <span className={`material-symbols-outlined ${isCleaning ? 'animate-spin' : ''}`}>
-                        {isCleaning ? 'sync' : 'auto_fix_high'}
-                    </span>
-                    {isCleaning ? 'CLEANING MATRIX...' : 'RUN SPELL CHECK'}
-                </button>
-             </div>
-          </div>
+                <div className="flex items-center justify-between bg-dark-charcoal/80 p-4 rounded-2xl border border-mid-charcoal/50">
+                  <div>
+                    <div className="text-white font-mono text-sm mb-1">Global Voice Replacement Switch</div>
+                    <div className="text-[10px] text-text-light font-mono">Turn on to start immediate full-scan and generation</div>
+                  </div>
+                  <button
+                    onClick={onToggleReplacementSwitch}
+                    className={`w-14 h-8 rounded-full transition-colors relative ${replaceSwitchOn ? 'bg-electric-blue' : 'bg-mid-charcoal'}`}
+                  >
+                    <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform ${replaceSwitchOn ? 'translate-x-6' : ''}`} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <button
+                    onClick={purgeAllMinimaxAssets}
+                    disabled={!replaceSwitchOn || isPurgingMinimax}
+                    className={`h-10 rounded-xl font-mono text-xs uppercase tracking-wider transition-colors ${!replaceSwitchOn || isPurgingMinimax ? 'bg-mid-charcoal text-text-dark cursor-not-allowed' : 'bg-red-500/10 border border-red-500/40 text-red-400 hover:bg-red-500 hover:text-charcoal'}`}
+                  >
+                    {isPurgingMinimax ? 'DELETING...' : isReplacingPronunciation ? 'Stop + Delete Audio' : 'Delete Minimax Audio'}
+                  </button>
+
+                  <button
+                    onClick={forceRegenerateAllPronunciations}
+                    disabled={!replaceSwitchOn || isPurgingMinimax || isDispatchingReplacement}
+                    className={`h-10 rounded-xl font-mono text-xs uppercase tracking-wider transition-colors ${!replaceSwitchOn || isPurgingMinimax || isDispatchingReplacement ? 'bg-mid-charcoal text-text-dark cursor-not-allowed' : 'bg-electric-blue/10 border border-electric-blue/40 text-electric-blue hover:bg-electric-blue hover:text-charcoal'}`}
+                  >
+                    {isDispatchingReplacement ? 'DISPATCHING...' : isReplacingPronunciation ? 'Restart Regenerate' : 'Regenerate All'}
+                  </button>
+                </div>
+                {!replaceSwitchOn && (
+                  <p className="mt-2 text-[10px] text-text-dark font-mono">Turn on master switch to enable delete/regenerate actions.</p>
+                )}
+              </div>
+            </div>
+          )}
           {/* 已解锁成就 */}
           <div>
             <div className="flex justify-between items-center mb-6">

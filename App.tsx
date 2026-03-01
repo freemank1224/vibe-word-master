@@ -2248,6 +2248,7 @@ const LibraryMode: React.FC<{
     const [searchTerm, setSearchTerm] = useState('');
     const [randomCount, setRandomCount] = useState<string>('10');
     const [isMouseDown, setIsMouseDown] = useState(false);
+    const [playingPreviewWordId, setPlayingPreviewWordId] = useState<string | null>(null);
 
     // Advanced Filter States
     // 高级过滤状态
@@ -2367,6 +2368,20 @@ const LibraryMode: React.FC<{
     };
 
     const clearSelection = () => setSelectedIds(new Set());
+
+    const handlePreviewAudio = async (e: React.MouseEvent, word: WordEntry) => {
+      e.stopPropagation();
+      if (playingPreviewWordId) return;
+
+      setPlayingPreviewWordId(word.id);
+      try {
+        await playWordAudioService(word.text, word.language || 'en');
+      } catch (error) {
+        console.error('[LibraryMode] Preview audio failed:', error);
+      } finally {
+        setPlayingPreviewWordId(null);
+      }
+    };
 
     return (
         <div className="max-w-7xl mx-auto py-8 px-4 animate-in fade-in slide-in-from-bottom-4 duration-500 min-h-[calc(100vh-100px)] flex flex-col md:flex-row gap-6">
@@ -2689,23 +2704,34 @@ const LibraryMode: React.FC<{
                                                     </div>
 
                                                     {/* Status Indicators */}
-                                                    <div className="flex items-center justify-end gap-2 flex-wrap">
+                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                      <button
+                                                        onClick={(e) => handlePreviewAudio(e, word)}
+                                                        className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-electric-blue hover:text-charcoal transition-colors ${playingPreviewWordId === word.id ? 'text-electric-green animate-pulse' : 'text-text-dark'}`}
+                                                        title={`Play pronunciation: ${word.text}`}
+                                                        aria-label={`Play pronunciation for ${word.text}`}
+                                                      >
+                                                        <span className="material-symbols-outlined text-lg">volume_up</span>
+                                                      </button>
+
+                                                      <div className="flex items-center gap-2 flex-wrap ml-auto">
                                                         {/* Error Count Indicator - displays value directly */}
                                                         {word.error_count > 0 && (
-                                                            <div className={`flex items-center gap-1 ${severity.color}`}>
-                                                                <span className="material-symbols-outlined text-sm">
-                                                                    {severity.icon}
-                                                                </span>
-                                                                <span className="text-xs font-mono">{word.error_count.toFixed(1)}</span>
-                                                            </div>
+                                                          <div className={`flex items-center gap-1 ${severity.color}`}>
+                                                            <span className="material-symbols-outlined text-sm">
+                                                              {severity.icon}
+                                                            </span>
+                                                            <span className="text-xs font-mono">{word.error_count.toFixed(1)}</span>
+                                                          </div>
                                                         )}
 
                                                         {/* Mistake Bank Tag - no tooltip */}
                                                         {word.tags?.includes('Mistake') && (
-                                                            <span className="material-symbols-outlined text-red-500 text-sm">
-                                                                bookmark
-                                                            </span>
+                                                          <span className="material-symbols-outlined text-red-500 text-sm">
+                                                            bookmark
+                                                          </span>
                                                         )}
+                                                      </div>
                                                     </div>
                                                 </div>
                                             );

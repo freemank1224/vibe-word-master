@@ -3,6 +3,7 @@ import { adminService, AdminStats } from '../services/adminService';
 import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -84,6 +85,7 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isReplacingPronunciation, setIsReplacingPronunciation] = useState(false);
   
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -161,6 +163,26 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
     }
   };
 
+  const togglePronunciationReplacement = async () => {
+    if (isReplacingPronunciation) {
+      adminService.stopPronunciationReplacement();
+      addLog('Stopping pronunciation replacement...');
+      return;
+    }
+
+    try {
+      setIsReplacingPronunciation(true);
+      addLog('Starting pronunciation replacement (dedup + Minimax)...');
+      await adminService.replaceAllPronunciations((msg) => addLog(msg));
+      loadStats();
+      onDataChange?.();
+    } catch (e: any) {
+      addLog(`Pronunciation replacement error: ${e.message}`);
+    } finally {
+      setIsReplacingPronunciation(false);
+    }
+  };
+
   return (
     <div style={PANEL_STYLE}>
       <div style={HEADER_STYLE}>
@@ -214,6 +236,18 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
               >
                 {isRunning ? '停止自动后台生成' : '开始自动后台生成'}
               </button>
+              {WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
+                <button
+                  style={{
+                    ...BUTTON_STYLE,
+                    backgroundColor: isReplacingPronunciation ? '#ff9800' : '#6a5acd'
+                  }}
+                  onClick={togglePronunciationReplacement}
+                  disabled={isSyncing}
+                >
+                  {isReplacingPronunciation ? '停止全库语音替换' : '启动全库语音替换（所有用户）'}
+                </button>
+              )}
               <button style={{...BUTTON_STYLE, backgroundColor: '#f44336'}} onClick={handleClear}>清空图片</button>
             </div>
             

@@ -376,6 +376,53 @@ export const WORD_LEARNING_CONFIG = {
       showPercentile: true, // Show relative percentile / 显示相对百分位
     },
   },
+
+  // ============================================
+  // 9. PRONUNCIATION ASSET CONFIGURATION
+  // 9. 发音资产配置
+  // ============================================
+  pronunciation: {
+    /**
+     * Uniqueness mode for global pronunciation assets
+     * 全局发音资产唯一性模式
+     *
+     * strict（严格唯一）：
+     * - 仅按“单词 + 语言”判定唯一
+     * - 不考虑 voice / model / codec / bitrate 等参数
+     * - 同一个词只保留 1 份音频，最大化节省存储与 API 成本
+     *
+     * relaxed（宽松唯一）：
+     * - 按“单词 + 语言 + voice/model/格式等参数”判定唯一
+     * - 允许同一个词存在多份参数版本音频
+     */
+    uniquenessMode: 'strict' as 'strict' | 'relaxed',
+
+    /**
+     * Manual batch replacement control
+     * 手动批量语音替换控制
+     * - true: 在管理面板允许手动触发“全量语音替换”
+     * - false: 隐藏/禁用该入口
+     */
+    enableManualBatchReplacement: true,
+
+    /**
+     * Batch replacement concurrency
+     * 批量替换并发数（并发越大越快，但更容易触发限流）
+     */
+    batchReplacementConcurrency: 3,
+
+    /**
+     * Global Minimax request rate limit (requests per minute)
+     * 全局 Minimax 请求频率上限（每分钟请求数）
+     */
+    maxRequestsPerMinute: 20,
+
+    /**
+     * Super admin account for global replacement action
+     * 全库替换仅允许此管理员邮箱触发
+     */
+    superAdminEmail: 'dysonfreeman@outlook.com',
+  },
 } as const;
 
 /**
@@ -410,6 +457,7 @@ Object.freeze(WORD_LEARNING_CONFIG.leaderboard.qualification);
 Object.freeze(WORD_LEARNING_CONFIG.leaderboard.display);
 Object.freeze(WORD_LEARNING_CONFIG.leaderboard.cache);
 Object.freeze(WORD_LEARNING_CONFIG.leaderboard.privacy);
+Object.freeze(WORD_LEARNING_CONFIG.pronunciation);
 
 /**
  * Export config with safe type casting for use in components
