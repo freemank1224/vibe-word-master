@@ -11,9 +11,12 @@ import { createClient } from '@supabase/supabase-js';
 
 // ------------------------------------------------------------------
 
-// Use environment variables first, fallback to hardcoded values
-const supabaseUrl: string = process.env.SUPABASE_URL || '';
-const supabaseAnonKey: string = process.env.SUPABASE_ANON_KEY || '';
+// Use Vite runtime env first, then process fallback for compatibility
+const viteEnv = (import.meta as any)?.env || {};
+const processEnv = typeof process !== 'undefined' ? (process as any)?.env || {} : {};
+
+const supabaseUrl: string = viteEnv.VITE_SUPABASE_URL || processEnv.SUPABASE_URL || '';
+const supabaseAnonKey: string = viteEnv.VITE_SUPABASE_ANON_KEY || processEnv.SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = 
   supabaseUrl.length > 0 && 
@@ -22,7 +25,7 @@ export const isSupabaseConfigured =
 
 if (!isSupabaseConfigured) {
   console.warn("Supabase Environment Variables Missing or Invalid!");
-  console.warn("Please make sure SUPABASE_URL and SUPABASE_ANON_KEY are set in your .env file");
+  console.warn("Please make sure VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (or SUPABASE_URL / SUPABASE_ANON_KEY) are configured");
 }
 
 // Validate Key Format (Supabase keys are usually JWTs starting with eyJ, but updated formats exist)

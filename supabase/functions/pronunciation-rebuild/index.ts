@@ -131,8 +131,6 @@ serve(async (req) => {
 
   const payload = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
   const action = payload?.action;
-  const bypassConfirm = payload?.confirm;
-  const isBypassConfirmed = bypassConfirm === 'I_UNDERSTAND_DELETE_ALL_MINIMAX';
 
   try {
     if (!supabaseUrl || !serviceRoleKey) {
@@ -142,51 +140,32 @@ serve(async (req) => {
       });
     }
 
-    if (action === 'purge_minimax' && isBypassConfirmed) {
-      const purgeResult = await purgeMinimaxAssets();
-      return new Response(JSON.stringify({
-        ok: true,
-        action: 'purge_minimax',
-        deleted_assets: purgeResult.deletedAssets,
-        deleted_storage_objects: purgeResult.deletedStorageObjects,
-      }), {
-        status: 200,
+    const authHeader = req.headers.get('Authorization') || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+    if (!token) {
+      return new Response(JSON.stringify({ ok: false, error: 'Missing bearer token' }), {
+        status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    const allowBypassReplaceAll = action === 'replace_all' && isBypassConfirmed;
-    let email = superAdminEmail;
-    let requestedBy: string | null = null;
+    const { data: tokenUser, error: tokenError } = await supabase.auth.getUser(token);
+    if (tokenError || !tokenUser?.user?.email) {
+      return new Response(JSON.stringify({ ok: false, error: 'Invalid token' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
 
-    if (!allowBypassReplaceAll) {
-      const authHeader = req.headers.get('Authorization') || '';
-      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const email = tokenUser.user.email.toLowerCase();
+    const requestedBy = tokenUser.user.id;
 
-      if (!token) {
-        return new Response(JSON.stringify({ ok: false, error: 'Missing bearer token' }), {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-
-      const { data: tokenUser, error: tokenError } = await supabase.auth.getUser(token);
-      if (tokenError || !tokenUser?.user?.email) {
-        return new Response(JSON.stringify({ ok: false, error: 'Invalid token' }), {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-
-      email = tokenUser.user.email.toLowerCase();
-      requestedBy = tokenUser.user.id;
-
-      if (email !== superAdminEmail) {
-        return new Response(JSON.stringify({ ok: false, error: `Permission denied for ${email}` }), {
-          status: 403,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
+    if (email !== superAdminEmail) {
+      return new Response(JSON.stringify({ ok: false, error: `Permission denied for ${email}` }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
     }
 
     const uniquenessMode: UniquenessMode = payload?.uniqueness_mode === 'relaxed' ? 'relaxed' : 'strict';

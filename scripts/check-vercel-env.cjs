@@ -23,12 +23,12 @@ const envPath = path.join(__dirname, '..', '.env');
 
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, 'utf-8');
-  const hasSupabaseUrl = envContent.includes('SUPABASE_URL=');
-  const hasAnonKey = envContent.includes('SUPABASE_ANON_KEY=');
+  const hasSupabaseUrl = envContent.includes('SUPABASE_URL=') || envContent.includes('VITE_SUPABASE_URL=');
+  const hasAnonKey = envContent.includes('SUPABASE_ANON_KEY=') || envContent.includes('VITE_SUPABASE_ANON_KEY=');
 
   if (hasSupabaseUrl && hasAnonKey) {
     console.log(green('   ✅ .env 文件已配置'));
-    const urlMatch = envContent.match(/SUPABASE_URL=(.+)/);
+    const urlMatch = envContent.match(/VITE_SUPABASE_URL=(.+)/) || envContent.match(/SUPABASE_URL=(.+)/);
     if (urlMatch) {
       console.log(`   URL: ${urlMatch[1]}`);
     }
