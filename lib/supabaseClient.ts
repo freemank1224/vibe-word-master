@@ -15,8 +15,17 @@ import { createClient } from '@supabase/supabase-js';
 const viteEnv = (import.meta as any)?.env || {};
 const processEnv = typeof process !== 'undefined' ? (process as any)?.env || {} : {};
 
-const supabaseUrl: string = viteEnv.VITE_SUPABASE_URL || processEnv.SUPABASE_URL || '';
-const supabaseAnonKey: string = viteEnv.VITE_SUPABASE_ANON_KEY || processEnv.SUPABASE_ANON_KEY || '';
+const supabaseUrl: string =
+  viteEnv.VITE_SUPABASE_URL ||
+  viteEnv.SUPABASE_URL ||
+  processEnv.SUPABASE_URL ||
+  '';
+
+const supabaseAnonKey: string =
+  viteEnv.VITE_SUPABASE_ANON_KEY ||
+  viteEnv.SUPABASE_ANON_KEY ||
+  processEnv.SUPABASE_ANON_KEY ||
+  '';
 
 export const isSupabaseConfigured = 
   supabaseUrl.length > 0 && 

@@ -21,8 +21,8 @@ let currentPlayingKey: string | null = null;
 
 const getSupabaseUrl = (): string | null => {
   const viteEnv = (import.meta as any)?.env;
-  if (viteEnv?.VITE_SUPABASE_URL) {
-    return viteEnv.VITE_SUPABASE_URL;
+  if (viteEnv?.VITE_SUPABASE_URL || viteEnv?.SUPABASE_URL) {
+    return viteEnv.VITE_SUPABASE_URL || viteEnv.SUPABASE_URL;
   }
   const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
   if (processEnv?.SUPABASE_URL) {

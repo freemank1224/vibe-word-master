@@ -32,6 +32,7 @@ export default defineConfig(({ mode }) => {
         port: 3000,
         host: '0.0.0.0',
       },
+      envPrefix: ['VITE_', 'SUPABASE_'],
       plugins: [react()],
       define: {
         // Server-side environment variables (for Node.js scripts)

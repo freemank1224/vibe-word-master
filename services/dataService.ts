@@ -9,6 +9,7 @@ import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 const triggerPronunciationGeneration = async (word: string, lang: string = 'en'): Promise<void> => {
   try {
     const supabaseUrl = (import.meta as any)?.env?.VITE_SUPABASE_URL
+      || (import.meta as any)?.env?.SUPABASE_URL
       || (typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env?.SUPABASE_URL : undefined);
     if (!supabaseUrl) return;
     const uniquenessMode = WORD_LEARNING_CONFIG.pronunciation.uniquenessMode;

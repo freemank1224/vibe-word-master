@@ -24,7 +24,9 @@ class AdminService {
     if (processEnv?.SUPABASE_URL) return processEnv.SUPABASE_URL;
 
     const viteEnv = (import.meta as any)?.env;
-    if (viteEnv?.VITE_SUPABASE_URL) return viteEnv.VITE_SUPABASE_URL;
+    if (viteEnv?.VITE_SUPABASE_URL || viteEnv?.SUPABASE_URL) {
+      return viteEnv.VITE_SUPABASE_URL || viteEnv.SUPABASE_URL;
+    }
 
     if (typeof window !== 'undefined' && (window as any).env?.VITE_SUPABASE_URL) {
       return (window as any).env.VITE_SUPABASE_URL;
