@@ -25,6 +25,23 @@ class AdminService {
    * Authorization header—the SDK's header-merge behavior can silently fall back
    * to the anon key when the FunctionsClient internal JWT isn't synced yet.
    */
+  /**
+   * Always get a freshly-refreshed access token.
+   * getSession() returns the cached value which may be expired (1h TTL).
+   * refreshSession() forces a token exchange with Supabase Auth server,
+   * guaranteeing the JWT is valid when passed to Edge Function gateway.
+   */
+  private async _getFreshToken(): Promise<string> {
+    // Try to refresh first to guarantee a non-expired token
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+    const fromRefresh = refreshData?.session?.access_token;
+    if (fromRefresh && !refreshError) return fromRefresh;
+
+    // Fallback: use cached session (shouldn't normally reach here)
+    const { data: sessionData } = await supabase.auth.getSession();
+    return sessionData?.session?.access_token || '';
+  }
+
   private async _invokeFn(
     fnName: string,
     accessToken: string,
@@ -331,8 +348,7 @@ class AdminService {
     const concurrency = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.batchReplacementConcurrency);
     const maxRequestsPerMinute = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.maxRequestsPerMinute);
     const forceRegenerate = options?.forceRegenerate === true;
-    const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
+    const accessToken = await this._getFreshToken();
 
     if (!accessToken) {
       throw new Error('Authentication token missing. Please re-login and try again.');
@@ -369,8 +385,7 @@ class AdminService {
       throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run global replacement.`);
     }
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
+    const accessToken = await this._getFreshToken();
 
     if (!accessToken) {
       throw new Error('Authentication token missing. Please re-login and try again.');
@@ -397,8 +412,7 @@ class AdminService {
 
     if (!runId) return;
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
+    const accessToken = await this._getFreshToken();
     if (!accessToken) return;
 
     await this._invokeFn('pronunciation-rebuild', accessToken, {
