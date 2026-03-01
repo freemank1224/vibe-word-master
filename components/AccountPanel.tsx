@@ -150,13 +150,11 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
   const checkMinimaxConnectivity = async (): Promise<boolean> => {
     try {
-      const viteEnv = (import.meta as any)?.env;
-      const supabaseClientUrl = (supabase as any)?.supabaseUrl || (supabase as any)?.url || null;
-      const cachedUrl = typeof window !== 'undefined' ? localStorage.getItem('vibe_supabase_url') : null;
-      const supabaseUrl = viteEnv?.VITE_SUPABASE_URL
-        || (typeof window !== 'undefined' ? (window as any)?.env?.VITE_SUPABASE_URL : null)
-        || cachedUrl
-        || supabaseClientUrl;
+      // process.env.SUPABASE_URL is statically replaced by vite.config.ts `define` at build time.
+      const supabaseUrl = process.env.SUPABASE_URL
+        || (supabase as any)?.supabaseUrl
+        || (supabase as any)?.url
+        || '';
       if (!supabaseUrl) return false;
       const resp = await fetch(`${supabaseUrl}/functions/v1/pronunciation?word=apple&lang=en&uniqueness_mode=${WORD_LEARNING_CONFIG.pronunciation.uniquenessMode}`);
       return resp.ok;

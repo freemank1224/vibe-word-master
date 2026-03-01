@@ -19,10 +19,44 @@ class AdminService {
   private _status: GenerationStatus = 'idle';
   private _stopSignal = false;
 
-  private getSupabaseUrl(): string | null {
-    // process.env.SUPABASE_URL is statically replaced by vite.config.ts `define` at build time.
-    const url = process.env.SUPABASE_URL || '';
-    return url || null;
+  /**
+   * Directly call a Supabase Edge Function via fetch.
+   * Using raw fetch instead of supabase.functions.invoke to guarantee exact
+   * Authorization header—the SDK's header-merge behavior can silently fall back
+   * to the anon key when the FunctionsClient internal JWT isn't synced yet.
+   */
+  private async _invokeFn(
+    fnName: string,
+    accessToken: string,
+    body: Record<string, unknown>
+  ): Promise<any> {
+    const supabaseUrl = process.env.SUPABASE_URL || '';
+    const anonKey = process.env.SUPABASE_ANON_KEY || '';
+    if (!supabaseUrl) throw new Error('Supabase URL not configured');
+
+    const response = await fetch(`${supabaseUrl}/functions/v1/${fnName}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        'apikey': anonKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status === 401) {
+      throw new Error('401 Unauthorized: session token invalid or expired. Please logout and login again, then retry.');
+    }
+    if (response.status === 403) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(`Permission denied: ${errBody?.error || 'only super-admin can run this action.'}`);
+    }
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(errBody?.error || `Edge Function returned HTTP ${response.status}`);
+    }
+
+    return response.json();
   }
 
   private normalizeWord(text: string): string {
@@ -306,35 +340,15 @@ class AdminService {
 
     const effectiveRunId = runId || crypto.randomUUID();
 
-    const { data, error } = await supabase.functions.invoke('pronunciation-rebuild', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: {
-        run_id: effectiveRunId,
-        uniqueness_mode: uniquenessMode,
-        concurrency,
-        max_requests_per_minute: maxRequestsPerMinute,
-        force_regenerate: forceRegenerate,
-      }
+    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+      run_id: effectiveRunId,
+      uniqueness_mode: uniquenessMode,
+      concurrency,
+      max_requests_per_minute: maxRequestsPerMinute,
+      force_regenerate: forceRegenerate,
     });
 
-    if (error) {
-      const errorMessage = (error.message || '').toLowerCase();
-      if (errorMessage.includes('401')) {
-        throw new Error('401 Unauthorized: session token invalid/expired. Please logout and login again, then retry.');
-      }
-      throw new Error(error.message || 'Failed to invoke pronunciation-rebuild function');
-    }
-
     if (!data?.ok) {
-      const backendError = String(data?.error || '');
-      if (backendError.includes('Missing bearer token') || backendError.includes('Invalid token')) {
-        throw new Error('Authentication failed: please re-login and retry global replacement.');
-      }
-      if (backendError.includes('Permission denied')) {
-        throw new Error(`Permission denied: only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run this action.`);
-      }
       throw new Error(data?.error || 'Global replacement function returned failed state');
     }
 
@@ -364,18 +378,9 @@ class AdminService {
 
     onProgress('Purging all Minimax pronunciation assets and storage...');
 
-    const { data, error } = await supabase.functions.invoke('pronunciation-rebuild', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: {
-        action: 'purge_minimax',
-      }
+    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+      action: 'purge_minimax',
     });
-
-    if (error) {
-      throw new Error(error.message || 'Failed to invoke pronunciation-rebuild purge action');
-    }
 
     if (!data?.ok) {
       throw new Error(data?.error || 'Purge action returned failed state');
@@ -396,15 +401,10 @@ class AdminService {
     const accessToken = sessionData?.session?.access_token;
     if (!accessToken) return;
 
-    await supabase.functions.invoke('pronunciation-rebuild', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: {
-        action: 'cancel',
-        run_id: runId,
-      }
-    });
+    await this._invokeFn('pronunciation-rebuild', accessToken, {
+      action: 'cancel',
+      run_id: runId,
+    }).catch(() => { /* best-effort cancel */ });
   }
 
   async getStats(): Promise<AdminStats> {
