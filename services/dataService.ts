@@ -958,6 +958,28 @@ export const deleteSessions = async (
   console.log('[deleteSessions] COMPLETE');
 };
 
+/**
+ * Soft-delete individual words by their IDs.
+ * Used by Library Mode to delete specific words without touching sessions.
+ */
+export const deleteWordsByIds = async (
+  userId: string,
+  wordIds: string[]
+): Promise<void> => {
+  if (!wordIds || wordIds.length === 0) return;
+  console.log('[deleteWordsByIds] Soft-deleting words:', wordIds);
+  const { error } = await supabase
+    .from('words')
+    .update({ deleted: true })
+    .in('id', wordIds)
+    .eq('user_id', userId);
+  if (error) {
+    console.error('[deleteWordsByIds] Error:', error.message);
+    throw error;
+  }
+  console.log('[deleteWordsByIds] Done, deleted', wordIds.length, 'words');
+};
+
 export const fetchUserAchievements = async (userId: string): Promise<string[]> => {
   const { data, error } = await supabase
     .from('user_achievements')

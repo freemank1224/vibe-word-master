@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -2369,6 +2369,37 @@ const LibraryMode: React.FC<{
 
     const clearSelection = () => setSelectedIds(new Set());
 
+    // ---- Delete logic ----
+    // pendingDeleteIds: null = dialog closed, string[] = ids to confirm
+    const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(null);
+    const [isWordDeleting, setIsWordDeleting] = useState(false);
+
+    const requestDeleteWords = (e: React.MouseEvent, ids: string[]) => {
+        e.stopPropagation();
+        if (ids.length === 0) return;
+        setPendingDeleteIds(ids);
+    };
+
+    const confirmDeleteWords = async () => {
+        if (!pendingDeleteIds || pendingDeleteIds.length === 0 || !userId) return;
+        setIsWordDeleting(true);
+        try {
+            await deleteWordsByIds(userId, pendingDeleteIds);
+            // Remove from local selected set
+            setSelectedIds(prev => {
+                const next = new Set(prev);
+                pendingDeleteIds.forEach(id => next.delete(id));
+                return next;
+            });
+            setPendingDeleteIds(null);
+            onRefresh?.();
+        } catch (err) {
+            console.error('[LibraryMode] Delete word error:', err);
+        } finally {
+            setIsWordDeleting(false);
+        }
+    };
+
     const handlePreviewAudio = async (e: React.MouseEvent, word: WordEntry) => {
       e.stopPropagation();
       if (playingPreviewWordId) return;
@@ -2654,6 +2685,13 @@ const LibraryMode: React.FC<{
                                 >
                                     Reset
                                 </button>
+                                <button
+                                    onClick={(e) => requestDeleteWords(e, Array.from(selectedIds))}
+                                    className="px-4 py-2 bg-red-500/10 border border-red-500/40 text-red-400 font-headline text-sm rounded-xl hover:bg-red-500/20 hover:border-red-400 transition-colors flex items-center gap-1 animate-in zoom-in"
+                                >
+                                    <span className="material-symbols-outlined text-base">delete</span>
+                                    DELETE ({selectedIds.size})
+                                </button>
                                 <button 
                                     onClick={() => onTest(Array.from(selectedIds))}
                                     className="px-6 py-2 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors flex items-center gap-2 shadow-[0_0_15px_rgba(0,240,255,0.3)] animate-in zoom-in"
@@ -2695,6 +2733,16 @@ const LibraryMode: React.FC<{
                                                         : 'bg-light-charcoal border-mid-charcoal hover:border-text-light'
                                                     }`}
                                                 >
+                                                    {/* Delete Button - hover visible */}
+                                                    <button
+                                                        onClick={(e) => requestDeleteWords(e, [word.id])}
+                                                        className="absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-text-dark hover:text-red-400 transition-all z-10"
+                                                        title={`删除 "${word.text}"`}
+                                                        aria-label={`删除 ${word.text}`}
+                                                    >
+                                                        <span className="material-symbols-outlined text-sm">delete</span>
+                                                    </button>
+
                                                     {/* Main Content: Checkbox + Word */}
                                                     <div className="flex items-center gap-3">
                                                         <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors flex-shrink-0 ${selectedIds.has(word.id) ? 'bg-electric-blue border-electric-blue' : 'border-text-dark bg-transparent'}`}>
@@ -2743,6 +2791,51 @@ const LibraryMode: React.FC<{
                     )}
                 </div>
             </div>
+
+            {/* ---- Delete Confirmation Modal ---- */}
+            {pendingDeleteIds !== null && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-200">
+                    <div className="bg-light-charcoal border border-red-500/50 rounded-3xl p-8 max-w-sm w-full shadow-[0_0_30px_rgba(239,68,68,0.2)]">
+                        <div className="flex items-center gap-3 mb-4 text-red-400">
+                            <span className="material-symbols-outlined text-4xl">{isWordDeleting ? 'delete_sweep' : 'warning'}</span>
+                            <h3 className="text-2xl font-headline tracking-tight">
+                                {isWordDeleting ? '删除中...' : '确认删除'}
+                            </h3>
+                        </div>
+
+                        {isWordDeleting ? (
+                            <div className="flex items-center gap-3 py-4">
+                                <div className="w-5 h-5 border-2 border-red-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                                <p className="text-text-light font-mono text-sm">正在删除，请稍候...</p>
+                            </div>
+                        ) : (
+                            <>
+                                <p className="text-text-light mb-2">
+                                    即将删除
+                                    <span className="text-red-400 font-bold mx-1">{pendingDeleteIds.length}</span>
+                                    个单词，此操作不可撤销。
+                                </p>
+                                <p className="text-text-dark text-xs font-mono mb-6">删除后这些单词的学习记录也将一并移除。</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button
+                                        onClick={() => setPendingDeleteIds(null)}
+                                        className="py-3 rounded-xl bg-mid-charcoal text-text-light hover:bg-text-dark hover:text-charcoal transition-all font-headline tracking-wider"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        onClick={confirmDeleteWords}
+                                        className="py-3 rounded-xl bg-red-500 text-white hover:bg-red-400 transition-all font-headline tracking-wider flex items-center justify-center gap-2"
+                                    >
+                                        <span className="material-symbols-outlined text-base">delete_forever</span>
+                                        确认删除
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
