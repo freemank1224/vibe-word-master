@@ -56,12 +56,11 @@ export default defineConfig(({ mode }) => {
         'process.env.STT_ENDPOINT': JSON.stringify(getEnv('STT_ENDPOINT')),
         'process.env.GEMINI_ENDPOINT': JSON.stringify(getEnv('GEMINI_ENDPOINT', 'https://generativelanguage.googleapis.com')),
         'process.env.OPENAI_ENDPOINT': JSON.stringify(getEnv('OPENAI_ENDPOINT', 'https://api.openai.com/v1')),
+        // These are replaced via AST literal substitution at build time.
+        // Keep ONLY process.env.* here; import.meta.env.VITE_* is handled by
+        // Vite's native envPrefix injection to avoid double-override issues.
         'process.env.SUPABASE_URL': JSON.stringify(supabaseUrl),
         'process.env.SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
-
-        // Client-side environment variables (expose VITE_* to import.meta.env)
-        'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrl),
-        'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
       },
       resolve: {
         alias: {

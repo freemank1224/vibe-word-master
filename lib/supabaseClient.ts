@@ -11,21 +11,10 @@ import { createClient } from '@supabase/supabase-js';
 
 // ------------------------------------------------------------------
 
-// Use Vite runtime env first, then process fallback for compatibility
-const viteEnv = (import.meta as any)?.env || {};
-const processEnv = typeof process !== 'undefined' ? (process as any)?.env || {} : {};
-
-const supabaseUrl: string =
-  viteEnv.VITE_SUPABASE_URL ||
-  viteEnv.SUPABASE_URL ||
-  processEnv.SUPABASE_URL ||
-  '';
-
-const supabaseAnonKey: string =
-  viteEnv.VITE_SUPABASE_ANON_KEY ||
-  viteEnv.SUPABASE_ANON_KEY ||
-  processEnv.SUPABASE_ANON_KEY ||
-  '';
+// These literals are statically replaced by vite.config.ts `define` rules at build time.
+// Do NOT access via intermediate variables (e.g. viteEnv[key]) — that bypasses static replacement.
+const supabaseUrl: string = process.env.SUPABASE_URL || '';
+const supabaseAnonKey: string = process.env.SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = 
   supabaseUrl.length > 0 && 

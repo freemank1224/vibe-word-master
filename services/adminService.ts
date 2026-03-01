@@ -20,18 +20,9 @@ class AdminService {
   private _stopSignal = false;
 
   private getSupabaseUrl(): string | null {
-    const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
-    if (processEnv?.SUPABASE_URL) return processEnv.SUPABASE_URL;
-
-    const viteEnv = (import.meta as any)?.env;
-    if (viteEnv?.VITE_SUPABASE_URL || viteEnv?.SUPABASE_URL) {
-      return viteEnv.VITE_SUPABASE_URL || viteEnv.SUPABASE_URL;
-    }
-
-    if (typeof window !== 'undefined' && (window as any).env?.VITE_SUPABASE_URL) {
-      return (window as any).env.VITE_SUPABASE_URL;
-    }
-    return null;
+    // process.env.SUPABASE_URL is statically replaced by vite.config.ts `define` at build time.
+    const url = process.env.SUPABASE_URL || '';
+    return url || null;
   }
 
   private normalizeWord(text: string): string {
