@@ -7,6 +7,7 @@ import { AISettings, AEServiceProvider } from '../services/ai/settings';
 import { ProgressPieChart, MasteryPieChart } from './Charts';
 import { adminService } from '../services/adminService';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface AccountPanelProps {
   user: any;
@@ -527,12 +528,11 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                         ON: Intelligent selection based on error history & forgetting curve
                     </div>
                 </div>
-                <button
-                  onClick={toggleAiSelection}
-                  className={`w-14 h-8 rounded-full transition-colors relative ${aiSelectionEnabled ? 'bg-electric-blue' : 'bg-mid-charcoal'}`}
-                >
-                  <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform ${aiSelectionEnabled ? 'translate-x-6' : ''}`} />
-                </button>
+                <ToggleSwitch
+                  checked={aiSelectionEnabled}
+                  onChange={toggleAiSelection}
+                  ariaLabel="Toggle smart selection"
+                />
              </div>
           </div>
 
@@ -573,15 +573,14 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
                 <div className="flex items-center justify-between bg-dark-charcoal/80 p-4 rounded-2xl border border-mid-charcoal/50">
                   <div>
-                    <div className="text-white font-mono text-sm mb-1">Global Voice Replacement Switch</div>
+                    <div className="text-white font-mono text-sm mb-1">Vocabulary Audio Manager</div>
                     <div className="text-[10px] text-text-light font-mono">Turn on to start immediate full-scan and generation</div>
                   </div>
-                  <button
-                    onClick={onToggleReplacementSwitch}
-                    className={`w-14 h-8 rounded-full transition-colors relative ${replaceSwitchOn ? 'bg-electric-blue' : 'bg-mid-charcoal'}`}
-                  >
-                    <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform ${replaceSwitchOn ? 'translate-x-6' : ''}`} />
-                  </button>
+                  <ToggleSwitch
+                    checked={replaceSwitchOn}
+                    onChange={onToggleReplacementSwitch}
+                    ariaLabel="Toggle vocabulary audio manager"
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 mt-3">
@@ -590,7 +589,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                     disabled={!replaceSwitchOn || isPurgingMinimax}
                     className={`h-10 rounded-xl font-mono text-xs uppercase tracking-wider transition-colors ${!replaceSwitchOn || isPurgingMinimax ? 'bg-mid-charcoal text-text-dark cursor-not-allowed' : 'bg-red-500/10 border border-red-500/40 text-red-400 hover:bg-red-500 hover:text-charcoal'}`}
                   >
-                    {isPurgingMinimax ? 'DELETING...' : isReplacingPronunciation ? 'Stop + Delete Audio' : 'Delete Minimax Audio'}
+                    {isPurgingMinimax ? 'DELETING...' : isReplacingPronunciation ? 'Delete ALL' : 'Delete Audio'}
                   </button>
 
                   <button
