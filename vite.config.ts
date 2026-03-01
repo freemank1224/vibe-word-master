@@ -6,6 +6,21 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
   const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL || '';
   const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || '';
+
+    const isProdBuild = mode === 'production';
+    if (isProdBuild) {
+      const missing: string[] = [];
+      if (!supabaseUrl) missing.push('VITE_SUPABASE_URL or SUPABASE_URL');
+      if (!supabaseAnonKey) missing.push('VITE_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY');
+
+      if (missing.length > 0) {
+        throw new Error(
+          `[build-config] Missing required Supabase env vars for production build: ${missing.join(', ')}. ` +
+          `Please configure them in Vercel Project Settings -> Environment Variables (Production), then redeploy.`
+        );
+      }
+    }
+
     return {
       server: {
         port: 3000,
