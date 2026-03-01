@@ -24,7 +24,7 @@ const getSupabaseUrl = (): string | null => {
   if (viteEnv?.VITE_SUPABASE_URL) {
     return viteEnv.VITE_SUPABASE_URL;
   }
-  const processEnv = (process as any)?.env;
+  const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
   if (processEnv?.SUPABASE_URL) {
     return processEnv.SUPABASE_URL;
   }

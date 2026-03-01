@@ -20,7 +20,7 @@ class AdminService {
   private _stopSignal = false;
 
   private getSupabaseUrl(): string | null {
-    const processEnv = (process as any)?.env;
+    const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
     if (processEnv?.SUPABASE_URL) return processEnv.SUPABASE_URL;
 
     const viteEnv = (import.meta as any)?.env;

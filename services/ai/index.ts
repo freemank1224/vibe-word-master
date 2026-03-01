@@ -6,6 +6,18 @@ import { OpenAIProvider } from "./openaiProvider";
 import { LocalProvider } from "./localProvider";
 import { AISettings, AEServiceProvider, AITask } from "./settings";
 
+const readRuntimeEnv = (key: string): string | undefined => {
+  const viteEnv = (import.meta as any)?.env;
+  const viteVal = viteEnv?.[key];
+  if (typeof viteVal === 'string' && viteVal.length > 0) return viteVal;
+
+  const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
+  const processVal = processEnv?.[key];
+  if (typeof processVal === 'string' && processVal.length > 0) return processVal;
+
+  return undefined;
+};
+
 class AIServiceManager implements AIService {
   private gemini = new GeminiProvider();
   private openai = new OpenAIProvider();
@@ -63,10 +75,19 @@ class AIServiceManager implements AIService {
     }
 
     // 3. Fallback to Environment Variables
-    const envProvider = process.env[`${task}_PROVIDER`] || 'gemini';
-    const envKey = process.env[`${task}_API_KEY`];
-    const envEndpoint = process.env[`${task}_ENDPOINT`] || 
-                       (envProvider === 'openai' ? process.env.OPENAI_ENDPOINT : process.env.GEMINI_ENDPOINT);
+    const envProvider =
+      readRuntimeEnv(`${task}_PROVIDER`)
+      || readRuntimeEnv(`VITE_${task}_PROVIDER`)
+      || 'gemini';
+    const envKey =
+      readRuntimeEnv(`${task}_API_KEY`)
+      || readRuntimeEnv(`VITE_${task}_API_KEY`);
+    const envEndpoint =
+      readRuntimeEnv(`${task}_ENDPOINT`)
+      || readRuntimeEnv(`VITE_${task}_ENDPOINT`)
+      || (envProvider === 'openai'
+        ? (readRuntimeEnv('OPENAI_ENDPOINT') || readRuntimeEnv('VITE_OPENAI_ENDPOINT'))
+        : (readRuntimeEnv('GEMINI_ENDPOINT') || readRuntimeEnv('VITE_GEMINI_ENDPOINT')));
 
     return {
       providerType: envProvider,

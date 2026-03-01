@@ -2,13 +2,25 @@
 import { AIService, SpellingResult } from "./types";
 import { WordEntry, InputSession } from "../../types";
 
+const readRuntimeEnv = (key: string): string => {
+  const viteEnv = (import.meta as any)?.env;
+  const viteVal = viteEnv?.[key];
+  if (typeof viteVal === 'string' && viteVal.length > 0) return viteVal;
+
+  const processEnv = typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env : undefined;
+  const processVal = processEnv?.[key];
+  if (typeof processVal === 'string' && processVal.length > 0) return processVal;
+
+  return "";
+};
+
 export class OpenAIProvider implements AIService {
   private get defaultApiKey(): string {
-    return process.env.OPENAI_API_KEY || "";
+    return readRuntimeEnv('OPENAI_API_KEY') || readRuntimeEnv('VITE_OPENAI_API_KEY') || "";
   }
 
   private get defaultEndpoint(): string {
-    return process.env.OPENAI_ENDPOINT || "https://api.openai.com/v1";
+    return readRuntimeEnv('OPENAI_ENDPOINT') || readRuntimeEnv('VITE_OPENAI_ENDPOINT') || "https://api.openai.com/v1";
   }
 
   // Helper for OpenAI API calls

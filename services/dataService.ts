@@ -8,7 +8,8 @@ import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 const triggerPronunciationGeneration = async (word: string, lang: string = 'en'): Promise<void> => {
   try {
-    const supabaseUrl = process.env.SUPABASE_URL || (import.meta as any)?.env?.VITE_SUPABASE_URL;
+    const supabaseUrl = (import.meta as any)?.env?.VITE_SUPABASE_URL
+      || (typeof globalThis !== 'undefined' ? (globalThis as any)?.process?.env?.SUPABASE_URL : undefined);
     if (!supabaseUrl) return;
     const uniquenessMode = WORD_LEARNING_CONFIG.pronunciation.uniquenessMode;
     const endpoint = `${supabaseUrl}/functions/v1/pronunciation?word=${encodeURIComponent(word)}&lang=${encodeURIComponent(lang)}&uniqueness_mode=${encodeURIComponent(uniquenessMode)}`;
