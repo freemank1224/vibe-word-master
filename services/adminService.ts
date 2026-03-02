@@ -407,6 +407,52 @@ class AdminService {
     return { deletedAssets, deletedStorageObjects };
   }
 
+  /**
+   * Full-scan orphan cleanup: find all pronunciation assets whose word no longer
+   * exists in any user's active library, then delete the storage files + DB records.
+   * Admin-only (calls `purge_orphaned` action in pronunciation-rebuild edge function).
+   */
+  async purgeOrphanedAudioAssets(
+    onProgress: (msg: string) => void
+  ): Promise<{ deletedAssets: number; deletedStorageObjects: number; orphanedWords: string[] }> {
+    const { data: authData } = await supabase.auth.getUser();
+    const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
+
+    if (userEmail !== superAdminEmail) {
+      throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run this scan.`);
+    }
+
+    const accessToken = await this._getFreshToken();
+    if (!accessToken) {
+      throw new Error('Authentication token missing. Please re-login and try again.');
+    }
+
+    onProgress('Scanning all pronunciation assets for orphans (words not present in any user library)...');
+
+    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+      action: 'purge_orphaned',
+    });
+
+    if (!data?.ok) {
+      throw new Error(data?.error || 'purge_orphaned action returned failed state');
+    }
+
+    const deletedAssets = Number(data?.deleted_assets || 0);
+    const deletedStorageObjects = Number(data?.deleted_storage_objects || 0);
+    const orphanedWords: string[] = data?.orphaned_words || [];
+
+    if (deletedAssets === 0) {
+      onProgress('✓ No orphaned audio assets found. Audio storage is clean.');
+    } else {
+      onProgress(`✓ Removed ${deletedAssets} orphaned assets, ${deletedStorageObjects} storage files.`);
+      if (orphanedWords.length > 0) {
+        onProgress(`  Orphaned words: ${orphanedWords.slice(0, 20).join(', ')}${orphanedWords.length > 20 ? ` … (+${orphanedWords.length - 20} more)` : ''}`);
+      }
+    }
+    return { deletedAssets, deletedStorageObjects, orphanedWords };
+  }
+
   async stopPronunciationReplacement(runId?: string) {
     this._stopSignal = true;
 

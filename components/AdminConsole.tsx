@@ -86,6 +86,7 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   const [isRunning, setIsRunning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isReplacingPronunciation, setIsReplacingPronunciation] = useState(false);
+  const [isCleaningAudio, setIsCleaningAudio] = useState(false);
   
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -160,6 +161,20 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
           addLog("Background generation finished.");
           loadStats();
       });
+    }
+  };
+
+  const handleAudioCleanup = async () => {
+    if (isCleaningAudio) return;
+    try {
+      setIsCleaningAudio(true);
+      addLog('Starting Vocabulary Audio Manager scan...');
+      await adminService.purgeOrphanedAudioAssets((msg) => addLog(msg));
+      loadStats();
+    } catch (e: any) {
+      addLog(`Audio Manager error: ${e.message}`);
+    } finally {
+      setIsCleaningAudio(false);
     }
   };
 
@@ -246,6 +261,23 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
                   disabled={isSyncing}
                 >
                   {isReplacingPronunciation ? '停止全库语音替换' : '启动全库语音替换（所有用户）'}
+                </button>
+              )}
+              {WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
+                <button
+                  style={{
+                    ...BUTTON_STYLE,
+                    backgroundColor: isCleaningAudio ? '#ff9800' : '#20786e',
+                    marginTop: '8px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onClick={handleAudioCleanup}
+                  disabled={isCleaningAudio || isSyncing}
+                  title="扫描 pronunciation_assets 表，删除词库中不存在单词的孤立音频文件"
+                >
+                  {isCleaningAudio ? '🔍 扫描中...' : '🎵 Vocabulary Audio Manager'}
                 </button>
               )}
               <button style={{...BUTTON_STYLE, backgroundColor: '#f44336'}} onClick={handleClear}>清空图片</button>

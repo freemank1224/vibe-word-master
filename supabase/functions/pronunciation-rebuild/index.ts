@@ -124,6 +124,165 @@ const purgeMinimaxAssets = async () => {
   return { deletedAssets: ids.length, deletedStorageObjects };
 };
 
+/**
+ * Purge orphaned pronunciation assets for a given list of word texts.
+ * An asset is "orphaned" if no non-deleted word row exists for that text across ALL users.
+ * Used after a user deletes words from their library (Trigger 1).
+ */
+const purgeOrphanedAssetsForWords = async (
+  wordTexts: string[]
+): Promise<{ deletedAssets: number; deletedStorageObjects: number; orphanedWords: string[] }> => {
+  if (!wordTexts || wordTexts.length === 0) {
+    return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
+  }
+
+  const normalizedInputs = wordTexts.map(normalizeWord);
+
+  // Find assets for these normalized words
+  const { data: assets, error: assetsError } = await supabase
+    .from('pronunciation_assets')
+    .select('id, normalized_word, language, storage_bucket, storage_path')
+    .in('normalized_word', normalizedInputs);
+
+  if (assetsError) throw new Error(`Failed loading assets: ${assetsError.message}`);
+  if (!assets || assets.length === 0) {
+    return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
+  }
+
+  // Build set of unique (normalized_word, language) from assets
+  const uniquePairs = [...new Map(
+    assets.map(a => [`${a.normalized_word}::${a.language || 'en'}`, { word: a.normalized_word, lang: a.language || 'en' }])
+  ).values()];
+
+  // For each pair, check if ANY non-deleted word row exists across ALL users
+  const orphanedKeys = new Set<string>();
+  const BATCH = 100;
+
+  for (let i = 0; i < uniquePairs.length; i += BATCH) {
+    const batch = uniquePairs.slice(i, i + BATCH);
+    const wordBatch = batch.map(p => p.word);
+
+    // Fetch all active words matching these normalized texts
+    // We compare lower(text) = normalized_word (already lowercase)
+    const { data: activeRows } = await supabase
+      .from('words')
+      .select('text, language')
+      .or('deleted.eq.false,deleted.is.null')
+      .in('text', wordBatch.map(w => w)); // exact match on text; normalize in JS below
+
+    const activeSet = new Set(
+      (activeRows || []).map(r => `${normalizeWord(r.text)}::${(r.language || 'en')}`)
+    );
+
+    for (const pair of batch) {
+      const key = `${pair.word}::${pair.lang}`;
+      if (!activeSet.has(key)) {
+        orphanedKeys.add(key);
+      }
+    }
+  }
+
+  const orphanedAssets = assets.filter(a => orphanedKeys.has(`${a.normalized_word}::${a.language || 'en'}`));
+  if (orphanedAssets.length === 0) {
+    return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
+  }
+
+  return await _deleteAssets(orphanedAssets);
+};
+
+/**
+ * Full-scan orphan cleanup: scan ALL pronunciation_assets and remove those
+ * with no matching active word across any user. Admin-only.
+ */
+const purgeOrphanedAssetsFull = async (): Promise<{ deletedAssets: number; deletedStorageObjects: number; orphanedWords: string[] }> => {
+  // Load all assets in pages
+  const PAGE = 1000;
+  let allAssets: Array<{ id: string; normalized_word: string; language: string | null; storage_bucket: string | null; storage_path: string | null }> = [];
+  let page = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const from = page * PAGE;
+    const { data, error } = await supabase
+      .from('pronunciation_assets')
+      .select('id, normalized_word, language, storage_bucket, storage_path')
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`Failed loading assets page ${page}: ${error.message}`);
+    if (!data || data.length === 0) { hasMore = false; break; }
+    allAssets.push(...(data as any[]));
+    hasMore = data.length === PAGE;
+    page++;
+  }
+
+  if (allAssets.length === 0) return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
+
+  // Get ALL active words across all users (normalized)
+  const activeSet = new Set<string>();
+  page = 0; hasMore = true;
+  while (hasMore) {
+    const from = page * PAGE;
+    const { data, error } = await supabase
+      .from('words')
+      .select('text, language')
+      .or('deleted.eq.false,deleted.is.null')
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`Failed loading words page ${page}: ${error.message}`);
+    if (!data || data.length === 0) { hasMore = false; break; }
+    for (const r of data as any[]) {
+      activeSet.add(`${normalizeWord(r.text)}::${r.language || 'en'}`);
+    }
+    hasMore = data.length === PAGE;
+    page++;
+  }
+
+  const orphanedAssets = allAssets.filter(
+    a => !activeSet.has(`${a.normalized_word}::${a.language || 'en'}`)
+  );
+
+  if (orphanedAssets.length === 0) return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
+
+  return await _deleteAssets(orphanedAssets);
+};
+
+/**
+ * Shared helper: delete storage files + DB records for a list of asset rows.
+ */
+const _deleteAssets = async (
+  orphanedAssets: Array<{ id: string; normalized_word: string; language: string | null; storage_bucket: string | null; storage_path: string | null }>
+): Promise<{ deletedAssets: number; deletedStorageObjects: number; orphanedWords: string[] }> => {
+  const BATCH = 500;
+  const ids = orphanedAssets.map(a => a.id);
+  const storagePaths = orphanedAssets
+    .filter(a => a.storage_path && (a.storage_bucket || 'word-audio') === 'word-audio')
+    .map(a => a.storage_path as string);
+  const orphanedWords = [...new Set(orphanedAssets.map(a => a.normalized_word))];
+
+  // 1. Clear references in words table
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const batchIds = ids.slice(i, i + BATCH);
+    await supabase.from('words')
+      .update({ pronunciation_asset_id: null, audio_url: null })
+      .in('pronunciation_asset_id', batchIds);
+    await supabase.from('pronunciation_generation_jobs')
+      .delete()
+      .in('asset_id', batchIds);
+  }
+
+  // 2. Delete storage files
+  let deletedStorageObjects = 0;
+  for (let i = 0; i < storagePaths.length; i += BATCH) {
+    const { error } = await supabase.storage.from('word-audio').remove(storagePaths.slice(i, i + BATCH));
+    if (!error) deletedStorageObjects += Math.min(BATCH, storagePaths.length - i);
+  }
+
+  // 3. Delete pronunciation_assets rows
+  for (let i = 0; i < ids.length; i += BATCH) {
+    await supabase.from('pronunciation_assets').delete().in('id', ids.slice(i, i + BATCH));
+  }
+
+  return { deletedAssets: ids.length, deletedStorageObjects, orphanedWords };
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -161,6 +320,28 @@ serve(async (req) => {
     const email = tokenUser.user.email.toLowerCase();
     const requestedBy = tokenUser.user.id;
 
+    // ── Any authenticated user can trigger targeted orphan cleanup ──────────
+    if (action === 'purge_orphaned_words') {
+      const words = (payload?.words as string[] | undefined) || [];
+      if (words.length === 0) {
+        return new Response(JSON.stringify({ ok: false, error: '`words` array is required' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      const result = await purgeOrphanedAssetsForWords(words);
+      return new Response(JSON.stringify({
+        ok: true,
+        action: 'purge_orphaned_words',
+        deleted_assets: result.deletedAssets,
+        deleted_storage_objects: result.deletedStorageObjects,
+        orphaned_words: result.orphanedWords,
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
     if (email !== superAdminEmail) {
       return new Response(JSON.stringify({ ok: false, error: `Permission denied for ${email}` }), {
         status: 403,
@@ -194,6 +375,20 @@ serve(async (req) => {
         action: 'purge_minimax',
         deleted_assets: purgeResult.deletedAssets,
         deleted_storage_objects: purgeResult.deletedStorageObjects,
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (action === 'purge_orphaned') {
+      const result = await purgeOrphanedAssetsFull();
+      return new Response(JSON.stringify({
+        ok: true,
+        action: 'purge_orphaned',
+        deleted_assets: result.deletedAssets,
+        deleted_storage_objects: result.deletedStorageObjects,
+        orphaned_words: result.orphanedWords,
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
