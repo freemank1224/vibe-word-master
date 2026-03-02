@@ -173,6 +173,54 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
     return 'text-electric-blue';
   };
 
+  const getScoreBreakdown = (entry: LeaderboardEntry) => {
+    const leaderboardConfig = WORD_LEARNING_CONFIG.leaderboard;
+    const maxTotalScore = 1000;
+
+    const testCountMax = leaderboardConfig.weights.testCount * maxTotalScore;
+    const newWordsMax = leaderboardConfig.weights.newWords * maxTotalScore;
+    const accuracyMax = leaderboardConfig.weights.accuracy * maxTotalScore;
+    const difficultyMax = leaderboardConfig.weights.difficulty * maxTotalScore;
+
+    const computedTestCount = Math.min(
+      entry.tests_completed / leaderboardConfig.normalization.testCountCap,
+      1
+    ) * testCountMax;
+
+    const computedNewWords = Math.min(
+      entry.new_words_added / leaderboardConfig.normalization.newWordsCap,
+      1
+    ) * newWordsMax;
+
+    const computedAccuracy = Math.max(0, Math.min(entry.accuracy_rate, 1)) * accuracyMax;
+
+    const computedDifficulty = Math.min(
+      entry.avg_difficulty / leaderboardConfig.normalization.difficultyCap,
+      1
+    ) * difficultyMax;
+
+    const testCountScore = Number.isFinite(entry.test_count_score)
+      ? entry.test_count_score
+      : computedTestCount;
+    const newWordsScore = Number.isFinite(entry.new_words_score)
+      ? entry.new_words_score
+      : computedNewWords;
+    const accuracyScore = Number.isFinite(entry.accuracy_score)
+      ? entry.accuracy_score
+      : computedAccuracy;
+    const difficultyScore = Number.isFinite(entry.difficulty_score)
+      ? entry.difficulty_score
+      : computedDifficulty;
+
+    return {
+      testCountScore,
+      newWordsScore,
+      accuracyScore,
+      difficultyScore,
+      calculatedTotal: testCountScore + newWordsScore + accuracyScore + difficultyScore,
+    };
+  };
+
   if (loading) {
     return (
       <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[420px] flex items-center justify-center">
@@ -363,7 +411,10 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
 
       {/* Rankings List */}
       <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-        {entries.map((entry, index) => (
+        {entries.map((entry) => {
+          const scoreBreakdown = getScoreBreakdown(entry);
+
+          return (
           <div
             key={entry.user_id}
             className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
@@ -386,12 +437,21 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
                 </div>
               </div>
             </div>
-            <div className="text-right">
+            <div className="text-right relative group">
               <div className="font-bold text-white font-mono">{Math.round(entry.total_score)}</div>
               <div className="font-mono text-xs text-text-dark">points</div>
+              <div className="absolute right-0 top-full mt-1 hidden group-hover:block z-20 w-48 p-2 rounded-xl border border-mid-charcoal bg-dark-charcoal shadow-2xl">
+                <div className="font-mono text-[11px] text-text-light space-y-0.5 leading-tight">
+                  <div className="flex justify-between"><span>Tests</span><span>{scoreBreakdown.testCountScore.toFixed(1)}</span></div>
+                  <div className="flex justify-between"><span>New</span><span>{scoreBreakdown.newWordsScore.toFixed(1)}</span></div>
+                  <div className="flex justify-between"><span>Accuracy</span><span>{scoreBreakdown.accuracyScore.toFixed(1)}</span></div>
+                  <div className="flex justify-between"><span>Difficulty</span><span>{scoreBreakdown.difficultyScore.toFixed(1)}</span></div>
+                </div>
+              </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* User's Ranking Summary */}
