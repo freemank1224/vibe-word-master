@@ -1484,9 +1484,13 @@ const App: React.FC = () => {
         </div>
 
       <header className="h-16 border-b border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md fixed top-0 left-0 right-0 z-50 px-6 flex items-center justify-between">
-        <div className="flex items-center gap-2 cursor-pointer" onClick={() => { setMode('DASHBOARD'); setEditingSessionId(null); setTestConfig(null); }}>
-          <span className="material-symbols-outlined text-electric-green text-3xl">bolt</span>
-          <h1 className="font-headline text-2xl tracking-tighter text-electric-blue">VOCAB MONSTER</h1>
+        <div className="relative flex items-center cursor-pointer" onClick={() => { setMode('DASHBOARD'); setEditingSessionId(null); setTestConfig(null); }}>
+          <img
+            src="/monsterImages/home-logo.webp"
+            alt="Vocab Monster Logo"
+            className="absolute left-0 top-1/3 w-12 h-12 object-contain -translate-y-[35%] z-20 pointer-events-none"
+          />
+          <h1 className="pl-16 font-headline text-3xl tracking-[0.02em] text-electric-blue">VOCAB MONSTER</h1>
         </div>
         <div className="flex items-center gap-4">
           <div 
