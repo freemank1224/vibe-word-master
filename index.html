@@ -17,7 +17,9 @@
     </script>
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
     <link rel="preconnect" href="https://fonts.loli.net">
+    <link rel="preload" as="style" href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=block" />
     <link href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=block" rel="stylesheet" />
+    <link rel="preload" as="style" href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" />
     <link href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" rel="stylesheet" />
     <script>
         tailwind.config = {
@@ -241,6 +243,8 @@
             const monsterImg = document.getElementById('loader-monster');
             const root = document.getElementById('root');
             const body = document.body;
+            const isDevHost = ['localhost', '127.0.0.1'].includes(window.location.hostname) || window.location.hostname.endsWith('.local');
+            const warmupStartTime = performance.now();
             
             let progress = 0;
 
@@ -250,18 +254,69 @@
                 monsterImg.src = `/monsterImages/M${day}.webp`;
             }
 
-            // 字体挂载超时保护：如果 3 秒内字体没加载完，强行显示
-            const fontTimeout = setTimeout(() => {
+            const symbolLigatures = [
+                'account_circle', 'add_circle', 'analytics', 'arrow_back', 'arrow_forward', 'bolt',
+                'bookmark', 'casino', 'check', 'check_circle', 'checklist', 'chevron_left',
+                'chevron_right', 'close', 'cloud', 'cloud_done', 'cloud_off', 'cloud_upload',
+                'delete', 'delete_forever', 'devices', 'edit', 'error', 'expand_more', 'filter_list',
+                'grid_view', 'history', 'image', 'layers_clear', 'library_books', 'lock_open',
+                'lock_reset', 'logout', 'mic', 'photo_camera', 'play_arrow', 'refresh', 'report',
+                'save', 'school', 'search', 'search_off', 'show_chart', 'signal_wifi_off', 'sync',
+                'sync_problem', 'volume_up', 'warning'
+            ];
+
+            function waitForMonsterImageLoad() {
+                if (!monsterImg) return Promise.resolve();
+                if (monsterImg.complete) return Promise.resolve();
+
+                return new Promise(resolve => {
+                    monsterImg.addEventListener('load', resolve, { once: true });
+                    monsterImg.addEventListener('error', resolve, { once: true });
+                });
+            }
+
+            async function preloadCriticalAssets() {
+                if (loadingText) loadingText.innerText = 'WARMING UP FONTS & ICONS...';
+
+                const warmupTasks = [waitForMonsterImageLoad()];
+                if (document.fonts && document.fonts.load) {
+                    warmupTasks.push(document.fonts.load('700 1em "Bebas Neue"', 'VOCAB MONSTER'));
+                    warmupTasks.push(document.fonts.load('400 1em "Lexend"', 'LOADING USER PROGRESS 123'));
+                    warmupTasks.push(document.fonts.load('700 1em "Playfair Display"', 'Rank History'));
+                    warmupTasks.push(document.fonts.load('400 1em "Space Mono"', 'INITIALIZING SYSTEMS... 100%'));
+                    warmupTasks.push(document.fonts.load('400 24px "Material Symbols Outlined"', symbolLigatures.join(' ')));
+                    warmupTasks.push(document.fonts.ready);
+                }
+
+                await Promise.allSettled(warmupTasks);
+            }
+
+            function withTimeout(promise, timeoutMs, timeoutMessage) {
+                let timeoutId = null;
+                const timeoutPromise = new Promise(resolve => {
+                    timeoutId = setTimeout(() => {
+                        console.warn(timeoutMessage);
+                        resolve();
+                    }, timeoutMs);
+                });
+
+                return Promise.race([promise, timeoutPromise]).finally(() => {
+                    if (timeoutId) clearTimeout(timeoutId);
+                });
+            }
+
+            const criticalAssetsPromise = withTimeout(
+                preloadCriticalAssets(),
+                6000,
+                'Critical asset warmup timed out, entering app with fallback state.'
+            ).finally(() => {
+                const warmupDuration = Math.round(performance.now() - warmupStartTime);
+                if (isDevHost) {
+                    console.log(`[Loading] Critical assets warmup finished in ${warmupDuration}ms`);
+                }
                 if (loadingScreen && !loadingScreen.classList.contains('fonts-ready')) {
                     loadingScreen.classList.add('fonts-ready');
-                    console.warn('Font loading timed out, falling back to system fonts.');
                 }
-            }, 3000);
-
-            // 监测字体加载完毕
-            document.fonts.ready.then(() => {
-                clearTimeout(fontTimeout);
-                if (loadingScreen) loadingScreen.classList.add('fonts-ready');
             });
             
             // 资源检测逻辑
@@ -320,7 +375,7 @@
             Promise.race([
                 Promise.all([
                     new Promise(resolve => window.addEventListener('load', resolve)),
-                    document.fonts.ready
+                    criticalAssetsPromise
                 ]),
                 loadTimeout
             ]).then(() => {
