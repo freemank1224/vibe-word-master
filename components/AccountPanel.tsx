@@ -174,18 +174,10 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     setIsDispatchingReplacement(true);
     setReplaceProgress({ status: 'running', total: 0, done: 0, generated: 0, skipped: 0, failed: 0, message: 'Starting...' });
 
-    const connected = await checkMinimaxConnectivity();
-    setMinimaxConnected(connected);
-
-    if (!connected) {
-      setReplaceProgress({ status: 'failed', total: 0, done: 0, generated: 0, skipped: 0, failed: 0, message: 'Minimax API unreachable' });
-      setIsReplacingPronunciation(false);
-      setIsDispatchingReplacement(false);
-      setReplaceSwitchOn(false);
-      replaceSwitchRef.current = false;
-      replacementLoopRef.current = false;
-      return;
-    }
+    // Connectivity pre-check removed: auth-gated edge functions always return 401
+    // without a token in the check context. The replacement job itself reports
+    // errors via progress polling, so a blocking pre-check adds no value.
+    void checkMinimaxConnectivity().then(ok => setMinimaxConnected(ok));
 
     const runId = crypto.randomUUID();
     setReplaceRunId(runId);
