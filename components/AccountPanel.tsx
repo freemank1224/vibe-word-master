@@ -156,7 +156,11 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
         || (supabase as any)?.url
         || '';
       if (!supabaseUrl) return false;
-      const resp = await fetch(`${supabaseUrl}/functions/v1/pronunciation?word=apple&lang=en&uniqueness_mode=${WORD_LEARNING_CONFIG.pronunciation.uniquenessMode}`);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token || '';
+      const resp = await fetch(`${supabaseUrl}/functions/v1/pronunciation?word=apple&lang=en&uniqueness_mode=${WORD_LEARNING_CONFIG.pronunciation.uniquenessMode}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       return resp.ok;
     } catch {
       return false;

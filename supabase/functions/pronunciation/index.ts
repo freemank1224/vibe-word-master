@@ -14,7 +14,7 @@ const minimaxApiKey = Deno.env.get('MINIMAX_API_KEY') || '';
 const minimaxEndpoint = Deno.env.get('MINIMAX_TTS_ENDPOINT') || 'https://api.minimaxi.com/v1/t2a_v2';
 const minimaxModel = Deno.env.get('MINIMAX_TTS_MODEL') || 'speech-2.8-turbo';
 const minimaxVoiceId = 'English_CalmWoman';
-const minimaxSpeed = Number(Deno.env.get('MINIMAX_TTS_SPEED') || '0.95');
+const minimaxSpeed = Number(Deno.env.get('MINIMAX_TTS_SPEED') || '0.8');
 const minimaxPitch = Number(Deno.env.get('MINIMAX_TTS_PITCH') || '0');
 const minimaxVol = Number(Deno.env.get('MINIMAX_TTS_VOL') || '1');
 const ttsFormat = Deno.env.get('MINIMAX_TTS_AUDIO_FORMAT') || 'mp3';
@@ -139,6 +139,7 @@ serve(async (req) => {
       model: minimaxModel,
       text: word,
       stream: false,
+      language_boost: 'English',
       output_format: 'hex',
       subtitle_enable: false,
       voice_setting: {
