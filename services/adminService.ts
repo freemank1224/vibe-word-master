@@ -31,49 +31,22 @@ class AdminService {
    * refreshSession() forces a token exchange with Supabase Auth server,
    * guaranteeing the JWT is valid when passed to Edge Function gateway.
    */
-  private async _getFreshToken(): Promise<string> {
-    // Try to refresh first to guarantee a non-expired token
-    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-    const fromRefresh = refreshData?.session?.access_token;
-    if (fromRefresh && !refreshError) return fromRefresh;
-
-    // Fallback: use cached session (shouldn't normally reach here)
-    const { data: sessionData } = await supabase.auth.getSession();
-    return sessionData?.session?.access_token || '';
-  }
-
   private async _invokeFn(
     fnName: string,
-    accessToken: string,
     body: Record<string, unknown>
   ): Promise<any> {
-    const supabaseUrl = process.env.SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || '';
-    if (!supabaseUrl) throw new Error('Supabase URL not configured');
-
-    const response = await fetch(`${supabaseUrl}/functions/v1/${fnName}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${accessToken}`,
-        'apikey': anonKey,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (response.status === 401) {
-      throw new Error('401 Unauthorized: session token invalid or expired. Please logout and login again, then retry.');
+    const { data, error } = await supabase.functions.invoke(fnName, { body });
+    if (error) {
+      const status = (error as any)?.status ?? (error as any)?.context?.status;
+      if (status === 401) {
+        throw new Error('401 Unauthorized: session token invalid or expired. Please logout and login again, then retry.');
+      }
+      if (status === 403) {
+        throw new Error(`Permission denied: ${(error as any)?.message || 'only super-admin can run this action.'}`);
+      }
+      throw new Error((error as any)?.message || 'Edge Function invocation failed');
     }
-    if (response.status === 403) {
-      const errBody = await response.json().catch(() => ({}));
-      throw new Error(`Permission denied: ${errBody?.error || 'only super-admin can run this action.'}`);
-    }
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      throw new Error(errBody?.error || `Edge Function returned HTTP ${response.status}`);
-    }
-
-    return response.json();
+    return data;
   }
 
   private normalizeWord(text: string): string {
@@ -348,15 +321,9 @@ class AdminService {
     const concurrency = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.batchReplacementConcurrency);
     const maxRequestsPerMinute = Math.max(1, WORD_LEARNING_CONFIG.pronunciation.maxRequestsPerMinute);
     const forceRegenerate = options?.forceRegenerate === true;
-    const accessToken = await this._getFreshToken();
-
-    if (!accessToken) {
-      throw new Error('Authentication token missing. Please re-login and try again.');
-    }
-
     const effectiveRunId = runId || crypto.randomUUID();
 
-    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+    const data = await this._invokeFn('pronunciation-rebuild', {
       run_id: effectiveRunId,
       uniqueness_mode: uniquenessMode,
       concurrency,
@@ -385,15 +352,9 @@ class AdminService {
       throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run global replacement.`);
     }
 
-    const accessToken = await this._getFreshToken();
-
-    if (!accessToken) {
-      throw new Error('Authentication token missing. Please re-login and try again.');
-    }
-
     onProgress('Purging all Minimax pronunciation assets and storage...');
 
-    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+    const data = await this._invokeFn('pronunciation-rebuild', {
       action: 'purge_minimax',
     });
 
@@ -423,14 +384,9 @@ class AdminService {
       throw new Error(`Permission denied. Only ${WORD_LEARNING_CONFIG.pronunciation.superAdminEmail} can run this scan.`);
     }
 
-    const accessToken = await this._getFreshToken();
-    if (!accessToken) {
-      throw new Error('Authentication token missing. Please re-login and try again.');
-    }
-
     onProgress('Scanning all pronunciation assets for orphans (words not present in any user library)...');
 
-    const data = await this._invokeFn('pronunciation-rebuild', accessToken, {
+    const data = await this._invokeFn('pronunciation-rebuild', {
       action: 'purge_orphaned',
     });
 
@@ -458,10 +414,7 @@ class AdminService {
 
     if (!runId) return;
 
-    const accessToken = await this._getFreshToken();
-    if (!accessToken) return;
-
-    await this._invokeFn('pronunciation-rebuild', accessToken, {
+    await this._invokeFn('pronunciation-rebuild', {
       action: 'cancel',
       run_id: runId,
     }).catch(() => { /* best-effort cancel */ });
