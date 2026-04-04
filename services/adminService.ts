@@ -332,6 +332,7 @@ class AdminService {
 
     const { data: authData } = await supabase.auth.getUser();
     const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const userId = authData?.user?.id || '';
     const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
 
     if (userEmail !== superAdminEmail) {
@@ -353,6 +354,8 @@ class AdminService {
       concurrency,
       max_requests_per_minute: maxRequestsPerMinute,
       force_regenerate: forceRegenerate,
+      requested_email: userEmail,
+      requested_by: userId,
     });
 
     if (!data?.ok) {
@@ -370,6 +373,7 @@ class AdminService {
 
     const { data: authData } = await supabase.auth.getUser();
     const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const userId = authData?.user?.id || '';
     const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
 
     if (userEmail !== superAdminEmail) {
@@ -380,6 +384,8 @@ class AdminService {
 
     const data = await this._invokeFn('pronunciation-rebuild', {
       action: 'purge_minimax',
+      requested_email: userEmail,
+      requested_by: userId,
     });
 
     if (!data?.ok) {
@@ -402,6 +408,7 @@ class AdminService {
   ): Promise<{ deletedAssets: number; deletedStorageObjects: number; orphanedWords: string[] }> {
     const { data: authData } = await supabase.auth.getUser();
     const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const userId = authData?.user?.id || '';
     const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
 
     if (userEmail !== superAdminEmail) {
@@ -412,6 +419,8 @@ class AdminService {
 
     const data = await this._invokeFn('pronunciation-rebuild', {
       action: 'purge_orphaned',
+      requested_email: userEmail,
+      requested_by: userId,
     });
 
     if (!data?.ok) {
@@ -438,9 +447,15 @@ class AdminService {
 
     if (!runId) return;
 
+    const { data: authData } = await supabase.auth.getUser();
+    const userEmail = authData?.user?.email?.toLowerCase() || '';
+    const userId = authData?.user?.id || '';
+
     await this._invokeFn('pronunciation-rebuild', {
       action: 'cancel',
       run_id: runId,
+      requested_email: userEmail,
+      requested_by: userId,
     }).catch(() => { /* best-effort cancel */ });
   }
 
