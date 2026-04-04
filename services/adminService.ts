@@ -27,7 +27,27 @@ class AdminService {
     fnName: string,
     body: Record<string, unknown>
   ): Promise<any> {
-    const invoke = () => supabase.functions.invoke(fnName, { body });
+    const getAccessToken = async (): Promise<string> => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const fromSession = sessionData?.session?.access_token;
+      if (fromSession) return fromSession;
+
+      const { data: refreshData } = await supabase.auth.refreshSession();
+      const fromRefresh = refreshData?.session?.access_token;
+      if (fromRefresh) return fromRefresh;
+
+      throw new Error('Authentication token missing. Please logout and login again, then retry.');
+    };
+
+    const invoke = async () => {
+      const accessToken = await getAccessToken();
+      return supabase.functions.invoke(fnName, {
+        body,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+    };
 
     let { data, error } = await invoke();
     let status = (error as any)?.status ?? (error as any)?.context?.status;
