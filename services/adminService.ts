@@ -20,24 +20,27 @@ class AdminService {
   private _stopSignal = false;
 
   /**
-   * Directly call a Supabase Edge Function via fetch.
-   * Using raw fetch instead of supabase.functions.invoke to guarantee exact
-   * Authorization header—the SDK's header-merge behavior can silently fall back
-   * to the anon key when the FunctionsClient internal JWT isn't synced yet.
-   */
-  /**
-   * Always get a freshly-refreshed access token.
-   * getSession() returns the cached value which may be expired (1h TTL).
-   * refreshSession() forces a token exchange with Supabase Auth server,
-   * guaranteeing the JWT is valid when passed to Edge Function gateway.
+   * Invoke Edge Function with session-aware auth.
+   * If current session token is stale, refresh once and retry.
    */
   private async _invokeFn(
     fnName: string,
     body: Record<string, unknown>
   ): Promise<any> {
-    const { data, error } = await supabase.functions.invoke(fnName, { body });
+    const invoke = () => supabase.functions.invoke(fnName, { body });
+
+    let { data, error } = await invoke();
+    let status = (error as any)?.status ?? (error as any)?.context?.status;
+
+    if (error && status === 401) {
+      await supabase.auth.refreshSession();
+      const retry = await invoke();
+      data = retry.data;
+      error = retry.error;
+      status = (error as any)?.status ?? (error as any)?.context?.status;
+    }
+
     if (error) {
-      const status = (error as any)?.status ?? (error as any)?.context?.status;
       if (status === 401) {
         throw new Error('401 Unauthorized: session token invalid or expired. Please logout and login again, then retry.');
       }
@@ -46,6 +49,7 @@ class AdminService {
       }
       throw new Error((error as any)?.message || 'Edge Function invocation failed');
     }
+
     return data;
   }
 

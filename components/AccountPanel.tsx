@@ -369,7 +369,16 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     replaceSwitchRef.current = next;
 
     if (next) {
-      void startGlobalPronunciationReplacement();
+      setReplaceProgress(prev => ({
+        status: prev?.status || 'idle',
+        total: prev?.total || 0,
+        done: prev?.done || 0,
+        generated: prev?.generated || 0,
+        skipped: prev?.skipped || 0,
+        failed: prev?.failed || 0,
+        message: 'Manager enabled. Use "Regenerate All" to start rebuilding.'
+      }));
+      setMinimaxConnected(null);
     } else {
       if (replaceRunId) {
         void adminService.stopPronunciationReplacement(replaceRunId);
