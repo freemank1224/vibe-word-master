@@ -415,6 +415,41 @@ serve(async (req) => {
       });
     }
 
+    if (action === 'status') {
+      const targetRunId = (payload?.run_id || '').toString().trim();
+      if (!targetRunId) {
+        return new Response(JSON.stringify({ ok: false, error: 'run_id is required for status action' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const { data: runRow, error: runErr } = await supabase
+        .from('pronunciation_rebuild_runs')
+        .select('run_id,status,total,done,generated,skipped,failed,message,updated_at,finished_at,requested_email')
+        .eq('run_id', targetRunId)
+        .maybeSingle();
+
+      if (runErr) {
+        return new Response(JSON.stringify({ ok: false, error: runErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (!runRow) {
+        return new Response(JSON.stringify({ ok: false, error: `run_id not found: ${targetRunId}` }), {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify({ ok: true, run: runRow }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
     await supabase.from('pronunciation_rebuild_runs').upsert({
       run_id: runId,
       requested_by: requestedBy,
