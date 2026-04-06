@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { RankHistoryEntry } from '../types';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface RankHistoryChartProps {
   userId?: string;
@@ -53,7 +54,7 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
       <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[300px] flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-electric-blue border-t-transparent mb-2"></div>
-          <p className="text-text-dark font-mono text-xs">Loading history...</p>
+          <p className="text-text-dark font-mono text-xs"><HoverTranslationText text="Loading history..." translation="历史数据加载中..." /></p>
         </div>
       </div>
     );
@@ -65,7 +66,7 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
         <div className="text-center">
           <span className="material-symbols-outlined text-4xl text-text-dark mb-2">show_chart</span>
           <p className="text-text-dark font-mono text-xs">
-            {error || 'No history data available'}
+            {error || <HoverTranslationText text="No history data available" translation="暂无历史数据" />}
           </p>
         </div>
       </div>
@@ -110,9 +111,9 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
       {/* Header */}
       <div className="flex justify-between items-center mb-4">
         <div className="flex flex-col">
-          <h3 className="font-headline text-2xl text-electric-blue tracking-widest uppercase">30-Day Trend</h3>
+          <h3 className="font-headline text-2xl text-electric-blue tracking-widest uppercase"><HoverTranslationText text="30-Day Trend" translation="30 天趋势" /></h3>
           <span className="font-mono text-xs text-text-dark tracking-tighter">
-            Percentile over time
+            <HoverTranslationText text="Percentile over time" translation="百分位随时间变化" />
           </span>
         </div>
         <button
@@ -212,19 +213,19 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
       {/* Summary stats */}
       <div className="mt-4 grid grid-cols-3 gap-4">
         <div className="text-center">
-          <div className="font-mono text-xs text-text-dark">Best Rank</div>
+          <div className="font-mono text-xs text-text-dark"><HoverTranslationText text="Best Rank" translation="最佳排名" /></div>
           <div className="font-headline text-lg text-electric-green">
             #{Math.min(...history.map(h => h.rank_position))}
           </div>
         </div>
         <div className="text-center">
-          <div className="font-mono text-xs text-text-dark">Current</div>
+          <div className="font-mono text-xs text-text-dark"><HoverTranslationText text="Current" translation="当前排名" /></div>
           <div className="font-headline text-lg text-electric-blue">
             #{history[0]?.rank_position || '-'}
           </div>
         </div>
         <div className="text-center">
-          <div className="font-mono text-xs text-text-dark">Avg Percentile</div>
+          <div className="font-mono text-xs text-text-dark"><HoverTranslationText text="Avg Percentile" translation="平均百分位" /></div>
           <div className="font-headline text-lg text-white">
             {Math.round(history.reduce((sum, h) => sum + h.percentile, 0) / history.length)}%
           </div>

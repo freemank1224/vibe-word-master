@@ -8,6 +8,7 @@ import { ProgressPieChart, MasteryPieChart } from './Charts';
 import { adminService } from '../services/adminService';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 import { ToggleSwitch } from './ToggleSwitch';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface AccountPanelProps {
   user: any;
@@ -405,7 +406,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
               <span className="material-symbols-outlined text-electric-blue text-3xl">account_circle</span>
             </div>
             <div>
-              <h2 className="text-white font-headline text-2xl tracking-widest">MONSTER INFO</h2>
+              <h2 className="text-white font-headline text-2xl tracking-widest"><HoverTranslationText text="MONSTER INFO" translation="怪兽信息" /></h2>
               <p className="text-text-dark font-mono text-sm">{user?.email}</p>
             </div>
           </div>
@@ -419,7 +420,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
           {/* 学习进度可视化 */}
           <div className="space-y-4">
-            <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Learning Analytics</h3>
+            <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase"><HoverTranslationText text="Learning Analytics" translation="学习分析" /></h3>
 
             {/* 标签切换 */}
             <div className="flex gap-2 bg-dark-charcoal p-1.5 rounded-2xl border border-mid-charcoal/30">
@@ -433,7 +434,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
               >
                 <span className="flex items-center justify-center gap-2">
                   <span className="material-symbols-outlined text-sm">analytics</span>
-                  Test Coverage
+                  <HoverTranslationText text="Test Coverage" translation="测试覆盖率" />
                 </span>
               </button>
               <button
@@ -446,7 +447,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
               >
                 <span className="flex items-center justify-center gap-2">
                   <span className="material-symbols-outlined text-sm">school</span>
-                  Mastery Level
+                  <HoverTranslationText text="Mastery Level" translation="掌握程度" />
                 </span>
               </button>
             </div>
@@ -457,10 +458,10 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                 <div className="flex flex-col items-center">
                   <div className="text-center mb-4">
                     <p className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-1">
-                      Vocabulary Coverage
+                      <HoverTranslationText text="Vocabulary Coverage" translation="词汇覆盖率" />
                     </p>
                     <p className="text-xs text-text-light leading-relaxed">
-                      Track your progress through the entire word library
+                      <HoverTranslationText text="Track your progress through the entire word library" translation="跟踪你在整个词库中的学习进度" />
                     </p>
                   </div>
                   <ProgressPieChart words={words} />
@@ -469,10 +470,10 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                 <div className="flex flex-col items-center">
                   <div className="text-center mb-4">
                     <p className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-1">
-                      Word Mastery Distribution
+                      <HoverTranslationText text="Word Mastery Distribution" translation="单词掌握分布" />
                     </p>
                     <p className="text-xs text-text-light leading-relaxed">
-                      See how many words you've mastered vs still learning
+                      <HoverTranslationText text="See how many words you've mastered vs still learning" translation="查看你已掌握和仍在学习的单词数量" />
                     </p>
                   </div>
                   <MasteryPieChart words={words} />
@@ -484,37 +485,37 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
           {/* 核心统计卡片组 */}
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-light-charcoal/50 p-5 rounded-3xl border border-mid-charcoal/50">
-              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2">Total Words</div>
+              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2"><HoverTranslationText text="Total Words" translation="总单词数" /></div>
               <div className="text-3xl font-headline text-white">{stats.totalWords}</div>
             </div>
             <div className="bg-light-charcoal/50 p-5 rounded-3xl border border-mid-charcoal/50">
-              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2">Global Accuracy</div>
+              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2"><HoverTranslationText text="Global Accuracy" translation="总体正确率" /></div>
               <div className="text-3xl font-headline text-electric-green">{Math.round(stats.accuracy)}%</div>
             </div>
             <div className="bg-light-charcoal/50 p-5 rounded-3xl border border-mid-charcoal/50">
-              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2">Library Coverage</div>
+              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2"><HoverTranslationText text="Library Coverage" translation="词库覆盖率" /></div>
               <div className="text-3xl font-headline text-electric-blue">{Math.round(stats.coverage)}%</div>
             </div>
             <div className="bg-light-charcoal/50 p-5 rounded-3xl border border-mid-charcoal/50 border-orange-500/30">
-              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2">Daily Streak</div>
+              <div className="text-[10px] text-text-dark font-mono uppercase tracking-widest mb-2"><HoverTranslationText text="Daily Streak" translation="连续打卡天数" /></div>
               <div className="text-3xl font-headline text-orange-400">{stats.currentStreak} <span className="text-xl">🔥</span></div>
             </div>
           </div>
 
           {/* 详细成长指标 */}
           <div className="space-y-4">
-             <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Metrics Detail</h3>
+             <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase"><HoverTranslationText text="Metrics Detail" translation="详细指标" /></h3>
              <div className="bg-dark-charcoal p-5 rounded-3xl border border-mid-charcoal/30 divide-y divide-mid-charcoal/30">
                 <div className="flex justify-between py-3">
-                    <span className="text-text-light text-sm">Active Duration</span>
+                    <span className="text-text-light text-sm"><HoverTranslationText text="Active Duration" translation="活跃时长" /></span>
                     <span className="text-white font-mono text-sm">{stats.daysSinceStart} Days</span>
                 </div>
                 <div className="flex justify-between py-3">
-                    <span className="text-text-light text-sm">Tested Items</span>
+                    <span className="text-text-light text-sm"><HoverTranslationText text="Tested Items" translation="已测试项目" /></span>
                     <span className="text-white font-mono text-sm">{stats.testedWords}</span>
                 </div>
                 <div className="flex justify-between py-3">
-                    <span className="text-text-light text-sm">Mastered Words</span>
+                    <span className="text-text-light text-sm"><HoverTranslationText text="Mastered Words" translation="已掌握单词" /></span>
                     <span className="text-white font-mono text-sm font-bold text-electric-green">{stats.correctWords}</span>
                 </div>
              </div>
@@ -522,10 +523,10 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
           {/* Smart Selection Settings */}
           <div className="space-y-4">
-             <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Smart Selection</h3>
+             <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase"><HoverTranslationText text="Smart Selection" translation="智能选择" /></h3>
              <div className="bg-dark-charcoal p-5 rounded-3xl border border-mid-charcoal/30 flex items-center justify-between">
                 <div>
-                    <div className="text-white font-mono text-sm mb-1">Smart Selection Assistant</div>
+                    <div className="text-white font-mono text-sm mb-1"><HoverTranslationText text="Smart Selection Assistant" translation="智能选择助手" /></div>
                     <div className="text-[10px] text-text-light font-mono max-w-[200px] leading-tight">
                         OFF: Random selection from checked words<br/>
                         ON: Intelligent selection based on error history & forgetting curve
@@ -542,7 +543,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
           {isSuperAdmin && WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
-                <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase">Global Pronunciation</h3>
+                <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase"><HoverTranslationText text="Global Pronunciation" translation="全局发音" /></h3>
               </div>
               <div className="bg-light-charcoal/30 p-6 rounded-3xl border border-mid-charcoal/50">
                 <p className="text-xs text-text-dark font-mono leading-relaxed mb-6">
@@ -550,7 +551,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
                 </p>
 
                 <div className="bg-dark-charcoal/80 p-4 rounded-2xl border border-electric-blue/30 mb-6">
-                  <h4 className="text-[10px] font-mono text-electric-blue uppercase tracking-widest mb-3">Runtime Status</h4>
+                  <h4 className="text-[10px] font-mono text-electric-blue uppercase tracking-widest mb-3"><HoverTranslationText text="Runtime Status" translation="运行状态" /></h4>
                   <div className="grid grid-cols-2 gap-y-3">
                     <div className="text-white font-mono text-xs">Minimax API:</div>
                     <div className={`font-mono text-xs font-bold text-right ${minimaxConnected === true ? 'text-electric-green' : minimaxConnected === false ? 'text-red-400' : 'text-text-dark'}`}>
@@ -576,7 +577,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
 
                 <div className="flex items-center justify-between bg-dark-charcoal/80 p-4 rounded-2xl border border-mid-charcoal/50">
                   <div>
-                    <div className="text-white font-mono text-sm mb-1">Vocabulary Audio Manager</div>
+                    <div className="text-white font-mono text-sm mb-1"><HoverTranslationText text="Vocabulary Audio Manager" translation="词汇音频管理器" /></div>
                     <div className="text-[10px] text-text-light font-mono">Turn on to start immediate full-scan and generation</div>
                   </div>
                   <ToggleSwitch
@@ -612,7 +613,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
           {/* 已解锁成就 */}
           <div>
             <div className="flex justify-between items-center mb-6">
-              <h3 className="font-headline text-lg text-white tracking-[0.2em] uppercase">Special Badges</h3>
+              <h3 className="font-headline text-lg text-white tracking-[0.2em] uppercase"><HoverTranslationText text="Special Badges" translation="特殊徽章" /></h3>
               <div className="text-[10px] font-mono text-text-dark uppercase bg-light-charcoal px-2 py-1 rounded">
                 <span className="text-electric-blue font-bold">{unlockedCount}</span>
                 <span> / {ACHIEVEMENTS.length} COLLECTED</span>
@@ -638,7 +639,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
             className="w-full h-14 flex items-center justify-center gap-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-2xl transition-all font-bold uppercase tracking-widest text-sm"
           >
             <span className="material-symbols-outlined">logout</span>
-            Terminate Session
+            <HoverTranslationText text="Terminate Session" translation="结束当前会话" />
           </button>
         </div>
       </div>

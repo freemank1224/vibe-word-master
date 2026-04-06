@@ -11,6 +11,9 @@ interface LargeWordInputProps {
   status?: 'idle' | 'correct' | 'wrong';
   showWordBlocks?: boolean;
   targetWord?: string;
+  theme?: 'default' | 'review';
+  maxWidth?: string;
+  fitToContent?: boolean;
 }
 
 export const LargeWordInput: React.FC<LargeWordInputProps> = ({ 
@@ -22,7 +25,10 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   hintOverlay,
   status = 'idle',
   showWordBlocks = false,
-  targetWord = ''
+  targetWord = '',
+  theme = 'default',
+  maxWidth = 'calc(100vw - 6rem)',
+  fitToContent = false
 }) => {
   const [inputWidth, setInputWidth] = useState('400px');
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -73,7 +79,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   }, [disabled, value]);
 
   return (
-    <div className="relative w-full flex justify-center items-center h-64 md:h-80 px-4 group">
+    <div className={`relative flex justify-center items-center h-64 md:h-80 px-4 group transition-[width,max-width] duration-300 ease-out ${fitToContent ? 'w-fit max-w-full mx-auto' : 'w-full'}`}>
       <style>{`
         @keyframes shake {
           0%, 100% { transform: translateX(0); }
@@ -93,6 +99,14 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           border-color: #ef4444 !important;
           filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.4));
         }
+        .theme-review-idle {
+          color: #fca5a5 !important;
+          border-color: rgba(239, 68, 68, 0.75) !important;
+          filter: drop-shadow(0 0 12px rgba(239, 68, 68, 0.18));
+        }
+        .theme-review-idle::placeholder {
+          color: rgba(127, 29, 29, 0.55) !important;
+        }
       `}</style>
       {/* Hidden element to measure text width for adaptive resizing */}
       <span 
@@ -103,7 +117,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
         {value || placeholder || ''}
       </span>
 
-      <div className="relative max-w-full flex justify-center h-full items-center">
+      <div className="relative max-w-full flex justify-center h-full items-center transition-[width,max-width] duration-300 ease-out">
         <input
           ref={inputRef}
           type="text"
@@ -118,12 +132,14 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           placeholder={placeholder}
           readOnly={disabled}
           spellCheck="false"
-          style={{ width: inputWidth, maxWidth: 'calc(100vw - 6rem)' }}
-          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-all placeholder:text-mid-charcoal/30 focus:ring-0 ${
+          style={{ width: inputWidth, maxWidth }}
+          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
             status === 'correct' 
               ? 'status-correct scale-105' 
               : status === 'wrong' 
               ? 'status-wrong animate-shake' 
+              : theme === 'review'
+                ? 'theme-review-idle focus:border-red-400'
               : showWordBlocks 
                 ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white'
                 : 'border-mid-charcoal focus:border-electric-blue text-white'
@@ -148,7 +164,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           >
             <div 
                 className="flex gap-2 md:gap-4 px-4"
-                style={{ width: inputWidth, maxWidth: 'calc(100vw - 4rem)' }}
+                  style={{ width: inputWidth, maxWidth: maxWidth === 'calc(100vw - 6rem)' ? 'calc(100vw - 4rem)' : maxWidth }}
             >
                 {targetWord.split('').map((char, i) => {
                     const isInputReady = value.length > i;

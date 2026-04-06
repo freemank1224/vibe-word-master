@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { LeaderboardEntry, DayStats } from '../types';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface LeaderboardPanelProps {
   selectedDate?: Date;
@@ -226,7 +227,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
       <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl min-h-[420px] flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-electric-blue border-t-transparent mb-4"></div>
-          <p className="text-text-dark font-mono text-sm">Loading leaderboard...</p>
+          <p className="text-text-dark font-mono text-sm"><HoverTranslationText text="Loading leaderboard..." translation="排行榜加载中..." /></p>
         </div>
       </div>
     );
@@ -245,13 +246,13 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
           <div className="flex flex-col">
-            <h3 className="font-headline text-3xl text-electric-blue tracking-widest uppercase">Leaderboard</h3>
+            <h3 className="font-headline text-3xl text-electric-blue tracking-widest uppercase"><HoverTranslationText text="Leaderboard" translation="排行榜" /></h3>
             <span className="font-mono text-xs text-text-dark tracking-tighter">
               {formatDate(actualDateWithData)}
               {formatDate(actualDateWithData) === formatDate(new Date()) ? (
-                <span className="ml-2 text-electric-green text-xs">(Real-time)</span>
+                <span className="ml-2 text-electric-green text-xs"><HoverTranslationText text="(Real-time)" translation="（实时）" /></span>
               ) : (
-                <span className="ml-2 text-text-dark text-xs">(Frozen)</span>
+                <span className="ml-2 text-text-dark text-xs"><HoverTranslationText text="(Frozen)" translation="（已冻结）" /></span>
               )}
             </span>
           </div>
@@ -266,7 +267,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
               onClick={jumpToToday}
               className="px-3 py-1 font-mono text-xs bg-mid-charcoal hover:bg-electric-blue hover:text-white rounded-full text-text-light transition-colors"
             >
-              Today
+              <HoverTranslationText text="Today" translation="今天" />
             </button>
             <button
               onClick={() => changeDate(1)}
@@ -284,7 +285,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
             // No one has qualified yet today
             <>
               <div className="text-6xl mb-4">🏆</div>
-              <h4 className="font-headline text-xl text-white mb-2">Be the First!</h4>
+              <h4 className="font-headline text-xl text-white mb-2"><HoverTranslationText text="Be the First!" translation="成为第一个上榜的人！" /></h4>
               <p className="text-text-dark font-mono text-sm text-center max-w-md mb-6">
                 No rankings yet for this date. Complete {WORD_LEARNING_CONFIG.leaderboard.qualification.minTestsPerDay} tests
                 to become the first leader on the board!
@@ -317,7 +318,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
             // User hasn't qualified yet
             <>
               <div className="text-6xl mb-4">🎯</div>
-              <h4 className="font-headline text-xl text-white mb-2">Almost There!</h4>
+              <h4 className="font-headline text-xl text-white mb-2"><HoverTranslationText text="Almost There!" translation="就快达标了！" /></h4>
               <p className="text-text-dark font-mono text-sm text-center max-w-md mb-6">
                 To appear on the leaderboard, you need to complete at least{' '}
                 <span className="text-electric-blue font-bold">
@@ -328,7 +329,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
               {qualificationStatus && (
                 <div className="bg-mid-charcoal/50 rounded-2xl p-4 mb-6">
                   <div className="text-center mb-3">
-                    <div className="text-text-dark font-mono text-xs mb-1">YOUR PROGRESS</div>
+                    <div className="text-text-dark font-mono text-xs mb-1"><HoverTranslationText text="YOUR PROGRESS" translation="你的进度" /></div>
                     <div className="flex items-center justify-center gap-2">
                       <span className="text-4xl font-bold text-electric-blue">
                         {qualificationStatus.currentTests}

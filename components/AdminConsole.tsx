@@ -4,6 +4,7 @@ import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { HoverTranslationText } from './HoverTranslationText';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -201,7 +202,7 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   return (
     <div style={PANEL_STYLE}>
       <div style={HEADER_STYLE}>
-        <h3>🛠️ Vibe Admin Console</h3>
+        <h3>🛠️ <HoverTranslationText text="Vibe Admin Console" translation="Vibe 管理控制台" /></h3>
         <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: '20px' }}>×</button>
       </div>
 
@@ -217,20 +218,20 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}>Total Words</div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Total Words" translation="总单词数" /></div>
                 <div style={{ fontSize: '24px' }}>{stats?.totalWords || 0}</div>
               </div>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}>Coverage</div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Coverage" translation="覆盖率" /></div>
                 <div style={{ fontSize: '24px' }}>{stats?.coverageRate.toFixed(1)}% <span style={{fontSize: '12px'}}>({stats?.wordsWithImages} imgs)</span></div>
               </div>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}>Est. Storage</div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Est. Storage" translation="预估存储占用" /></div>
                 <div style={{ fontSize: '24px' }}>{stats?.storageUsageMB.toFixed(2)} MB</div>
               </div>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                  <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: isRunning ? '#0f0' : '#555', marginRight: '8px' }}></div>
-                 {isRunning ? 'RUNNING' : 'IDLE'}
+                 {isRunning ? <HoverTranslationText text="RUNNING" translation="运行中" /> : <HoverTranslationText text="IDLE" translation="空闲" />}
               </div>
             </div>
 

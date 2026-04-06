@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { DayStats } from '../types';
 import { getShanghaiDateString } from '../utils/timezone';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface CalendarViewProps {
   stats: Record<string, DayStats>;
@@ -126,20 +127,20 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
               {stat && stat.total > 0 && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover:block z-[60] bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
                     <p className="font-bold text-white mb-1 flex items-center gap-2">
-                        Activity Log
+                        <HoverTranslationText text="Activity Log" translation="活动记录" />
                         {isFrozen && <span className="text-[10px] opacity-60">🔒 FROZEN</span>}
                     </p>
                     <div className="space-y-0.5">
                         <p className="text-text-dark flex justify-between gap-4">
-                            <span>Correct:</span>
+                            <span><HoverTranslationText text="Correct:" translation="正确：" /></span>
                             <span className="text-electric-blue font-mono">{stat.correct}</span>
                         </p>
                         <p className="text-text-dark flex justify-between gap-4">
-                            <span>Total Words:</span>
+                            <span><HoverTranslationText text="Total Words:" translation="总单词数：" /></span>
                             <span className="text-text-light font-mono">{stat.total}</span>
                         </p>
                         <p className="text-text-dark flex justify-between gap-4 pt-1 border-t border-mid-charcoal/30 mt-1">
-                            <span>Accuracy:</span>
+                            <span><HoverTranslationText text="Accuracy:" translation="正确率：" /></span>
                             <span className="text-electric-green font-bold font-mono">
                                 {(() => {
                                     // Simplified: Use correct/total directly (removed points-based calculation)
@@ -176,7 +177,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
         <div className="flex gap-4 flex-wrap">
             <div className="flex items-center gap-1.5">
                 <div className="w-2.5 h-2.5 rounded-sm bg-red-500/40 border border-red-500/60"></div>
-                <span className="text-[10px] font-mono text-text-dark uppercase">Low</span>
+                <span className="text-[10px] font-mono text-text-dark uppercase"><HoverTranslationText text="Low" translation="较低" /></span>
             </div>
             <div className="flex items-center gap-1.5">
                 <div className="w-2.5 h-2.5 rounded-sm bg-orange-500/40 border border-orange-500/60"></div>
@@ -192,7 +193,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
             </div>
             <div className="flex items-center gap-1.5">
                 <div className="w-2.5 h-2.5 rounded-sm bg-electric-green/40 border border-electric-green/60"></div>
-                <span className="text-[10px] font-mono text-text-dark uppercase">Elite</span>
+                <span className="text-[10px] font-mono text-text-dark uppercase"><HoverTranslationText text="Elite" translation="精英" /></span>
             </div>
         </div>
       </div>

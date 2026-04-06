@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { importDictionaryWords, verifyAllLibraries, LibraryVerificationResult, DICTIONARY_CONFIG, fetchLocalWordList } from '../services/dataService';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { HoverTranslationText } from './HoverTranslationText';
 
 // Use centralized dictionary config
 const DICTIONARIES = DICTIONARY_CONFIG;
@@ -205,9 +206,9 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
 
     return (
         <div className={`bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg mb-6`} ref={dropdownRef}>
-             <h3 className="font-headline text-xl text-electric-blue mb-4 flex items-center gap-2">
+                 <h3 className="font-headline text-xl text-electric-blue mb-4 flex items-center gap-2">
                 <span className="material-symbols-outlined">library_books</span>
-                LIBRARIES
+                     <HoverTranslationText text="LIBRARIES" translation="词库" />
                 {isVerifying && (
                     <span className="material-symbols-outlined text-sm text-mid-grey animate-spin">refresh</span>
                 )}
@@ -219,7 +220,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                     className="w-full bg-dark-charcoal border border-mid-charcoal hover:border-electric-blue rounded-lg px-4 py-3 text-white text-left flex justify-between items-center transition-colors"
                 >
                     <span className="truncate pr-2 font-mono">
-                        {isAll ? "All Libraries" : Array.from(selectedLibraries).filter((lib: string) => lib === 'Custom' || isLibraryComplete(lib)).map(getDisplayName).join(', ') || 'Custom'}
+                        {isAll ? <HoverTranslationText text="All Libraries" translation="全部词库" /> : Array.from(selectedLibraries).filter((lib: string) => lib === 'Custom' || isLibraryComplete(lib)).map(getDisplayName).join(', ') || 'Custom'}
                     </span>
                     <span className="material-symbols-outlined text-mid-grey">
                         {isOpen ? 'expand_less' : 'expand_more'}
@@ -238,7 +239,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                     className="w-4 h-4 rounded border-mid-grey bg-transparent text-electric-blue focus:ring-0 focus:ring-offset-0"
                                 />
                                 <span className={`ml-3 font-mono ${isAll ? 'text-white' : 'text-mid-grey group-hover:text-white'}`}>
-                                    All Libraries
+                                    <HoverTranslationText text="All Libraries" translation="全部词库" />
                                 </span>
                             </label>
                             
@@ -281,7 +282,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                     <div className="h-px bg-mid-charcoal my-1 opacity-50"></div>
                                     <div className="px-2 py-1 text-xs text-yellow-500 font-bold uppercase tracking-wider flex items-center gap-1">
                                         <span className="material-symbols-outlined text-sm">warning</span>
-                                        Incomplete - Needs Re-download
+                                        <HoverTranslationText text="Incomplete - Needs Re-download" translation="词库不完整，需要重新下载" />
                                     </div>
                                     
                                     {incompleteDictionaries.map(dict => {
@@ -308,7 +309,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                                     onClick={(e) => handleImport(e, dict)}
                                                     disabled={isLoading}
                                                     className="ml-2 p-1 rounded hover:bg-yellow-500/20 text-yellow-400 hover:text-yellow-300 transition-colors group/btn"
-                                                    title={isLoading ? "Downloading..." : "Re-download to complete"}
+                                                    title={isLoading ? "下载中..." : "重新下载以补全词库"}
                                                 >
                                                     <span className={`material-symbols-outlined text-lg ${isLoading ? 'animate-spin' : ''}`}>
                                                         {isLoading ? 'refresh' : 'sync'}
@@ -324,7 +325,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                             {uninstalledDictionaries.length > 0 && (
                                 <>
                                     <div className="h-px bg-mid-charcoal my-1 opacity-50"></div>
-                                    <div className="px-2 py-1 text-xs text-mid-grey font-bold uppercase tracking-wider">Available for Download</div>
+                                    <div className="px-2 py-1 text-xs text-mid-grey font-bold uppercase tracking-wider"><HoverTranslationText text="Available for Download" translation="可下载" /></div>
                                     
                                     {uninstalledDictionaries.map(dict => {
                                         const isLoading = downloadStatus[dict.tag] === 'loading';
@@ -345,7 +346,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                                     onClick={(e) => handleImport(e, dict)}
                                                     disabled={isLoading}
                                                     className="ml-2 p-1 rounded hover:bg-electric-blue/20 text-mid-grey hover:text-electric-blue transition-colors group/btn"
-                                                    title={isLoading ? "Downloading..." : "Download Dictionary"}
+                                                    title={isLoading ? "下载中..." : "下载词库"}
                                                 >
                                                     <span className={`material-symbols-outlined text-lg ${isLoading ? 'animate-spin' : ''}`}>
                                                         {isLoading ? 'refresh' : 'download'}

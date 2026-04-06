@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface AuthProps {
   onForgotPassword?: () => void;
@@ -250,13 +251,13 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
               alt="Mascot"
               className="w-[144px] h-[144px] mx-auto mb-2 object-contain"
             />
-            <h1 className="font-headline text-4xl text-white tracking-tight">VOCAB MONSTER</h1>
-            <p className="font-mono text-xs text-text-dark uppercase tracking-widest mt-2">Learn & practise like a monster</p>
+            <h1 className="font-headline text-4xl text-white tracking-tight"><HoverTranslationText text="VOCAB MONSTER" translation="词汇怪兽" /></h1>
+            <p className="font-mono text-xs text-text-dark uppercase tracking-widest mt-2"><HoverTranslationText text="Learn & practise like a monster" translation="像怪兽一样学习与练习" /></p>
           </div>
 
           <form onSubmit={handleAuth} className="space-y-6">
             <div>
-              <label className="block text-xs font-mono text-text-dark mb-2 uppercase">Email</label>
+              <label className="block text-xs font-mono text-text-dark mb-2 uppercase"><HoverTranslationText text="Email" translation="邮箱" /></label>
               <input
                 type="email"
                 required
@@ -271,7 +272,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
               />
             </div>
             <div>
-              <label className="block text-xs font-mono text-text-dark mb-2 uppercase">Password</label>
+              <label className="block text-xs font-mono text-text-dark mb-2 uppercase"><HoverTranslationText text="Password" translation="密码" /></label>
               <input
                 type="password"
                 required
@@ -296,18 +297,18 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                       type="button"
                       onClick={handleResendActivation}
                       className="text-xs bg-electric-blue/20 text-electric-blue px-3 py-1.5 rounded-lg hover:bg-electric-blue/30 transition-colors"
-                      title="Resend activation email"
+                      title="重新发送激活邮件"
                     >
-                      📧 Resend Email
+                      📧 <HoverTranslationText text="Resend Email" translation="重新发送邮件" />
                     </button>
 
                     <button
                       type="button"
                       onClick={() => onForgotPassword?.()}
                       className="text-xs bg-white/10 text-white px-3 py-1.5 rounded-lg hover:bg-white/20 transition-colors"
-                      title="Reset password"
+                      title="重置密码"
                     >
-                      🔑 Forgot Password
+                      🔑 <HoverTranslationText text="Forgot Password" translation="忘记密码" />
                     </button>
                   </>
                 )}
@@ -317,7 +318,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                     onClick={() => { setMode('LOGIN'); setMsg(''); setMsgType('info'); }}
                     className="text-xs bg-electric-blue/20 text-electric-blue px-3 py-1.5 rounded-lg hover:bg-electric-blue/30 transition-colors"
                   >
-                    ← Back to Login
+                    ← <HoverTranslationText text="Back to Login" translation="返回登录" />
                   </button>
                 )}
                 {msg.includes('Activation email resent') && (
@@ -326,7 +327,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                     onClick={() => { setMsg(''); setMsgType('info'); }}
                     className="text-xs bg-white/10 text-white px-3 py-1.5 rounded-lg hover:bg-white/20 transition-colors"
                   >
-                    Dismiss
+                    <HoverTranslationText text="Dismiss" translation="关闭提示" />
                   </button>
                 )}
               </div>

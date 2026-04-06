@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { HoverTranslationText } from './HoverTranslationText';
 
 export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void }> = ({ accessToken, onClose }) => {
   const [password, setPassword] = useState('');
@@ -182,8 +183,8 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
             <div className="w-20 h-20 mx-auto mb-4 bg-electric-green/20 rounded-full flex items-center justify-center">
               <span className="material-symbols-outlined text-5xl text-electric-green">check</span>
             </div>
-            <h1 className="font-headline text-4xl text-white tracking-tight mb-2">Password Reset Successful</h1>
-            <p className="font-mono text-xs text-text-dark uppercase tracking-widest">Your password has been updated</p>
+            <h1 className="font-headline text-4xl text-white tracking-tight mb-2"><HoverTranslationText text="Password Reset Successful" translation="密码重置成功" /></h1>
+            <p className="font-mono text-xs text-text-dark uppercase tracking-widest"><HoverTranslationText text="Your password has been updated" translation="你的密码已更新" /></p>
           </div>
 
           <div className="text-center">
@@ -191,7 +192,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
               onClick={onClose}
               className="w-full py-4 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors"
             >
-              Continue to Login
+              <HoverTranslationText text="Continue to Login" translation="继续前往登录" />
             </button>
           </div>
         </div>
@@ -229,19 +230,19 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
           <div className="w-20 h-20 mx-auto mb-4 bg-electric-blue/20 rounded-full flex items-center justify-center">
             <span className="material-symbols-outlined text-5xl text-electric-blue">lock_reset</span>
           </div>
-          <h1 className="font-headline text-4xl text-white tracking-tight mb-2">RESET PASSWORD</h1>
-          <p className="font-mono text-xs text-text-dark uppercase tracking-widest">Enter your new password below</p>
+          <h1 className="font-headline text-4xl text-white tracking-tight mb-2"><HoverTranslationText text="RESET PASSWORD" translation="重置密码" /></h1>
+          <p className="font-mono text-xs text-text-dark uppercase tracking-widest"><HoverTranslationText text="Enter your new password below" translation="在下方输入你的新密码" /></p>
         </div>
 
         {!sessionSet && !error && (
           <div className="bg-electric-blue/10 text-electric-blue text-xs p-3 rounded-lg border border-electric-blue/30 mb-4">
-            🔐 Setting up secure session...
+            🔐 <HoverTranslationText text="Setting up secure session..." translation="正在建立安全会话..." />
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-xs font-mono text-text-dark mb-2 uppercase">New Password</label>
+            <label className="block text-xs font-mono text-text-dark mb-2 uppercase"><HoverTranslationText text="New Password" translation="新密码" /></label>
             <input
               type="password"
               required
@@ -255,7 +256,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
           </div>
 
           <div>
-            <label className="block text-xs font-mono text-text-dark mb-2 uppercase">Confirm Password</label>
+            <label className="block text-xs font-mono text-text-dark mb-2 uppercase"><HoverTranslationText text="Confirm Password" translation="确认密码" /></label>
             <input
               type="password"
               required

@@ -36,6 +36,7 @@ import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
+import { HoverTranslationText } from './components/HoverTranslationText';
 import { getShanghaiDateString } from './utils/timezone';
 
 // --- Tooltip Component ---
@@ -1840,8 +1841,8 @@ const App: React.FC = () => {
         {showQuickTestModal && (
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
                 <div className="bg-light-charcoal border border-mid-charcoal rounded-3xl p-8 max-w-md w-full shadow-2xl scale-in-center">
-                    <h3 className="text-3xl font-headline text-white mb-2 tracking-tight">CHOOSE TEST RANGE</h3>
-                    <p className="text-text-dark font-body mb-8">Select which words you want to practice right now.</p>
+                    <h3 className="text-3xl font-headline text-white mb-2 tracking-tight"><HoverTranslationText text="CHOOSE TEST RANGE" translation="选择测试范围" /></h3>
+                    <p className="text-text-dark font-body mb-8"><HoverTranslationText text="Select which words you want to practice right now." translation="选择你现在想练习的单词范围。" /></p>
                     
                     <div className="grid gap-4">
                         <button 
@@ -1862,19 +1863,19 @@ const App: React.FC = () => {
                             <span className={`text-sm font-mono uppercase tracking-widest ${
                                 selectedDashboardSessionIds.size > 0 ? 'text-electric-blue group-hover:text-charcoal' : 'text-text-dark'
                             }`}>
-                                Option 1
+                                <HoverTranslationText text="Option 1" translation="选项 1" />
                             </span>
                             <span className={`text-xl font-headline ${
                                 selectedDashboardSessionIds.size > 0 ? 'group-hover:text-charcoal' : 'text-text-dark'
                             }`}>
-                                {selectedDashboardSessionIds.size > 0 ? 'TEST SELECTED (' + selectedDashboardSessionIds.size + ')' : 'RECENT SESSION'}
+                                {selectedDashboardSessionIds.size > 0 ? <HoverTranslationText text={'TEST SELECTED (' + selectedDashboardSessionIds.size + ')'} translation="测试当前已选择的内容" /> : <HoverTranslationText text="RECENT SESSION" translation="最近的学习批次" />}
                             </span>
                             <span className={`text-xs font-body ${
                                 selectedDashboardSessionIds.size > 0 ? 'opacity-50 group-hover:text-charcoal/70' : 'text-text-dark/40'
                             }`}>
                                 {selectedDashboardSessionIds.size > 0 
-                                    ? `Practice words from your current selection.` 
-                                    : `Select one or more cards on the dashboard to test.`
+                                    ? <HoverTranslationText text="Practice words from your current selection." translation="练习你当前选中的单词。" /> 
+                                    : <HoverTranslationText text="Select one or more cards on the dashboard to test." translation="请先在仪表盘上选择一个或多个卡片再开始测试。" />
                                 }
                             </span>
                         </button>
@@ -1887,16 +1888,16 @@ const App: React.FC = () => {
                             }}
                             className="bg-mid-charcoal hover:bg-electric-green hover:text-charcoal transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left"
                         >
-                            <span className="text-sm font-mono text-electric-green group-hover:text-charcoal uppercase tracking-widest">Option 2</span>
-                            <span className="text-xl font-headline group-hover:text-charcoal">ALL WORD LIBRARY</span>
-                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">A comprehensive test of all {visibleWords.length} words in your vault.</span>
+                            <span className="text-sm font-mono text-electric-green group-hover:text-charcoal uppercase tracking-widest"><HoverTranslationText text="Option 2" translation="选项 2" /></span>
+                            <span className="text-xl font-headline group-hover:text-charcoal"><HoverTranslationText text="ALL WORD LIBRARY" translation="全部词库" /></span>
+                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70"><HoverTranslationText text={`A comprehensive test of all ${visibleWords.length} words in your vault.`} translation={`对你词库中的全部 ${visibleWords.length} 个单词进行综合测试。`} /></span>
                         </button>
 
                         <button 
                             onClick={() => setShowQuickTestModal(false)}
                             className="mt-4 text-text-dark hover:text-white transition-colors uppercase font-mono text-xs tracking-[0.2em]"
                         >
-                            Maybe Later
+                            <HoverTranslationText text="Maybe Later" translation="稍后再说" />
                         </button>
                     </div>
                 </div>
@@ -2207,7 +2208,7 @@ const Dashboard: React.FC<{
         {/* Adaptive Session Matrix Section */}
         <div className="space-y-4">
           <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
-            <h3 className="font-headline text-2xl text-text-light tracking-widest">RECENT SESSIONS</h3>
+            <h3 className="font-headline text-2xl text-text-light tracking-widest"><HoverTranslationText text="RECENT SESSIONS" translation="最近的学习批次" /></h3>
             <div className="flex items-center gap-4">
                 {showAllSessions && selectedSessionIds.size > 0 && (
                     <button
@@ -2215,15 +2216,15 @@ const Dashboard: React.FC<{
                         className="text-xs font-mono text-red-500 hover:text-red-400 uppercase flex items-center gap-1 transition-colors"
                     >
                         <span className="material-symbols-outlined text-sm">delete</span>
-                        DELETE ({selectedSessionIds.size})
+                        <HoverTranslationText text={`DELETE (${selectedSessionIds.size})`} translation={`删除（${selectedSessionIds.size}）`} />
                     </button>
                 )}
                 {showAllSessions ? (
                     <button onClick={() => setShowAllSessions(false)} className="text-xs font-mono text-electric-blue hover:text-white uppercase">
-                        Back to Matrix
+                        <HoverTranslationText text="Back to Matrix" translation="返回矩阵视图" />
                     </button>
                 ) : (
-                    sessions.length > 0 && <span className="text-xs font-mono text-text-dark opacity-50">{sessions.length} TOTAL</span>
+                    sessions.length > 0 && <span className="text-xs font-mono text-text-dark opacity-50"><HoverTranslationText text={`${sessions.length} TOTAL`} translation={`共 ${sessions.length} 个`} /></span>
                 )}
             </div>
           </div>
@@ -2232,7 +2233,7 @@ const Dashboard: React.FC<{
             {sessions.length === 0 ? (
                 <div className="p-12 border-2 border-dashed border-mid-charcoal rounded-xl text-center text-text-dark h-96 flex flex-col items-center justify-center">
                     <span className="material-symbols-outlined text-6xl opacity-20 mb-4">layers_clear</span>
-                    <p>No sessions yet. Start by adding some words!</p>
+                    <p><HoverTranslationText text="No sessions yet. Start by adding some words!" translation="还没有学习批次，先添加一些单词开始吧！" /></p>
                 </div>
             ) : showAllSessions ? (
                 /* Full List View */
@@ -2275,10 +2276,10 @@ const Dashboard: React.FC<{
                                   </span>
                                 </button>
 
-                                <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title="Edit">
+                                <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title="编辑">
                                     <span className="material-symbols-outlined text-lg">edit</span>
                                 </button>
-                                <button onClick={() => onDeleteSessions([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors" title="Delete">
+                                <button onClick={() => onDeleteSessions([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors" title="删除">
                                     <span className="material-symbols-outlined text-lg">delete</span>
                                 </button>
                              </div>
@@ -2307,7 +2308,7 @@ const Dashboard: React.FC<{
         {/* Word Library Section */}
         <div className="space-y-4">
           <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
-            <h3 className="font-headline text-2xl text-text-light tracking-widest">WORD LIBRARY</h3>
+            <h3 className="font-headline text-2xl text-text-light tracking-widest"><HoverTranslationText text="WORD LIBRARY" translation="单词库" /></h3>
             <div className="flex items-center gap-4">
               <span className="text-xs font-mono text-text-dark opacity-50">{words.length} TOTAL</span>
             </div>
@@ -2317,14 +2318,14 @@ const Dashboard: React.FC<{
             onClick={onOpenLibrary}
             className="bg-light-charcoal py-4 px-6 rounded-2xl border border-mid-charcoal group hover:border-electric-blue cursor-pointer transition-all relative overflow-hidden flex flex-col justify-center min-h-[130px]"
           >
-            <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70">Browse and manage your full collection alphabetically.</p>
+            <p className="text-text-dark text-[10px] mb-3 relative z-10 opacity-70"><HoverTranslationText text="Browse and manage your full collection alphabetically." translation="按字母顺序浏览并管理你的全部单词收藏。" /></p>
 
             <div className="flex items-center justify-between relative z-10 pr-1">
               <div className="flex items-center gap-3">
                 <div className="bg-dark-charcoal p-1.5 rounded-lg border border-mid-charcoal group-hover:border-electric-blue/50 transition-colors">
                   <span className="font-mono text-electric-blue font-bold text-lg">{words.length}</span>
                 </div>
-                <span className="font-mono text-[9px] text-text-dark uppercase tracking-tighter">Total Entries</span>
+                <span className="font-mono text-[9px] text-text-dark uppercase tracking-tighter"><HoverTranslationText text="Total Entries" translation="总条目数" /></span>
               </div>
               <div className="bg-electric-blue/20 p-1 rounded-full text-electric-blue group-hover:bg-electric-blue group-hover:text-charcoal transition-all">
                 <span className="material-symbols-outlined text-xl">arrow_forward</span>
@@ -3384,7 +3385,7 @@ const InputMode: React.FC<{
     return (
         <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
             <span className="material-symbols-outlined text-6xl text-electric-green animate-pulse">cloud_upload</span>
-            <h2 className="font-headline text-2xl text-white">Saving Neural Link...</h2>
+            <h2 className="font-headline text-2xl text-white"><HoverTranslationText text="Saving Neural Link..." translation="正在保存神经连接数据..." /></h2>
         </div>
     );
   }
@@ -3397,12 +3398,12 @@ const InputMode: React.FC<{
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-light-charcoal border border-mid-charcoal text-text-light hover:text-white hover:border-electric-blue transition-all group"
          >
             <span className="material-symbols-outlined group-hover:-translate-x-1 transition-transform">arrow_back</span>
-            <span className="font-mono text-xs uppercase tracking-wider">Dashboard</span>
+            <span className="font-mono text-xs uppercase tracking-wider"><HoverTranslationText text="Dashboard" translation="仪表盘" /></span>
          </button>
          
          {/* Repetition Setting */}
          <div className="flex items-center gap-3 bg-light-charcoal border border-mid-charcoal px-4 py-2 rounded-full">
-            <span className="text-[10px] font-mono uppercase text-text-dark">Repetitions</span>
+            <span className="text-[10px] font-mono uppercase text-text-dark"><HoverTranslationText text="Repetitions" translation="重复次数" /></span>
             <div className="flex items-center gap-2">
                 <button 
                     onClick={() => setRepeatCount(Math.max(1, repeatCount - 1))}
@@ -3421,14 +3422,14 @@ const InputMode: React.FC<{
          </div>
          
          {initialWords.length > 0 && (
-             <span className="font-mono text-xs text-electric-blue border border-electric-blue/30 px-3 py-1 rounded-full uppercase tracking-wider">Editing Mode</span>
+             <span className="font-mono text-xs text-electric-blue border border-electric-blue/30 px-3 py-1 rounded-full uppercase tracking-wider"><HoverTranslationText text="Editing Mode" translation="编辑模式" /></span>
          )}
       </div>
 
       <div className="flex flex-col items-center gap-6">
         <div className="flex items-center gap-4 bg-light-charcoal p-4 rounded-2xl border border-mid-charcoal shadow-lg">
           <span className="material-symbols-outlined text-electric-blue">checklist</span>
-          <label className="text-sm font-headline text-text-dark tracking-widest uppercase">Session Words:</label>
+          <label className="text-sm font-headline text-text-dark tracking-widest uppercase"><HoverTranslationText text="Session Words:" translation="本批次单词：" /></label>
           <span className="font-mono font-bold text-2xl text-electric-green">{currentWords.length}</span>
         </div>
       </div>
@@ -3468,13 +3469,13 @@ const InputMode: React.FC<{
         {targetWord && (
             <div className="absolute top-0 right-0 transform translate-x-full pl-4 hidden md:block w-48">
                  <div className="bg-light-charcoal/50 border border-electric-blue/30 p-4 rounded-2xl backdrop-blur-md">
-                     <p className="font-mono text-[10px] uppercase text-text-dark mb-1">Target</p>
+                     <p className="font-mono text-[10px] uppercase text-text-dark mb-1"><HoverTranslationText text="Target" translation="目标单词" /></p>
                      <p className="font-serif text-xl text-white truncate">{targetWord}</p>
                      <div className="mt-3 border-t border-electric-blue/10 pt-3">
                        <p className="font-mono text-[10px] uppercase text-electric-blue/80 mb-1">中文释义</p>
                        <p className="text-sm text-white leading-relaxed break-words">{targetDefinitionCn || fallbackMeaning}</p>
                      </div>
-                     <p className="text-[10px] text-electric-blue mt-2">Type correctly {repeatCount} times to add.</p>
+                       <p className="text-[10px] text-electric-blue mt-2"><HoverTranslationText text={`Type correctly ${repeatCount} times to add.`} translation={`连续正确输入 ${repeatCount} 次后即可添加。`} /></p>
                  </div>
             </div>
         )}
@@ -3483,7 +3484,7 @@ const InputMode: React.FC<{
           <div className="absolute inset-0 bg-charcoal/50 backdrop-blur-sm flex items-center justify-center rounded-xl z-10 h-64 md:h-80">
              <div className="flex items-center gap-3 text-electric-blue font-headline text-2xl animate-pulse">
                 <span className="material-symbols-outlined animate-spin">sync</span>
-                VALIDATING...
+                <HoverTranslationText text="VALIDATING..." translation="正在校验..." />
              </div>
           </div>
         )}
@@ -3502,7 +3503,7 @@ const InputMode: React.FC<{
             <div className="bg-light-charcoal border-2 border-electric-purple text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(147,51,234,0.3)] w-full text-center">
                <div className="flex items-center gap-3 text-electric-purple mb-1">
                   <span className="material-symbols-outlined text-3xl">cloud_off</span>
-                  <span className="font-headline text-xl uppercase tracking-widest">Neural Link Offline</span>
+                  <span className="font-headline text-xl uppercase tracking-widest"><HoverTranslationText text="Neural Link Offline" translation="神经连接离线" /></span>
                </div>
                <p className="font-mono text-sm text-text-light leading-relaxed">
                   The AI validation service could not be reached. We cannot verify if <span className="text-electric-blue">"{serviceErrorWord}"</span> is correct.
@@ -3512,13 +3513,13 @@ const InputMode: React.FC<{
                     onClick={() => setServiceErrorWord(null)}
                     className="flex-1 py-3 px-4 rounded-xl border border-mid-charcoal hover:bg-mid-charcoal transition-all font-mono text-xs uppercase tracking-widest"
                   >
-                    Cancel
+                    <HoverTranslationText text="Cancel" translation="取消" />
                   </button>
                   <button 
                     onClick={handleManualAdd}
                     className="flex-1 py-3 px-4 rounded-xl bg-electric-purple text-white hover:bg-purple-500 transition-all font-sans font-bold text-sm shadow-lg shadow-purple-900/20"
                   >
-                    Add Anyway
+                    <HoverTranslationText text="Add Anyway" translation="仍然添加" />
                   </button>
                </div>
             </div>
@@ -3530,7 +3531,7 @@ const InputMode: React.FC<{
             <div className="bg-amber-900/90 border-2 border-amber-500 text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(245,158,11,0.3)] w-full text-center backdrop-blur-sm">
                <div className="flex items-center gap-3 text-amber-400 mb-1">
                   <span className="material-symbols-outlined text-3xl">warning</span>
-                  <span className="font-headline text-xl uppercase tracking-widest">Uncommon Phrase</span>
+                  <span className="font-headline text-xl uppercase tracking-widest"><HoverTranslationText text="Uncommon Phrase" translation="非常见短语" /></span>
                </div>
                <p className="font-mono text-sm text-text-light leading-relaxed">
                   <span className="text-electric-blue">"{collocationWarning.phrase}"</span> may not be a common English phrase.
@@ -3548,13 +3549,13 @@ const InputMode: React.FC<{
                     }}
                     className="flex-1 py-3 px-4 rounded-xl border border-mid-charcoal hover:bg-mid-charcoal transition-all font-mono text-xs uppercase tracking-widest"
                   >
-                    Cancel
+                    <HoverTranslationText text="Cancel" translation="取消" />
                   </button>
                   <button
                     onClick={handleManualAdd}
                     className="flex-1 py-3 px-4 rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-all font-sans font-bold text-sm shadow-lg shadow-amber-900/20"
                   >
-                    Force Add
+                    <HoverTranslationText text="Force Add" translation="强制添加" />
                   </button>
                </div>
             </div>
@@ -3565,14 +3566,14 @@ const InputMode: React.FC<{
       <div className="flex flex-wrap justify-center gap-6 mt-8">
         <button 
           onClick={handleVoiceInput}
-          title="Voice Input"
+          title="语音输入"
           className="p-6 bg-mid-charcoal rounded-full text-white hover:text-electric-blue border-2 border-transparent hover:border-electric-blue transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">mic</span>
         </button>
         <button 
           onClick={() => fileInputRef.current?.click()}
-          title="Photo OCR"
+          title="图片识别"
           className="p-6 bg-mid-charcoal rounded-full text-white hover:text-electric-purple border-2 border-transparent hover:border-electric-purple transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">photo_camera</span>
@@ -3583,14 +3584,14 @@ const InputMode: React.FC<{
           disabled={!inputValue.trim()}
           className="px-10 py-6 bg-mid-charcoal text-white font-headline text-3xl rounded-full hover:bg-electric-blue hover:text-charcoal transition-all disabled:opacity-50 disabled:hover:bg-mid-charcoal disabled:hover:text-white border-2 border-electric-blue"
         >
-          ENTER
+          <HoverTranslationText text="ENTER" translation="确认输入" />
         </button>
       </div>
 
       <div className="min-h-[100px]">
         {currentWords.length === 0 ? (
           <div className="text-center text-text-dark opacity-50 font-mono text-sm py-8 border-2 border-dashed border-mid-charcoal rounded-xl">
-             Words will appear here...
+             <HoverTranslationText text="Words will appear here..." translation="单词会显示在这里..." />
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -3624,7 +3625,7 @@ const InputMode: React.FC<{
                           initiateDelete(i);
                         }}
                         className="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-red-500 hover:text-white transition-colors"
-                        title="Remove word"
+                        title="移除单词"
                     >
                         <span className="material-symbols-outlined text-sm">close</span>
                     </button>
@@ -3643,7 +3644,7 @@ const InputMode: React.FC<{
             className={`w-full max-w-md py-6 rounded-2xl font-headline text-3xl transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:transform-none bg-mid-charcoal text-text-light hover:bg-electric-green hover:text-charcoal border-2 border-transparent hover:border-white`}
         >
             <span className="material-symbols-outlined text-4xl">check_circle</span>
-            {targetWord ? "FINISH WORD FIRST" : (initialWords.length > 0 ? "UPDATE SESSION" : "FINISH & SAVE")}
+            {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : (initialWords.length > 0 ? <HoverTranslationText text="UPDATE SESSION" translation="更新本次批次" /> : <HoverTranslationText text="FINISH & SAVE" translation="完成并保存" />)}
         </button>
       </div>
 
@@ -3666,7 +3667,7 @@ const InputMode: React.FC<{
                     e.stopPropagation(); // 阻止冒泡到背景
                 }}
             >
-                <h3 className="text-xl font-headline text-white mb-2">REMOVE WORD?</h3>
+                <h3 className="text-xl font-headline text-white mb-2"><HoverTranslationText text="REMOVE WORD?" translation="要移除这个单词吗？" /></h3>
                 <p className="text-text-dark mb-6 text-sm">
                     Are you sure you want to remove <span className="text-electric-blue font-bold">"{wordToDelete.item.text}"</span>?
                     {wordToDelete.item.id && " This will permanently delete it from your library."}
@@ -3680,7 +3681,7 @@ const InputMode: React.FC<{
                         className="flex-1 py-3 rounded-xl bg-dark-charcoal text-text-light hover:bg-white hover:text-charcoal transition-colors font-mono text-xs uppercase"
                         type="button"
                     >
-                        Cancel
+                        <HoverTranslationText text="Cancel" translation="取消" />
                     </button>
                     <button 
                         onClick={(e) => {
@@ -3694,7 +3695,7 @@ const InputMode: React.FC<{
                         className="flex-1 py-3 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors font-headline tracking-wider text-sm shadow-lg"
                         type="button"
                     >
-                        DELETE
+                        <HoverTranslationText text="DELETE" translation="删除" />
                     </button>
                 </div>
             </div>
@@ -3707,7 +3708,7 @@ const InputMode: React.FC<{
             <div className="bg-light-charcoal border border-electric-blue/50 rounded-3xl p-8 max-w-[500px] w-full shadow-[0_0_30px_rgba(0,240,255,0.2)] scale-in-center">
                 <div className="flex items-center gap-3 mb-4">
                     <span className="material-symbols-outlined text-4xl text-electric-blue">warning</span>
-                    <h3 className="text-2xl font-headline text-white tracking-tight">UNSAVED CHANGES</h3>
+                    <h3 className="text-2xl font-headline text-white tracking-tight"><HoverTranslationText text="UNSAVED CHANGES" translation="未保存的更改" /></h3>
                 </div>
                 
                 <p className="text-text-light mb-2 text-sm leading-relaxed">
@@ -3728,7 +3729,7 @@ const InputMode: React.FC<{
                         className="w-full py-4 rounded-xl bg-electric-green text-charcoal hover:bg-white transition-all font-headline tracking-wider text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
                         <span className="material-symbols-outlined">save</span>
-                        {targetWord ? "FINISH WORD FIRST" : "SAVE & UPDATE"}
+                        {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : <HoverTranslationText text="SAVE & UPDATE" translation="保存并更新" />}
                     </button>
                     <button 
                         onClick={() => {
@@ -3737,7 +3738,7 @@ const InputMode: React.FC<{
                         }}
                         className="w-full py-4 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-all font-headline tracking-wider shadow-lg"
                     >
-                        DISCARD CHANGES
+                        <HoverTranslationText text="DISCARD CHANGES" translation="放弃更改" />
                     </button>
                     <button 
                         onClick={() => setShowUnsavedWarning(false)}

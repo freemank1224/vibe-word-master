@@ -9,6 +9,7 @@ import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { MeaningFlipCard } from './MeaningFlipCard';
+import { HoverTranslationText } from './HoverTranslationText';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface TestModeV2Props {
@@ -20,6 +21,55 @@ interface TestModeV2Props {
   onCancel: () => void;
   onUpdateWord?: (id: string, updates: Partial<WordEntry>) => void;
 }
+
+type TestPhase = 'TESTING' | 'REVIEW_SUMMARY' | 'REVIEW_DRILL' | 'REVIEW_CONFIRM' | 'REVIEW_INSTANT_TEST' | 'FINAL_RESULT';
+
+type ReviewReason = 'revealed' | 'unmastered_hint' | 'both';
+
+interface TestWordResult {
+        id: string;
+        correct: boolean;
+        score: number;
+        hasUsedHint: boolean;
+        hintWrongAttempts: number;
+    hintLetterTrialCount: number;
+        standardWrongAttempts: number;
+    wasRevealed: boolean;
+        isUnmasteredByHint: boolean;
+        needsReview: boolean;
+}
+
+interface ReviewItem {
+        id: string;
+        reviewReason: ReviewReason;
+}
+
+const HINT_UNMASTERED_THRESHOLD = 3;
+const REVIEW_REQUIRED_REPETITIONS = 2;
+
+const getReviewReasonLabel = (reason: ReviewReason) => {
+    switch (reason) {
+        case 'both':
+            return '已查看答案 + 提示试错过多';
+        case 'revealed':
+            return '已查看答案';
+        case 'unmastered_hint':
+        default:
+            return '提示试错过多';
+    }
+};
+
+const getReviewReasonBadge = (reason: ReviewReason) => {
+    switch (reason) {
+        case 'both':
+            return 'Reveal + Hint';
+        case 'revealed':
+            return 'Reveal';
+        case 'unmastered_hint':
+        default:
+            return 'Hint Trials';
+    }
+};
 
 const SyncOverlay = ({ showForceExit, onForceExit }: { showForceExit: boolean, onForceExit: () => void }) => (
     <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
@@ -38,7 +88,7 @@ const SyncOverlay = ({ showForceExit, onForceExit }: { showForceExit: boolean, o
     </div>
 );
 
-const HistoryCard = ({ result, word }: { result: { correct: boolean; score: number }, word: WordEntry }) => {
+const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry }) => {
     let bgColor = 'bg-red-500/20 border-red-500/50 text-red-400';
     let statusIcon = 'close';
 
@@ -78,6 +128,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   onCancel,
   onUpdateWord
 }) => {
+    const [phase, setPhase] = useState<TestPhase>('TESTING');
   const [coverage, setCoverage] = useState(100);
   const [tempCoverage, setTempCoverage] = useState(100);
   const [isSelectionConfirmed, setIsSelectionConfirmed] = useState(false);
@@ -92,12 +143,18 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [startTime, setStartTime] = useState<number>(0);
   
   // Updated Results State
-  const [results, setResults] = useState<{ id: string; correct: boolean; score: number }[]>([]);
+    const [results, setResults] = useState<TestWordResult[]>([]);
+    const [reviewQueue, setReviewQueue] = useState<ReviewItem[]>([]);
+    const [reviewIndex, setReviewIndex] = useState(0);
+    const [reviewInputValue, setReviewInputValue] = useState('');
+    const [reviewDrillProgress, setReviewDrillProgress] = useState(0);
+    const [reviewFeedback, setReviewFeedback] = useState<'idle' | 'correct' | 'wrong'>('idle');
   
   // New Logic States
   const [currentAttempts, setCurrentAttempts] = useState(0);
   const [hasUsedHint, setHasUsedHint] = useState(false);
   const [hintAttempts, setHintAttempts] = useState(0);  // Hint模式下的错误次数
+    const [hintLetterTrialCount, setHintLetterTrialCount] = useState(0); // Hint模式下按字母位置累计试错次数
   
   // Exit/Sync States
   const [isSyncing, setIsSyncing] = useState(false);
@@ -140,6 +197,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const currentAudioSourceRef = useRef<AudioBufferSourceNode | HTMLAudioElement | null>(null);
   const activeWordIdRef = useRef<string | null>(null);
+    const hintWrongLettersByPositionRef = useRef<Map<number, Set<string>>>(new Map());
 
   useEffect(() => {
     if (showConfetti) {
@@ -348,6 +406,55 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   }, [queue.length, isFinished, startTime, isStarted]);
 
   const currentWord = queue[currentIndex];
+    const currentReviewItem = reviewQueue[reviewIndex] || null;
+    const currentReviewWord = currentReviewItem ? allWords.find(word => word.id === currentReviewItem.id) || queue.find(word => word.id === currentReviewItem.id) || null : null;
+    const resetReviewState = useCallback(() => {
+        setReviewInputValue('');
+        setReviewDrillProgress(0);
+        setReviewFeedback('idle');
+    }, []);
+
+    const buildReviewQueue = useCallback((resultList: TestWordResult[]): ReviewItem[] => {
+        const reviewMap = new Map<string, ReviewItem>();
+
+        resultList.forEach((result) => {
+            if (!result.needsReview) return;
+
+            const reviewReason: ReviewReason = result.wasRevealed && result.isUnmasteredByHint
+                ? 'both'
+                : result.wasRevealed
+                    ? 'revealed'
+                    : 'unmastered_hint';
+
+            reviewMap.set(result.id, { id: result.id, reviewReason });
+        });
+
+        return Array.from(reviewMap.values());
+    }, []);
+
+    const startReviewFlow = useCallback((items: ReviewItem[]) => {
+        console.log('🧠 [Review] Starting post-test review flow:', items);
+        setReviewQueue(items);
+        setReviewIndex(0);
+        resetReviewState();
+        setInputValue('');
+        setFeedback('NONE');
+        setIsRevealed(false);
+        setIsFinished(false);
+        setPhase('REVIEW_SUMMARY');
+    }, [resetReviewState]);
+
+    const finishReviewItem = useCallback(() => {
+        if (reviewIndex >= reviewQueue.length - 1) {
+            setPhase('FINAL_RESULT');
+            setIsFinished(true);
+            return;
+        }
+
+        setReviewIndex(prev => prev + 1);
+        resetReviewState();
+        setPhase('REVIEW_DRILL');
+    }, [reviewIndex, reviewQueue.length, resetReviewState]);
 
   const stopAudio = useCallback(() => {
     // 1. Stop all cached audio elements to prevent overlaps during transitions
@@ -378,6 +485,40 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     stopPronunciationAudio(); // Stop new pronunciation service audio
     setIsPlayingAudio(false);
   }, []);
+
+    const registerHintLetterTrials = useCallback((previousValue: string, nextValue: string, targetWord: string) => {
+        const normalizedTarget = targetWord.toLowerCase();
+        const wrongLetterMap = hintWrongLettersByPositionRef.current;
+        let totalTrials = 0;
+
+        for (let index = 0; index < nextValue.length; index++) {
+            const nextChar = nextValue[index]?.toLowerCase();
+            const previousChar = previousValue[index]?.toLowerCase();
+
+            if (!nextChar || nextChar === previousChar) continue;
+
+            const targetChar = normalizedTarget[index];
+            if (nextChar === targetChar) continue;
+
+            const positionSet = wrongLetterMap.get(index) || new Set<string>();
+            positionSet.add(nextChar);
+            wrongLetterMap.set(index, positionSet);
+        }
+
+        wrongLetterMap.forEach((attempts) => {
+            totalTrials += attempts.size;
+        });
+
+        setHintLetterTrialCount((previousCount) => {
+            if (previousCount < HINT_UNMASTERED_THRESHOLD && totalTrials >= HINT_UNMASTERED_THRESHOLD) {
+                setNotification({
+                    message: `"${targetWord}" 已因提示试错过多记入测后复盘`,
+                    type: 'info'
+                });
+            }
+            return totalTrials;
+        });
+    }, []);
 
   useEffect(() => {
     // Global safety cleanup when 'isStarted' becomes false or component unmounts
@@ -418,9 +559,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }
   }, [stopAudio]);
 
+    useEffect(() => {
+        if (phase === 'REVIEW_INSTANT_TEST' && currentReviewWord) {
+            playAudio(currentReviewWord);
+        }
+    }, [phase, currentReviewWord, playAudio]);
+
   useEffect(() => {
     // Auto-play audio when word changes IN SESSION
-    if (currentWord && !isFinished && !isRevealed && feedback === 'NONE' && isStarted) {
+    if (currentWord && !isFinished && !isRevealed && feedback === 'NONE' && isStarted && phase === 'TESTING') {
         // IMPORTANT: Stop any previous audio IMMEDIATELY when the word changes
         // even before the 300ms delay to prevent hearing the wrong word.
         stopAudio();
@@ -436,7 +583,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         }, 300);
         return () => clearTimeout(t);
     }
-  }, [currentIndex, isFinished, isStarted, playAudio, currentWord, feedback, isRevealed]); 
+    }, [currentIndex, isFinished, isStarted, playAudio, currentWord, feedback, isRevealed, phase]); 
 
   const handleHint = () => {
       setHintLevel(prev => Math.min(prev + 1, 2));
@@ -579,7 +726,23 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           });
       }
 
-            const newResults = [...results, { id: currentWordSnapshot.id, correct: success, score }];
+        const currentHintLetterTrialSnapshot = hintLetterTrialCount;
+        const wasRevealed = isRevealed;
+        const isUnmasteredByHint = hasUsedHintSnapshot && currentHintLetterTrialSnapshot >= HINT_UNMASTERED_THRESHOLD;
+        const newResult: TestWordResult = {
+            id: currentWordSnapshot.id,
+            correct: success,
+            score,
+            hasUsedHint: hasUsedHintSnapshot,
+            hintWrongAttempts: currentHintAttemptsSnapshot,
+            hintLetterTrialCount: currentHintLetterTrialSnapshot,
+            standardWrongAttempts: currentAttempts,
+            wasRevealed,
+            isUnmasteredByHint,
+            needsReview: !success || wasRevealed || isUnmasteredByHint
+        };
+
+            const newResults = [...results, newResult];
       setResults(newResults);
       
       if (success) {
@@ -627,7 +790,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       }
 
       if (currentIndex >= queue.length - 1) {
-          setTimeout(() => setIsFinished(true), 1500); // Shorter delay
+          const reviewItems = buildReviewQueue(newResults);
+
+          setTimeout(() => {
+              if (reviewItems.length > 0) {
+                  startReviewFlow(reviewItems);
+              } else {
+                  setPhase('FINAL_RESULT');
+                  setIsFinished(true);
+              }
+          }, 1500);
       } else {
           setCurrentIndex(prev => prev + 1);
           setInputValue('');
@@ -639,9 +811,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           setStartTime(Date.now());
           setCurrentAttempts(0);
           setHintAttempts(0);  // Reset for next word
+                    setHintLetterTrialCount(0);
           setHasUsedHint(false);  // Reset for next word
+                    hintWrongLettersByPositionRef.current = new Map();
       }
-    }, [currentIndex, queue, results, startTime, onUpdateWord, streak, currentWord, hintAttempts, hasUsedHint]);
+                }, [currentIndex, queue, results, startTime, onUpdateWord, streak, currentWord, hintAttempts, hasUsedHint, currentAttempts, buildReviewQueue, startReviewFlow, hintLetterTrialCount, isRevealed]);
 
   const handleReveal = () => {
       setIsRevealed(true);
@@ -702,6 +876,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                   hintAttempts: newHintAttempts,
                   message: `用户在hint模式下答错${newHintAttempts}次`
               });
+
               return;
           }
 
@@ -737,14 +912,61 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       
       setTimeout(() => {
           if (action === 'COMPLETE') {
-              onComplete(results);
+              onComplete(results.map(({ id, correct, score }) => ({ id, correct, score })));
           } else {
               onCancel();
           }
       }, 1500);
   };
 
-  if (isFinished) {
+  const handleReviewDrillSubmit = () => {
+      if (!currentReviewWord) return;
+
+      const normalizedInput = reviewInputValue.trim().toLowerCase();
+      const normalizedTarget = currentReviewWord.text.trim().toLowerCase();
+
+      if (normalizedInput === normalizedTarget) {
+          const nextProgress = reviewDrillProgress + 1;
+          setReviewDrillProgress(nextProgress);
+          setReviewInputValue('');
+          setReviewFeedback('correct');
+          playDing();
+
+          if (nextProgress >= REVIEW_REQUIRED_REPETITIONS) {
+              setTimeout(() => {
+                  setReviewFeedback('idle');
+                  setPhase('REVIEW_CONFIRM');
+              }, 500);
+          }
+      } else {
+          setReviewFeedback('wrong');
+          setReviewInputValue('');
+          playBuzzer();
+      }
+  };
+
+  const handleReviewInstantCheck = () => {
+      if (!currentReviewWord) return;
+
+      const normalizedInput = reviewInputValue.trim().toLowerCase();
+      const normalizedTarget = currentReviewWord.text.trim().toLowerCase();
+
+      if (normalizedInput === normalizedTarget) {
+          setReviewFeedback('correct');
+          playDing();
+          setTimeout(() => finishReviewItem(), 600);
+      } else {
+          setReviewFeedback('wrong');
+          setReviewInputValue('');
+          playBuzzer();
+          setTimeout(() => {
+              resetReviewState();
+              setPhase('REVIEW_DRILL');
+          }, 600);
+      }
+  };
+
+  if (phase === 'FINAL_RESULT') {
       const correctCount = results.filter(r => r.correct).length;
       const totalPoints = results.reduce((sum, r) => sum + r.score, 0);
       const maxPoints = queue.length * 3;
@@ -777,6 +999,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
              <p>Correct Words: <span className="text-white">{correctCount} / {queue.length}</span></p>
              <p>Total Points: <span className="text-electric-blue">{totalPoints.toFixed(1)} / {maxPoints}</span> pts</p>
              <p>Time: {elapsedTime}s</p>
+                 <p>Review Words Cleared: <span className="text-white">{reviewQueue.length}</span></p>
           </div>
           
           <button 
@@ -916,6 +1139,270 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     );
   }
 
+    if (phase === 'REVIEW_SUMMARY' || phase === 'REVIEW_DRILL' || phase === 'REVIEW_CONFIRM' || phase === 'REVIEW_INSTANT_TEST') {
+        if (!currentReviewWord || !currentReviewItem) return null;
+
+        const reviewReasonLabel = getReviewReasonLabel(currentReviewItem.reviewReason);
+
+        return (
+            <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
+                {isSyncing && <SyncOverlay showForceExit={showForceExit} onForceExit={onCancel} />}
+
+                <div className="h-2 w-full bg-[#130b0d] border-b border-white/5">
+                    <div
+                        className="h-full bg-gradient-to-r from-red-800 via-red-600 to-red-400 transition-all duration-500 ease-out shadow-[0_0_18px_rgba(220,38,38,0.45)]"
+                        style={{ width: `${((reviewIndex + (phase === 'REVIEW_SUMMARY' ? 0.15 : phase === 'REVIEW_CONFIRM' || phase === 'REVIEW_INSTANT_TEST' ? 0.5 : 0.3)) / Math.max(reviewQueue.length, 1)) * 100}%` }}
+                    />
+                </div>
+
+                <div className="p-6 flex justify-between items-center bg-[#120b0d]/80 backdrop-blur-sm z-10 relative border-b border-red-500/10">
+                    <div className="flex items-center gap-4">
+                        <button onClick={() => handleExit('CANCEL')} className="p-2 bg-white/5 hover:bg-red-500/10 rounded-xl text-gray-500 hover:text-red-200 transition-all border border-white/5 hover:border-red-500/20">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                        <div className="flex flex-col">
+                            <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1">Review Progress</span>
+                            <span className="text-sm font-bold font-mono text-red-300">{reviewIndex + 1} / {reviewQueue.length}</span>
+                        </div>
+                    </div>
+                    <div className="flex flex-col items-end">
+                        <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1">Reason</span>
+                        <span className="font-mono text-xs text-red-200">{reviewReasonLabel}</span>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto no-scrollbar pb-20">
+                    <div className="flex flex-col items-center justify-center p-6 min-h-[500px] gap-8">
+                        <div className={`${phase === 'REVIEW_SUMMARY' ? 'w-full max-w-3xl' : 'w-fit max-w-[calc(100vw-2rem)]'} rounded-[2rem] border border-red-500/15 bg-gradient-to-b from-[#171012] to-[#0f0a0b] p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)] ring-1 ring-white/5`}>
+                            <div className="flex flex-col items-center text-center gap-4 mb-8">
+                                <span className="inline-flex items-center rounded-full border border-red-500/25 bg-red-500/10 px-4 py-1 text-[10px] font-mono uppercase tracking-[0.3em] text-red-300">
+                                    {phase === 'REVIEW_SUMMARY' ? 'Review Summary' : phase === 'REVIEW_DRILL' ? 'Review Drill' : phase === 'REVIEW_CONFIRM' ? 'Mastery Check' : 'Instant Test'}
+                                </span>
+                                <h2 className="text-4xl font-headline tracking-tight uppercase text-white">
+                                    {phase === 'REVIEW_SUMMARY' ? 'Post Test Review' : phase === 'REVIEW_DRILL' ? 'Retype The Word' : phase === 'REVIEW_CONFIRM' ? 'Do You Own It?' : 'One More Time'}
+                                </h2>
+                                <div className="text-sm text-gray-400 font-mono max-w-xl leading-relaxed text-center">
+                                    {phase === 'REVIEW_SUMMARY' && (
+                                        <HoverTranslationText
+                                            text="These words require extra review before the session can truly end."
+                                            translation="以下单词需要额外复盘，通过后本次测试才会真正结束。"
+                                        />
+                                    )}
+                                    {phase === 'REVIEW_DRILL' && (
+                                        <HoverTranslationText
+                                            text={`Retype the word correctly ${REVIEW_REQUIRED_REPETITIONS} times before validation.`}
+                                            translation={`请连续正确输入 ${REVIEW_REQUIRED_REPETITIONS} 次后再进入验收。`}
+                                        />
+                                    )}
+                                    {phase === 'REVIEW_CONFIRM' && (
+                                        <HoverTranslationText
+                                            text="Confirm mastery to begin the instant test immediately."
+                                            translation="确认掌握后会立刻进入即时测试。"
+                                        />
+                                    )}
+                                    {phase === 'REVIEW_INSTANT_TEST' && (
+                                        <HoverTranslationText
+                                            text="No hints are available now. Only a correct answer will clear this word."
+                                            translation="此阶段不提供提示，只有答对才算真正通过这个单词。"
+                                        />
+                                    )}
+                                </div>
+                            </div>
+
+                            {phase === 'REVIEW_SUMMARY' && (
+                                <div className="flex flex-col items-center gap-6">
+                                    <div className="w-full rounded-3xl border border-red-500/20 bg-red-500/[0.06] p-6 text-left shadow-[0_0_30px_rgba(127,29,29,0.15)]">
+                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-3">Need Review</p>
+                                        <ul className="space-y-3 text-sm text-gray-200">
+                                            {reviewQueue.map((item, index) => {
+                                                const word = allWords.find(w => w.id === item.id);
+                                                if (!word) return null;
+
+                                                const reasonText = getReviewReasonLabel(item.reviewReason);
+
+                                                return (
+                                                    <li key={item.id} className="flex items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                                                        <div>
+                                                            <div className="font-headline text-lg tracking-wide text-white">{index + 1}. {word.text}</div>
+                                                            <div className="text-xs text-gray-400">{word.definition_cn || '暂无中文释义'}</div>
+                                                        </div>
+                                                        <span className="rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.2em] text-red-200">{reasonText}</span>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            resetReviewState();
+                                            setPhase('REVIEW_DRILL');
+                                        }}
+                                        className="px-10 py-4 rounded-2xl bg-red-600 text-white font-headline text-lg tracking-wide uppercase hover:bg-red-500 transition-all shadow-[0_12px_28px_rgba(185,28,28,0.35)] hover:scale-[1.02] active:scale-95"
+                                    >
+                                        Begin Review
+                                    </button>
+                                </div>
+                            )}
+
+                            {phase === 'REVIEW_DRILL' && (
+                                <>
+                                    <div className="mb-6 text-center">
+                                        <p className="text-4xl font-headline tracking-[0.14em] uppercase text-white mb-3">{currentReviewWord.text}</p>
+                                        <p className="text-sm text-red-200/90 font-body">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                    </div>
+
+                                    <div className="flex justify-center gap-3 mb-4">
+                                        {Array.from({ length: REVIEW_REQUIRED_REPETITIONS }).map((_, index) => (
+                                            <div
+                                                key={index}
+                                                className={`h-2 w-16 rounded-full transition-all ${index < reviewDrillProgress ? 'bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.45)]' : 'bg-white/10'}`}
+                                            />
+                                        ))}
+                                    </div>
+
+                                    <LargeWordInput
+                                        value={reviewInputValue}
+                                        onChange={(val) => {
+                                            setReviewInputValue(val);
+                                            if (reviewFeedback === 'wrong') setReviewFeedback('idle');
+                                        }}
+                                        onEnter={handleReviewDrillSubmit}
+                                        status={reviewFeedback}
+                                        placeholder="Retype word..."
+                                        theme="review"
+                                        fitToContent={true}
+                                        maxWidth="calc(100vw - 10rem)"
+                                    />
+
+                                    <div className="mt-8 flex justify-center gap-4">
+                                        <button
+                                            onClick={() => playAudio(currentReviewWord)}
+                                            className="px-6 py-3 rounded-2xl border border-red-500/20 bg-red-500/10 text-red-200 font-mono text-sm uppercase tracking-wider hover:bg-red-500/20 transition-all"
+                                        >
+                                            Replay Audio
+                                        </button>
+                                        <button
+                                            onClick={handleReviewDrillSubmit}
+                                            disabled={!reviewInputValue.trim()}
+                                            className="px-8 py-3 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all disabled:opacity-40 shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
+                                        >
+                                            Confirm Input
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+
+                            {phase === 'REVIEW_CONFIRM' && (
+                                <div className="flex flex-col items-center gap-6">
+                                    <div className="mb-2 text-center">
+                                        <p className="text-4xl font-headline tracking-[0.14em] uppercase text-white mb-3">{currentReviewWord.text}</p>
+                                        <p className="text-sm text-red-200/90 font-body">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-6 py-4 text-center">
+                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-2">Drill Complete</p>
+                                        <p className="text-lg text-white">
+                                            <HoverTranslationText
+                                                text="Do you feel that you have mastered this word now?"
+                                                translation="现在觉得自己已经掌握这个单词了吗？"
+                                            />
+                                        </p>
+                                    </div>
+
+                                    <div className="flex flex-wrap justify-center gap-4">
+                                        <button
+                                            onClick={() => {
+                                                resetReviewState();
+                                                setPhase('REVIEW_DRILL');
+                                            }}
+                                            className="px-8 py-4 rounded-2xl border border-white/10 bg-white/5 text-gray-200 font-headline text-lg uppercase tracking-wide hover:bg-white/10 transition-all"
+                                        >
+                                            Keep Drilling
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                resetReviewState();
+                                                setPhase('REVIEW_INSTANT_TEST');
+                                            }}
+                                            className="px-8 py-4 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
+                                        >
+                                            Start Instant Test
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {phase === 'REVIEW_INSTANT_TEST' && (
+                                <>
+                                    <div className="mb-6 text-center">
+                                        <p className="text-[10px] font-mono uppercase tracking-[0.3em] text-red-300 mb-3">Meaning Cue</p>
+                                        <p className="text-2xl font-headline tracking-wide text-white">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                    </div>
+
+                                    <LargeWordInput
+                                        value={reviewInputValue}
+                                        onChange={(val) => {
+                                            setReviewInputValue(val);
+                                            if (reviewFeedback === 'wrong') setReviewFeedback('idle');
+                                        }}
+                                        onEnter={handleReviewInstantCheck}
+                                        status={reviewFeedback}
+                                        placeholder="Type from memory..."
+                                        theme="review"
+                                        fitToContent={true}
+                                        maxWidth="calc(100vw - 10rem)"
+                                    />
+
+                                    <div className="mt-8 flex justify-center gap-4">
+                                        <button
+                                            onClick={() => playAudio(currentReviewWord)}
+                                            className="px-6 py-3 rounded-2xl border border-red-500/20 bg-red-500/10 text-red-200 font-mono text-sm uppercase tracking-wider hover:bg-red-500/20 transition-all"
+                                        >
+                                            Play Audio
+                                        </button>
+                                        <button
+                                            onClick={handleReviewInstantCheck}
+                                            disabled={!reviewInputValue.trim()}
+                                            className="px-8 py-3 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all disabled:opacity-40 shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
+                                        >
+                                            Pass Instant Test
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+
+                        <div className="w-full max-w-3xl rounded-3xl border border-red-500/10 bg-[#120c0d] p-6 ring-1 ring-white/5">
+                            <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-4">Review Queue</p>
+                            <div className="flex flex-wrap gap-3">
+                                {reviewQueue.map((item, index) => {
+                                    const word = allWords.find(w => w.id === item.id);
+                                    if (!word) return null;
+
+                                    const isActive = index === reviewIndex;
+                                    const isPassed = index < reviewIndex;
+
+                                    return (
+                                        <div
+                                            key={item.id}
+                                            className={`rounded-2xl border px-4 py-3 text-sm font-mono transition-all ${isPassed ? 'border-red-500/30 bg-red-500/10 text-red-100' : isActive ? 'border-red-400/40 bg-red-500/10 text-red-200 shadow-[0_0_18px_rgba(185,28,28,0.18)]' : 'border-white/10 bg-white/[0.03] text-gray-400'}`}
+                                        >
+                                            <div className="font-headline tracking-wide text-white mb-1">{word.text}</div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] opacity-80">
+                                                {getReviewReasonBadge(item.reviewReason)}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
   if (!currentWord) return null;
 
   // New: Get Reversed History for Display
@@ -1040,6 +1527,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                       value={isRevealed ? currentWord.text : inputValue}
                       onChange={(val) => {
                           if (!isRevealed) {
+                              if (hasUsedHint && currentWord) {
+                                  registerHintLetterTrials(inputValue, val, currentWord.text);
+                              }
                               setInputValue(val);
                               if (feedback === 'WRONG') setFeedback('NONE');
                           }

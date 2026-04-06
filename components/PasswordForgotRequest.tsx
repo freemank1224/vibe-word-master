@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { HoverTranslationText } from './HoverTranslationText';
 
 interface PasswordForgotRequestProps {
   onBackToLogin: () => void;
@@ -91,14 +92,14 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
           <div className="w-20 h-20 mx-auto mb-4 bg-electric-blue/20 rounded-full flex items-center justify-center">
             <span className="material-symbols-outlined text-5xl text-electric-blue">lock_open</span>
           </div>
-          <h1 className="font-headline text-4xl text-white tracking-tight mb-2">FORGOT PASSWORD</h1>
-          <p className="font-mono text-xs text-text-dark uppercase tracking-widest">Enter your email to reset password</p>
+          <h1 className="font-headline text-4xl text-white tracking-tight mb-2"><HoverTranslationText text="FORGOT PASSWORD" translation="忘记密码" /></h1>
+          <p className="font-mono text-xs text-text-dark uppercase tracking-widest"><HoverTranslationText text="Enter your email to reset password" translation="输入你的邮箱以重置密码" /></p>
         </div>
 
         {!emailSent ? (
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label className="block text-xs font-mono text-text-dark mb-2 uppercase">Email Address</label>
+              <label className="block text-xs font-mono text-text-dark mb-2 uppercase"><HoverTranslationText text="Email Address" translation="邮箱地址" /></label>
               <input
                 type="email"
                 required
@@ -124,7 +125,7 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
               disabled={loading}
               className="w-full py-4 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors disabled:opacity-50"
             >
-              {loading ? 'SENDING...' : 'SEND RESET EMAIL'}
+              {loading ? <HoverTranslationText text="SENDING..." translation="发送中..." /> : <HoverTranslationText text="SEND RESET EMAIL" translation="发送重置邮件" />}
             </button>
 
             <div className="mt-4 text-center">
@@ -133,7 +134,7 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
                 onClick={onBackToLogin}
                 className="text-xs font-mono text-text-dark hover:text-electric-blue underline uppercase"
               >
-                ← Back to Login
+                ← <HoverTranslationText text="Back to Login" translation="返回登录" />
               </button>
             </div>
           </form>
@@ -142,7 +143,7 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
             <div className={`text-xs p-4 rounded-lg border ${getMessageClass()}`}>
               <div className="mb-2">{msg}</div>
               <div className="text-[10px] opacity-75">
-                The email will contain a link to reset your password. The link will expire in 1 hour.
+                <HoverTranslationText text="The email will contain a link to reset your password. The link will expire in 1 hour." translation="邮件中会包含重置密码的链接，该链接将在 1 小时后失效。" />
               </div>
             </div>
 

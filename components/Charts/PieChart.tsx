@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { PieChartProps } from './types';
+import { HoverTranslationText } from '../HoverTranslationText';
 
 export const PieChart: React.FC<PieChartProps> = ({
   data,
@@ -200,7 +201,7 @@ export const MasteryPieChart: React.FC<ProgressPieChartProps> = ({ words, classN
               {totalTested > 0 ? Math.round((masteredWords / totalTested) * 100) : 0}%
             </div>
             <div className="text-[9px] text-text-dark font-mono uppercase tracking-wider">
-              Mastery
+              <HoverTranslationText text="Mastery" translation="掌握度" />
             </div>
           </div>
         }
@@ -208,29 +209,29 @@ export const MasteryPieChart: React.FC<ProgressPieChartProps> = ({ words, classN
       {/* 分类说明 */}
       <div className="mt-4 pt-4 border-t border-mid-charcoal/30">
         <div className="text-[9px] text-text-dark font-mono uppercase tracking-wider mb-2 text-center">
-          Classification
+          <HoverTranslationText text="Classification" translation="分类说明" />
         </div>
         <div className="grid grid-cols-3 gap-2 text-[9px]">
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 mb-1">
               <div className="w-2 h-2 rounded-full bg-electric-green" />
-              <span className="font-bold text-white">Mastered</span>
+              <span className="font-bold text-white"><HoverTranslationText text="Mastered" translation="已掌握" /></span>
             </div>
-            <div className="text-text-light">0 errors</div>
+            <div className="text-text-light"><HoverTranslationText text="0 errors" translation="0 个错误" /></div>
           </div>
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 mb-1">
               <div className="w-2 h-2 rounded-full bg-orange-400" />
-              <span className="font-bold text-white">Learning</span>
+              <span className="font-bold text-white"><HoverTranslationText text="Learning" translation="学习中" /></span>
             </div>
-            <div className="text-text-light">1-2 errors</div>
+            <div className="text-text-light"><HoverTranslationText text="1-2 errors" translation="1-2 个错误" /></div>
           </div>
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 mb-1">
               <div className="w-2 h-2 rounded-full bg-red-500" />
-              <span className="font-bold text-white">Difficult</span>
+              <span className="font-bold text-white"><HoverTranslationText text="Difficult" translation="困难" /></span>
             </div>
-            <div className="text-text-light">3+ errors</div>
+            <div className="text-text-light"><HoverTranslationText text="3+ errors" translation="3 个及以上错误" /></div>
           </div>
         </div>
       </div>
