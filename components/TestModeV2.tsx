@@ -8,6 +8,7 @@ import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
+import { MeaningFlipCard } from './MeaningFlipCard';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface TestModeV2Props {
@@ -50,13 +51,21 @@ const HistoryCard = ({ result, word }: { result: { correct: boolean; score: numb
     }
 
     return (
-        <div className={`p-3 rounded-xl border flex items-center gap-3 backdrop-blur-md transition-all animate-in slide-in-from-right-4 duration-500 ${bgColor}`}>
-            <span className="material-symbols-outlined text-sm">{statusIcon}</span>
-            <div className="flex flex-col">
-                <span className="font-bold text-sm tracking-wide text-white">{word.text}</span>
-                <span className="text-[10px] font-mono opacity-80">{result.score.toFixed(1)} pts</span>
-            </div>
-        </div>
+        <MeaningFlipCard
+            meaning={word.definition_cn}
+            className="min-h-[88px] w-full sm:w-[220px]"
+            frontClassName="rounded-xl"
+            backClassName={`rounded-xl border p-3 ${bgColor}`}
+            front={
+                <div className={`flex h-full items-center gap-3 rounded-xl border p-3 backdrop-blur-md transition-all animate-in slide-in-from-right-4 duration-500 ${bgColor}`}>
+                    <span className="material-symbols-outlined text-sm">{statusIcon}</span>
+                    <div className="flex flex-col min-w-0">
+                        <span className="font-bold text-sm tracking-wide text-white truncate">{word.text}</span>
+                        <span className="text-[10px] font-mono opacity-80">{result.score.toFixed(1)} pts · 点击翻面</span>
+                    </div>
+                </div>
+            }
+        />
     );
 };
 
@@ -78,6 +87,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [inputValue, setInputValue] = useState('');
   const [feedback, setFeedback] = useState<'NONE' | 'CORRECT' | 'WRONG'>('NONE');
   const [hintLevel, setHintLevel] = useState(0); // 0: Audio, 1: Letter Blocks, 2: Image + Meaning
+    const [showChineseHint, setShowChineseHint] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
   const [startTime, setStartTime] = useState<number>(0);
   
@@ -249,10 +259,13 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         const data = await fetchDictionaryData(word.text, word.language || 'en');
                         if (data) {
                             if (data.phonetic) word.phonetic = data.phonetic;
+                            if (data.definition_cn) word.definition_cn = data.definition_cn;
+                            if (data.definition_en) word.definition_en = data.definition_en;
                             
                             // Save to DB for future use (Lazy update)
                             updateWordMetadata(word.id, { 
                                 phonetic: data.phonetic || word.phonetic || undefined,
+                                definition_cn: data.definition_cn || word.definition_cn || undefined,
                                 definition_en: data.definition_en || word.definition_en || undefined
                             });
                         }
@@ -620,6 +633,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           setInputValue('');
           setFeedback('NONE');
           setHintLevel(0);
+          setShowChineseHint(false);
           setIsRevealed(false);
           setIsProcessing(false); // Reset lock
           setStartTime(Date.now());
@@ -906,6 +920,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   // New: Get Reversed History for Display
   const historyItems = [...results].reverse(); 
+    const currentChineseMeaning = currentWord.definition_cn?.trim() || '暂无中文释义';
 
   return (
     <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
@@ -1062,13 +1077,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                           <div className="h-8 w-[1px] bg-white/5" />
                           
                           <button 
-                              onClick={checkAnswer}
+                                                            onClick={() => setShowChineseHint(prev => !prev)}
                               className="group flex flex-col items-center gap-2 transition-all"
+                                                            aria-pressed={showChineseHint}
+                                                            title={showChineseHint ? '隐藏中文释义' : '显示中文释义'}
                           >
-                               <div className="w-14 h-14 rounded-full border border-white/10 flex items-center justify-center group-hover:border-green-500/50 group-hover:bg-green-500/5 transition-all">
-                                  <svg className="w-6 h-6 text-gray-500 group-hover:text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" /></svg>
+                                                               <div className={`flex h-14 items-center justify-center border border-white/10 px-4 transition-all ${showChineseHint ? 'min-w-[12rem] rounded-full border-emerald-500/50 bg-emerald-500/10' : 'w-14 rounded-full group-hover:border-green-500/50 group-hover:bg-green-500/5'}`}>
+                                                                    {showChineseHint ? (
+                                                                        <span className="line-clamp-2 text-center text-xs font-medium leading-snug text-emerald-200">{currentChineseMeaning}</span>
+                                                                    ) : (
+                                                                        <svg className="w-6 h-6 text-gray-500 group-hover:text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 7h16M4 12h10M4 17h7" /></svg>
+                                                                    )}
                               </div>
-                              <span className="text-[10px] font-mono text-gray-600 group-hover:text-green-500 tracking-widest uppercase">Check</span>
+                                                            <span className="text-[10px] font-mono text-gray-600 group-hover:text-green-500 tracking-widest uppercase">{showChineseHint ? 'Hide Chinese' : 'Show Chinese'}</span>
                           </button>
 
                           <div className="h-8 w-[1px] bg-white/5" />
@@ -1085,6 +1106,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                       </>
                     ) : null}
                 </div>
+
+                                {!isRevealed && feedback !== 'CORRECT' && (
+                                    <p className="mt-5 text-[10px] font-mono uppercase tracking-[0.24em] text-gray-600">Press Enter to check answer</p>
+                                )}
             </div>
 
             {/* History Cards Zone */}

@@ -15,6 +15,7 @@ export interface WordEntry {
   phonetic: string | null;
   audio_url: string | null;
   language?: string | null; // e.g. 'en', 'ja', 'ko'
+  lexeme_id?: string | null;
   definition_cn: string | null;
   definition_en: string | null;
   deleted?: boolean;

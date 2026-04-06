@@ -182,6 +182,7 @@ export const fetchUserData = async (userId: string) => {
     last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
     phonetic: w.phonetic || null,
     audio_url: w.audio_url || null,
+    lexeme_id: w.lexeme_id || null,
     definition_cn: w.definition_cn || null,
     definition_en: w.definition_en || null,
     deleted: w.deleted || false,
@@ -195,7 +196,7 @@ export const fetchUserData = async (userId: string) => {
 export const saveSessionData = async (
   userId: string, 
   targetCount: number, 
-  wordList: { text: string, imageBase64?: string, language?: string }[],
+  wordList: { text: string, imageBase64?: string, language?: string, definition_cn?: string, definition_en?: string }[],
   libraryTag: string = 'Custom'
 ) => {
   // 0. Global Deduplication Check
@@ -249,6 +250,8 @@ export const saveSessionData = async (
       text: w.text,
       image_path: imagePath,
       language: w.language || 'en',
+      definition_cn: w.definition_cn || null,
+      definition_en: w.definition_en || null,
       tags: [libraryTag]
     });
   }
@@ -294,9 +297,9 @@ export const saveSessionData = async (
 export const modifySession = async (
   userId: string,
   sessionId: string,
-  addedWords: { text: string, imageBase64?: string }[],
+  addedWords: { text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string }[],
   removedWordIds: string[],
-  updatedWords: { id: string, text: string, imageBase64?: string }[] = []
+  updatedWords: { id: string, text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string }[] = []
 ) => {
     // Get session's library_tag - words added to this session belong to its library
     const { data: sessionInfo } = await supabase
@@ -351,6 +354,9 @@ export const modifySession = async (
                 session_id: sessionId,
                 text: w.text,
                 image_path: imagePath,
+              language: w.language || 'en',
+              definition_cn: w.definition_cn || null,
+              definition_en: w.definition_en || null,
                 tags: [libraryTag]
             });
         }
@@ -378,6 +384,9 @@ export const modifySession = async (
         console.log(`Updating ${updatedWords.length} existing words...`);
         for (const w of updatedWords) {
             const updates: any = { text: w.text };
+          if (w.language) updates.language = w.language;
+          if (w.definition_cn) updates.definition_cn = w.definition_cn;
+          if (w.definition_en) updates.definition_en = w.definition_en;
             
             // Only update image if a new one is provided (base64)
             if (w.imageBase64) {
@@ -757,6 +766,7 @@ export const updateWordImage = async (wordId: string, imagePath: string) => {
 export const updateWordMetadata = async (wordId: string, updates: { 
   audio_url?: string, 
   phonetic?: string,
+  definition_cn?: string,
   definition_en?: string,
   language?: string
 }) => {

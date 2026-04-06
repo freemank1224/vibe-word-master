@@ -22,6 +22,7 @@ import { AppMode, WordEntry, InputSession, DayStats } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
+import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
@@ -97,10 +98,40 @@ interface TestConfig {
   wordIds?: string[];
 }
 
+type EditableWord = {
+  tempId: string;
+  id?: string;
+  text: string;
+  imageBase64?: string;
+  definition_cn?: string;
+  definition_en?: string;
+  language?: string;
+};
+
+const createEditableWord = (word: Omit<EditableWord, 'tempId'> & { tempId?: string }): EditableWord => ({
+  tempId: word.tempId || word.id || globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  id: word.id,
+  text: word.text,
+  imageBase64: word.imageBase64,
+  definition_cn: word.definition_cn,
+  definition_en: word.definition_en,
+  language: word.language || 'en',
+});
+
+const normalizeDefinitionBackfillKey = (text: string, language: string = 'en') => {
+  return `${language.toLowerCase()}:${text.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+};
+
 const App: React.FC = () => {
   const [session, setSession] = useState<any>(null);
   const [showLanding, setShowLanding] = useState(true);
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
+  const definitionBackfillInFlightRef = useRef<Set<string>>(new Set());
+  const definitionBackfillQueueRef = useRef<Map<string, { text: string; language: string; lexemeId?: string | null }>>(new Map());
+  const definitionBackfillCompletedRef = useRef<Set<string>>(new Set());
+  const definitionBackfillRetryRef = useRef<Map<string, number>>(new Map());
+  const definitionBackfillRunningRef = useRef(false);
+  const latestWordsRef = useRef<WordEntry[]>([]);
 
   // 通知系统
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
@@ -109,6 +140,14 @@ const App: React.FC = () => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
   };
+
+  useEffect(() => {
+    definitionBackfillInFlightRef.current.clear();
+    definitionBackfillQueueRef.current.clear();
+    definitionBackfillCompletedRef.current.clear();
+    definitionBackfillRetryRef.current.clear();
+    definitionBackfillRunningRef.current = false;
+  }, [session?.user?.id]);
 
   // 同步状态
   const [syncingSessionId, setSyncingSessionId] = useState<string | null>(null);
@@ -123,6 +162,10 @@ const App: React.FC = () => {
   const [dailyStats, setDailyStats] = useState<Record<string, DayStats>>({});
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
+
+  useEffect(() => {
+    latestWordsRef.current = words;
+  }, [words]);
 
   // Edit Mode State
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -756,13 +799,14 @@ const App: React.FC = () => {
                     phonetic: dict.phonetic,
                     audio_url: dict.audioUrl,
                     language: w.language || 'en',
+                  definition_cn: dict.definition_cn,
                     definition_en: dict.definition_en
                 });
                 
                 // Update local state if word still exists
                 setWords(prev => prev.map(word => 
                     word.id === w.id 
-                    ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, language: w.language || 'en', definition_en: dict.definition_en || null } 
+                  ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, language: w.language || 'en', definition_cn: dict.definition_cn || word.definition_cn || null, definition_en: dict.definition_en || null } 
                     : word
                 ));
             }
@@ -774,7 +818,7 @@ const App: React.FC = () => {
 
   // Handle Save (New Session or Update Existing)
   const handleSaveSession = async (
-    wordList: { id?: string, text: string, imageBase64?: string }[], 
+    wordList: EditableWord[], 
     deletedIds: string[]
   ) => {
     if (!session?.user) return;
@@ -805,7 +849,10 @@ const App: React.FC = () => {
         }).map(w => ({
             id: w.id!,
             text: w.text,
-            imageBase64: w.imageBase64
+          imageBase64: w.imageBase64,
+          definition_cn: w.definition_cn,
+          definition_en: w.definition_en,
+          language: w.language
         }));
 
         const { newWordsData } = await modifySession(session.user.id, editingSessionId, addedWords, deletedIds, updatedWords);
@@ -908,6 +955,138 @@ const App: React.FC = () => {
       showNotification('⚠️ Saved locally due to connection error. Will auto-sync when connection is restored.', 'warning');
     }
   };
+
+  const processDefinitionBackfillQueue = useCallback(async () => {
+    if (definitionBackfillRunningRef.current || !session?.user?.id) return;
+
+    definitionBackfillRunningRef.current = true;
+
+    try {
+      while (definitionBackfillQueueRef.current.size > 0) {
+        const next = definitionBackfillQueueRef.current.entries().next().value as [string, { text: string; language: string; lexemeId?: string | null }] | undefined;
+        if (!next) break;
+
+        const [queueKey, candidate] = next;
+        definitionBackfillQueueRef.current.delete(queueKey);
+        definitionBackfillInFlightRef.current.add(queueKey);
+
+        try {
+          const dict = await fetchDictionaryData(candidate.text, candidate.language || 'en');
+          const definition_cn = dict?.definition_cn?.trim() || '暂无中文释义';
+          const currentWords = latestWordsRef.current;
+
+          const matchedWordIds = currentWords
+            .filter(word => {
+              if (word.deleted || word.definition_cn?.trim()) return false;
+              if (candidate.lexemeId && word.lexeme_id) {
+                return word.lexeme_id === candidate.lexemeId;
+              }
+              return normalizeDefinitionBackfillKey(word.text, word.language || 'en') === queueKey;
+            })
+            .map(word => word.id);
+
+          for (const wordId of matchedWordIds) {
+            await updateWordMetadata(wordId, {
+              language: candidate.language || 'en',
+              phonetic: dict?.phonetic || undefined,
+              definition_en: dict?.definition_en || undefined,
+              definition_cn,
+            });
+          }
+
+          if (matchedWordIds.length > 0) {
+            setWords(prev => prev.map(item =>
+              matchedWordIds.includes(item.id)
+                ? {
+                    ...item,
+                    language: candidate.language || 'en',
+                    phonetic: dict?.phonetic || item.phonetic || null,
+                    definition_en: dict?.definition_en || item.definition_en || null,
+                    definition_cn,
+                  }
+                : item
+            ));
+          }
+
+          definitionBackfillCompletedRef.current.add(queueKey);
+          definitionBackfillRetryRef.current.delete(queueKey);
+        } catch (error) {
+          const retryCount = (definitionBackfillRetryRef.current.get(queueKey) || 0) + 1;
+          definitionBackfillRetryRef.current.set(queueKey, retryCount);
+
+          if (retryCount >= 2) {
+            const fallbackMeaning = '暂无中文释义';
+            const currentWords = latestWordsRef.current;
+            const matchedWordIds = currentWords
+              .filter(word => {
+                if (word.deleted || word.definition_cn?.trim()) return false;
+                if (candidate.lexemeId && word.lexeme_id) {
+                  return word.lexeme_id === candidate.lexemeId;
+                }
+                return normalizeDefinitionBackfillKey(word.text, word.language || 'en') === queueKey;
+              })
+              .map(word => word.id);
+
+            for (const wordId of matchedWordIds) {
+              await updateWordMetadata(wordId, {
+                language: candidate.language || 'en',
+                definition_cn: fallbackMeaning,
+              });
+            }
+
+            if (matchedWordIds.length > 0) {
+              setWords(prev => prev.map(item =>
+                matchedWordIds.includes(item.id)
+                  ? { ...item, language: candidate.language || 'en', definition_cn: fallbackMeaning }
+                  : item
+              ));
+            }
+
+            definitionBackfillCompletedRef.current.add(queueKey);
+          } else {
+            definitionBackfillQueueRef.current.set(queueKey, candidate);
+          }
+
+          console.warn(`Failed to backfill Chinese definition for ${candidate.text}:`, error);
+        } finally {
+          definitionBackfillInFlightRef.current.delete(queueKey);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
+    } finally {
+      definitionBackfillRunningRef.current = false;
+
+      if (definitionBackfillQueueRef.current.size > 0 && session?.user?.id) {
+        void processDefinitionBackfillQueue();
+      }
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user?.id || words.length === 0) return;
+
+    words.forEach(word => {
+      if (word.deleted || word.definition_cn?.trim()) return;
+
+      const queueKey = word.lexeme_id || normalizeDefinitionBackfillKey(word.text, word.language || 'en');
+      if (
+        definitionBackfillCompletedRef.current.has(queueKey)
+        || definitionBackfillInFlightRef.current.has(queueKey)
+        || definitionBackfillQueueRef.current.has(queueKey)
+      ) {
+        return;
+      }
+
+      definitionBackfillQueueRef.current.set(queueKey, {
+        text: word.text,
+        language: word.language || 'en',
+        lexemeId: word.lexeme_id,
+      });
+    });
+
+    void processDefinitionBackfillQueue();
+  }, [session?.user?.id, words, processDefinitionBackfillQueue]);
 
   const handleExecuteDelete = async () => {
       console.log("🔴 handleExecuteDelete called");
@@ -2748,11 +2927,16 @@ const LibraryMode: React.FC<{
                                                     </button>
 
                                                     {/* Main Content: Checkbox + Word */}
-                                                    <div className="flex items-center gap-3">
+                                                    <div className="flex items-start gap-3">
                                                         <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors flex-shrink-0 ${selectedIds.has(word.id) ? 'bg-electric-blue border-electric-blue' : 'border-text-dark bg-transparent'}`}>
                                                             {selectedIds.has(word.id) && <span className="material-symbols-outlined text-charcoal text-[10px] font-bold">check</span>}
                                                         </div>
-                                                        <span className={`font-mono text-sm truncate ${selectedIds.has(word.id) ? 'text-white' : 'text-text-light'}`}>{word.text}</span>
+                                                      <div className="min-w-0 flex-1">
+                                                        <span className={`block font-mono text-sm truncate ${selectedIds.has(word.id) ? 'text-white' : 'text-text-light'}`}>{word.text}</span>
+                                                        <span className={`mt-1 block text-xs leading-relaxed line-clamp-2 ${selectedIds.has(word.id) ? 'text-electric-blue/90' : 'text-text-dark'}`}>
+                                                          {word.definition_cn?.trim() || '正在获取中文释义...'}
+                                                        </span>
+                                                      </div>
                                                     </div>
 
                                                     {/* Status Indicators */}
@@ -2848,13 +3032,13 @@ const LibraryMode: React.FC<{
 const InputMode: React.FC<{ 
   initialWords?: WordEntry[],
   currentLibrary: string, // The library tag of the session being edited (or 'Custom' for new sessions)
-  onComplete: (words: { id?: string, text: string, imageBase64?: string }[], deletedIds: string[]) => void,
+  onComplete: (words: EditableWord[], deletedIds: string[]) => void,
   onCancel: () => void,
   onDeleteWord?: (id: string) => Promise<void>,
   allWords: WordEntry[]
 }> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords }) => {
-  const [currentWords, setCurrentWords] = useState<{ id?: string, text: string, imageBase64?: string }[]>(
-    initialWords.map(w => ({ id: w.id, text: w.text }))
+  const [currentWords, setCurrentWords] = useState<EditableWord[]>(
+    initialWords.map(w => createEditableWord({ id: w.id, text: w.text, definition_cn: w.definition_cn || undefined, definition_en: w.definition_en || undefined, language: w.language || 'en' }))
   );
   // We don't use deletedIds for batch delete anymore based on new requirements, 
   // but keeping it empty for compatibility with onComplete refactoring if needed.
@@ -2874,6 +3058,8 @@ const InputMode: React.FC<{
   
   // Feature 1: Drill Logic
   const [targetWord, setTargetWord] = useState<string | null>(null);
+  const [targetDefinitionCn, setTargetDefinitionCn] = useState<string | null>(null);
+  const [targetDefinitionEn, setTargetDefinitionEn] = useState<string | null>(null);
   const [repeatCount, setRepeatCount] = useState<number>(3);
   const [drillProgress, setDrillProgress] = useState<number>(0);
   const [inputStatus, setInputStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
@@ -2888,6 +3074,38 @@ const InputMode: React.FC<{
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fallbackMeaning = '暂无中文释义';
+
+  const resolveDictionaryDetails = async (text: string) => {
+    try {
+      const details = await fetchDictionaryData(text, 'en');
+      return {
+        definition_cn: details?.definition_cn?.trim() || fallbackMeaning,
+        definition_en: details?.definition_en?.trim() || undefined,
+      };
+    } catch (error) {
+      console.warn('Failed to resolve dictionary details:', error);
+      return {
+        definition_cn: fallbackMeaning,
+        definition_en: undefined,
+      };
+    }
+  };
+
+  const startWordDrill = (text: string, details?: { definition_cn?: string; definition_en?: string }) => {
+    setTargetWord(text);
+    setTargetDefinitionCn(details?.definition_cn || fallbackMeaning);
+    setTargetDefinitionEn(details?.definition_en || null);
+    setDrillProgress(1);
+    setInputValue('');
+    setInputStatus('correct');
+    playDing();
+    playWordAudio(text);
+
+    if (repeatCount === 1) {
+      finishAddingWord(text, details);
+    }
+  };
 
   // Track if there are unsaved changes
   const hasUnsavedChanges = () => {
@@ -2958,9 +3176,8 @@ const InputMode: React.FC<{
         // Use single word validation
         validation = await aiService.validateSpelling(trimmed);
       }
-      setIsProcessing(false);
-
       if (validation.serviceError) {
+        setIsProcessing(false);
         setServiceErrorWord(trimmed);
         playBuzzer();
         return;
@@ -2968,12 +3185,14 @@ const InputMode: React.FC<{
 
       // Handle phrase length errors
       if (validation.error === 'TOO_MANY_WORDS' || validation.error === 'TOO_FEW_WORDS') {
+        setIsProcessing(false);
         playBuzzer();
         setErrorMsg(validation.suggestion || 'Please enter 2-3 words only');
         return;
       }
 
       if (!validation.isValid) {
+        setIsProcessing(false);
         playBuzzer();
         // Show highlighted phrase if available
         const displayText = validation.highlightedPhrase || validation.suggestion || 'something else';
@@ -2989,6 +3208,7 @@ const InputMode: React.FC<{
           setIsProcessing(false);
 
           if (!collocationResult.isCommon) {
+            setIsProcessing(false);
             // Show collocation warning
             setCollocationWarning({
               phrase: trimmed,
@@ -3005,18 +3225,9 @@ const InputMode: React.FC<{
         }
       }
 
-      // Start Drill
-      setTargetWord(trimmed);
-      setDrillProgress(1); // First input counts as 1
-      setInputValue('');
-      setInputStatus('correct');
-      playDing();
-      playWordAudio(trimmed);
-      
-      // If repeat count is 1, we are done immediately
-      if (repeatCount === 1) {
-          finishAddingWord(trimmed);
-      }
+      const dictionaryDetails = await resolveDictionaryDetails(trimmed);
+      setIsProcessing(false);
+      startWordDrill(trimmed, dictionaryDetails);
       return;
     }
 
@@ -3031,7 +3242,10 @@ const InputMode: React.FC<{
             playDing();
             
             if (newProgress >= repeatCount) {
-                finishAddingWord(targetWord);
+                finishAddingWord(targetWord, {
+                  definition_cn: targetDefinitionCn || fallbackMeaning,
+                  definition_en: targetDefinitionEn || undefined,
+                });
             }
         } else {
             // Wrong
@@ -3043,34 +3257,34 @@ const InputMode: React.FC<{
     }
   };
 
-  const finishAddingWord = (text: string) => {
-      const newEntry = { text: text, imageBase64: undefined };
+  const finishAddingWord = (text: string, details?: { definition_cn?: string; definition_en?: string }) => {
+      const newEntry = createEditableWord({
+        text,
+        imageBase64: undefined,
+        definition_cn: details?.definition_cn || targetDefinitionCn || fallbackMeaning,
+        definition_en: details?.definition_en || targetDefinitionEn || undefined,
+        language: 'en',
+      });
       setCurrentWords(prev => [...prev, newEntry]);
       setTargetWord(null);
+      setTargetDefinitionCn(null);
+      setTargetDefinitionEn(null);
       setDrillProgress(0);
       setInputValue('');
       setTimeout(() => setInputStatus('idle'), 1000);
       playDing(); // Double ding for completion?
   };
 
-  const handleManualAdd = () => {
+  const handleManualAdd = async () => {
     if (serviceErrorWord) {
-       // Start drill with unvalidated word
-       setTargetWord(serviceErrorWord);
-       setDrillProgress(1);
-       setInputValue('');
+       const dictionaryDetails = await resolveDictionaryDetails(serviceErrorWord);
        setServiceErrorWord(null);
-       playDing();
-       if (repeatCount === 1) finishAddingWord(serviceErrorWord);
+       startWordDrill(serviceErrorWord, dictionaryDetails);
     } else if (collocationWarning && pendingPhrase) {
-       // Force add phrase despite collocation warning
-       setTargetWord(pendingPhrase);
-       setDrillProgress(1);
-       setInputValue('');
+       const dictionaryDetails = await resolveDictionaryDetails(pendingPhrase);
        setCollocationWarning(null);
        setPendingPhrase(null);
-       playDing();
-       if (repeatCount === 1) finishAddingWord(pendingPhrase);
+       startWordDrill(pendingPhrase, dictionaryDetails);
     }
   };
 
@@ -3256,6 +3470,10 @@ const InputMode: React.FC<{
                  <div className="bg-light-charcoal/50 border border-electric-blue/30 p-4 rounded-2xl backdrop-blur-md">
                      <p className="font-mono text-[10px] uppercase text-text-dark mb-1">Target</p>
                      <p className="font-serif text-xl text-white truncate">{targetWord}</p>
+                     <div className="mt-3 border-t border-electric-blue/10 pt-3">
+                       <p className="font-mono text-[10px] uppercase text-electric-blue/80 mb-1">中文释义</p>
+                       <p className="text-sm text-white leading-relaxed break-words">{targetDefinitionCn || fallbackMeaning}</p>
+                     </div>
                      <p className="text-[10px] text-electric-blue mt-2">Type correctly {repeatCount} times to add.</p>
                  </div>
             </div>
@@ -3377,24 +3595,42 @@ const InputMode: React.FC<{
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
             {currentWords.map((w, i) => (
-              <div key={i} className="group relative bg-light-charcoal p-3 rounded-xl border border-mid-charcoal text-center flex items-center justify-between hover:border-text-light transition-all">
-                <div className="flex items-center gap-2 overflow-hidden flex-1">
+              <MeaningFlipCard
+                key={w.tempId}
+                meaning={w.definition_cn}
+                className="h-24"
+                frontClassName="rounded-xl"
+                backClassName="rounded-xl border border-electric-blue/30 bg-light-charcoal p-3"
+                front={
+                  <div className="group relative flex h-full items-center justify-between rounded-xl border border-mid-charcoal bg-light-charcoal p-3 text-center transition-all hover:border-text-light">
+                    <div className="flex items-center gap-2 overflow-hidden flex-1">
+                        <button 
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              playWordAudio(w.text);
+                            }}
+                            className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-electric-blue hover:text-charcoal transition-colors ${playingAudio === w.text ? 'text-electric-green animate-pulse' : 'text-text-dark'}`}
+                        >
+                            <span className="material-symbols-outlined text-lg">volume_up</span>
+                        </button>
+                        <div className="min-w-0 flex-1 text-left">
+                          <span className="block truncate font-mono text-electric-blue">{w.text}</span>
+                          <span className="mt-1 block text-[10px] font-mono uppercase tracking-[0.2em] text-text-dark">点击翻面看中文</span>
+                        </div>
+                    </div>
                     <button 
-                        onClick={() => playWordAudio(w.text)}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-electric-blue hover:text-charcoal transition-colors ${playingAudio === w.text ? 'text-electric-green animate-pulse' : 'text-text-dark'}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          initiateDelete(i);
+                        }}
+                        className="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-red-500 hover:text-white transition-colors"
+                        title="Remove word"
                     >
-                        <span className="material-symbols-outlined text-lg">volume_up</span>
+                        <span className="material-symbols-outlined text-sm">close</span>
                     </button>
-                    <span className="font-mono text-electric-blue truncate">{w.text}</span>
-                </div>
-                <button 
-                    onClick={() => initiateDelete(i)}
-                    className="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-red-500 hover:text-white transition-colors"
-                    title="Remove word"
-                >
-                    <span className="material-symbols-outlined text-sm">close</span>
-                </button>
-              </div>
+                  </div>
+                }
+              />
             ))}
           </div>
         )}
