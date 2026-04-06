@@ -3728,14 +3728,14 @@ const InputMode: React.FC<{
         <button 
           onClick={handleVoiceInput}
           title="语音输入"
-          className="p-6 bg-mid-charcoal rounded-full text-white hover:text-electric-blue border-2 border-transparent hover:border-electric-blue transition-all group"
+          className="flex h-24 w-24 items-center justify-center bg-mid-charcoal rounded-full text-white hover:text-electric-blue border-2 border-transparent hover:border-electric-blue transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">mic</span>
         </button>
         <button 
           onClick={() => fileInputRef.current?.click()}
           title="图片识别"
-          className="p-6 bg-mid-charcoal rounded-full text-white hover:text-electric-purple border-2 border-transparent hover:border-electric-purple transition-all group"
+          className="flex h-24 w-24 items-center justify-center bg-mid-charcoal rounded-full text-white hover:text-electric-purple border-2 border-transparent hover:border-electric-purple transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">photo_camera</span>
           <input type="file" ref={fileInputRef} onChange={handlePhotoInput} className="hidden" accept="image/*" />
@@ -3743,7 +3743,7 @@ const InputMode: React.FC<{
         <button 
           onClick={handleInputEnter}
           disabled={!inputValue.trim()}
-          className="px-10 py-6 bg-mid-charcoal text-white font-headline text-3xl rounded-full hover:bg-electric-blue hover:text-charcoal transition-all disabled:opacity-50 disabled:hover:bg-mid-charcoal disabled:hover:text-white border-2 border-electric-blue"
+          className="flex h-24 items-center justify-center px-10 bg-mid-charcoal text-white font-headline text-3xl rounded-full hover:bg-electric-blue hover:text-charcoal transition-all disabled:opacity-50 disabled:hover:bg-mid-charcoal disabled:hover:text-white border-2 border-electric-blue"
         >
           <HoverTranslationText text="ENTER" translation="确认输入" />
         </button>
