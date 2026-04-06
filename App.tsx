@@ -177,6 +177,7 @@ const App: React.FC = () => {
   
   // Multi-Select State for Dashboard Testing
   const [selectedDashboardSessionIds, setSelectedDashboardSessionIds] = useState<Set<string>>(new Set());
+  const [highlightRecentSessions, setHighlightRecentSessions] = useState(false);
 
   // Delete Confirmation State
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -1715,6 +1716,8 @@ const App: React.FC = () => {
             }}
             onManualSync={handleManualSync}
             syncingSessionId={syncingSessionId}
+            highlightRecentSessions={highlightRecentSessions}
+            onDismissRecentSessionsHighlight={() => setHighlightRecentSessions(false)}
           />
         )}
         {mode === 'INPUT' && (
@@ -1851,27 +1854,29 @@ const App: React.FC = () => {
                                     handleStartTest(Array.from(selectedDashboardSessionIds));
                                     setShowQuickTestModal(false);
                                 } else {
-                                    alert("Please select at least one session card from the dashboard first!");
+                              setShowQuickTestModal(false);
+                              setMode('DASHBOARD');
+                              setHighlightRecentSessions(true);
                                 }
                             }}
                             className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
                                 selectedDashboardSessionIds.size > 0 
-                                ? 'bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal' 
-                                : 'bg-mid-charcoal/50 opacity-100 border border-dashed border-mid-charcoal'
+                            ? 'bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal' 
+                            : 'bg-mid-charcoal/70 border border-dashed border-mid-charcoal hover:bg-electric-green hover:border-electric-green hover:text-charcoal hover:-translate-y-1 hover:shadow-[0_0_20px_rgba(163,255,0,0.18)]'
                             }`}
                         >
                             <span className={`text-sm font-mono uppercase tracking-widest ${
-                                selectedDashboardSessionIds.size > 0 ? 'text-electric-blue group-hover:text-charcoal' : 'text-text-dark'
+                            selectedDashboardSessionIds.size > 0 ? 'text-electric-blue group-hover:text-charcoal' : 'text-text-dark group-hover:text-charcoal/80'
                             }`}>
                                 <HoverTranslationText text="Option 1" translation="选项 1" />
                             </span>
                             <span className={`text-xl font-headline ${
-                                selectedDashboardSessionIds.size > 0 ? 'group-hover:text-charcoal' : 'text-text-dark'
+                            selectedDashboardSessionIds.size > 0 ? 'group-hover:text-charcoal' : 'text-text-dark group-hover:text-charcoal'
                             }`}>
                                 {selectedDashboardSessionIds.size > 0 ? <HoverTranslationText text={'TEST SELECTED (' + selectedDashboardSessionIds.size + ')'} translation="测试当前已选择的内容" /> : <HoverTranslationText text="RECENT SESSION" translation="最近的学习批次" />}
                             </span>
                             <span className={`text-xs font-body ${
-                                selectedDashboardSessionIds.size > 0 ? 'opacity-50 group-hover:text-charcoal/70' : 'text-text-dark/40'
+                            selectedDashboardSessionIds.size > 0 ? 'opacity-50 group-hover:text-charcoal/70' : 'text-text-dark/60 group-hover:text-charcoal/70'
                             }`}>
                                 {selectedDashboardSessionIds.size > 0 
                                     ? <HoverTranslationText text="Practice words from your current selection." translation="练习你当前选中的单词。" /> 
@@ -1950,6 +1955,87 @@ const App: React.FC = () => {
   );
 };
 
+const isDragSelectionBlocked = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+
+  return Boolean(target.closest('button, input, label, a, [data-no-drag-select="true"]'));
+};
+
+const useSessionDragSelection = (
+  selectedIds: Set<string>,
+  onToggleSelect: (id: string) => void,
+) => {
+  const [isDraggingSelection, setIsDraggingSelection] = useState(false);
+  const dragModeRef = useRef<'select' | 'deselect' | null>(null);
+  const dragSelectedIdsRef = useRef<Set<string>>(new Set(selectedIds));
+  const visitedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    dragSelectedIdsRef.current = new Set(selectedIds);
+  }, [selectedIds]);
+
+  const stopDragSelection = useCallback(() => {
+    setIsDraggingSelection(false);
+    dragModeRef.current = null;
+    visitedIdsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    if (!isDraggingSelection) return;
+
+    window.addEventListener('mouseup', stopDragSelection);
+    window.addEventListener('blur', stopDragSelection);
+
+    return () => {
+      window.removeEventListener('mouseup', stopDragSelection);
+      window.removeEventListener('blur', stopDragSelection);
+    };
+  }, [isDraggingSelection, stopDragSelection]);
+
+  const applySelectionState = useCallback((id: string) => {
+    const mode = dragModeRef.current;
+    if (!mode || visitedIdsRef.current.has(id)) return;
+
+    visitedIdsRef.current.add(id);
+
+    const shouldSelect = mode === 'select';
+    const nextSelectedIds = new Set(dragSelectedIdsRef.current);
+    const isSelected = nextSelectedIds.has(id);
+
+    if (isSelected === shouldSelect) return;
+
+    onToggleSelect(id);
+
+    if (shouldSelect) nextSelectedIds.add(id);
+    else nextSelectedIds.delete(id);
+
+    dragSelectedIdsRef.current = nextSelectedIds;
+  }, [onToggleSelect]);
+
+  const handleCardMouseDown = useCallback((event: React.MouseEvent<HTMLElement>, id: string) => {
+    if (event.button !== 0 || isDragSelectionBlocked(event.target)) return;
+
+    event.preventDefault();
+    dragSelectedIdsRef.current = new Set(selectedIds);
+    visitedIdsRef.current.clear();
+    dragModeRef.current = dragSelectedIdsRef.current.has(id) ? 'deselect' : 'select';
+    setIsDraggingSelection(true);
+    applySelectionState(id);
+  }, [applySelectionState, selectedIds]);
+
+  const handleCardMouseEnter = useCallback((id: string) => {
+    if (!isDraggingSelection) return;
+    applySelectionState(id);
+  }, [applySelectionState, isDraggingSelection]);
+
+  return {
+    isDraggingSelection,
+    handleCardMouseDown,
+    handleCardMouseEnter,
+    stopDragSelection,
+  };
+};
+
 // --- Session Matrix Component ---
 const SessionMatrix: React.FC<{
   sessions: InputSession[],
@@ -1965,6 +2051,7 @@ const SessionMatrix: React.FC<{
   const MAX_SLOTS = 12; // 2 rows x 6 cols
   const count = sessions.length;
   const showMoreButton = count > MAX_SLOTS;
+  const { isDraggingSelection, handleCardMouseDown, handleCardMouseEnter } = useSessionDragSelection(selectedIds, onToggleSelect);
   
   const visibleCount = showMoreButton ? MAX_SLOTS - 1 : count;
   const visibleSessions = sessions.slice(0, visibleCount);
@@ -1982,11 +2069,14 @@ const SessionMatrix: React.FC<{
   const isHighDensity = totalSlotsUsed > 6;
 
   return (
-    <div className={`grid gap-4 w-full h-full transition-all duration-700 ${gridClass}`}>
+    <div className={`grid gap-4 w-full h-full transition-all duration-700 ${gridClass} ${isDraggingSelection ? 'select-none cursor-crosshair' : ''}`}>
       {visibleSessions.map(s => (
         <div 
           key={s.id} 
-          className={`bg-light-charcoal rounded-xl border group transition-all flex flex-col overflow-hidden relative shadow-lg ${selectedIds.has(s.id) ? 'border-electric-green ring-1 ring-electric-green' : 'border-mid-charcoal hover:border-electric-blue'}`}
+          onMouseDown={(event) => handleCardMouseDown(event, s.id)}
+          onMouseEnter={() => handleCardMouseEnter(s.id)}
+          onDragStart={(event) => event.preventDefault()}
+          className={`bg-light-charcoal rounded-xl border group transition-all flex flex-col overflow-hidden relative shadow-lg ${selectedIds.has(s.id) ? 'border-electric-green ring-1 ring-electric-green' : 'border-mid-charcoal hover:border-electric-blue'} ${isDraggingSelection ? 'cursor-crosshair' : ''}`}
         >
           {/* Library Banner at Top */}
           {s.libraryTag && s.libraryTag !== 'Custom' && (
@@ -2018,7 +2108,7 @@ const SessionMatrix: React.FC<{
               </div>
             
             <div className="flex justify-between items-end z-10">
-              <div className="cursor-pointer" onClick={() => onEdit(s.id)} title="Click to Edit Words">
+              <div data-no-drag-select="true" className="cursor-pointer" onClick={() => onEdit(s.id)} title="Click to Edit Words">
                 <p className={`font-headline text-white group-hover:text-electric-blue leading-none transition-colors ${isHighDensity ? 'text-xl' : 'text-5xl'}`}>
                   {s.wordCount} <span className={`text-text-dark font-body font-normal ${isHighDensity ? 'text-[10px]' : 'text-sm'}`}>WORDS</span>
                 </p>
@@ -2095,10 +2185,18 @@ const Dashboard: React.FC<{
   onQuickTest: () => void,
   onDeleteSessions: (ids: string[]) => void,
   onManualSync?: (id: string) => void,
-  syncingSessionId?: string | null
-}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId }) => {
+  syncingSessionId?: string | null,
+  highlightRecentSessions?: boolean,
+  onDismissRecentSessionsHighlight?: () => void,
+}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  const recentSessionsRef = useRef<HTMLDivElement>(null);
+  const {
+    isDraggingSelection: isDraggingListSelection,
+    handleCardMouseDown: handleListCardMouseDown,
+    handleCardMouseEnter: handleListCardMouseEnter,
+  } = useSessionDragSelection(selectedSessionIds, onToggleSessionSelect);
 
   // Filter words that already have images for the carousel
   const wordsWithImages = useMemo(() => words.filter(w => w.image_url), [words]);
@@ -2122,12 +2220,31 @@ const Dashboard: React.FC<{
     }
   }, [wordsWithImages.length, carouselIndex]);
 
+  useEffect(() => {
+    if (!highlightRecentSessions) return;
+
+    setShowAllSessions(false);
+
+    const timer = window.setTimeout(() => {
+      recentSessionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [highlightRecentSessions]);
+
   const totalCorrect = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.correct, 0);
   const totalAll = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.total, 0);
   const accuracy = (totalAll as number) > 0 ? ((totalCorrect as number) / (totalAll as number)) * 100 : 0;
 
   return (
-    <div className="grid lg:grid-cols-12 gap-8 items-stretch animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="relative grid lg:grid-cols-12 gap-8 items-stretch animate-in fade-in slide-in-from-bottom-4 duration-700">
+      {highlightRecentSessions && (
+        <div
+          className="fixed inset-0 z-30 bg-black/75 backdrop-blur-[2px] animate-in fade-in duration-300"
+          onClick={onDismissRecentSessionsHighlight}
+          aria-hidden="true"
+        />
+      )}
       <div className="lg:col-span-8 flex flex-col gap-10">
         <div className="flex flex-col md:flex-row items-center gap-10">
           
@@ -2206,10 +2323,48 @@ const Dashboard: React.FC<{
         </div>
 
         {/* Adaptive Session Matrix Section */}
-        <div className="space-y-4">
+        <div
+          ref={recentSessionsRef}
+          className={`space-y-4 relative ${highlightRecentSessions ? 'z-40 rounded-[2rem] bg-dark-charcoal/20 p-4 ring-2 ring-electric-green/80 shadow-[0_0_0_1px_rgba(163,255,0,0.12),0_0_35px_rgba(163,255,0,0.28)]' : ''}`}
+        >
+          {highlightRecentSessions && (
+            <div className="absolute -top-5 left-4 z-50 inline-flex items-center gap-2 rounded-full bg-electric-green px-4 py-2 text-[11px] font-mono uppercase tracking-[0.22em] text-charcoal shadow-2xl">
+              <span className="material-symbols-outlined text-sm">ads_click</span>
+              <HoverTranslationText text="Select session cards here" translation="请在这里选择要测试的学习卡片" />
+            </div>
+          )}
           <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
             <h3 className="font-headline text-2xl text-text-light tracking-widest"><HoverTranslationText text="RECENT SESSIONS" translation="最近的学习批次" /></h3>
             <div className="flex items-center gap-4">
+            {highlightRecentSessions && (
+              <>
+                <button
+                  onClick={() => {
+                    if (selectedSessionIds.size === 0) return;
+                    onDismissRecentSessionsHighlight?.();
+                    onStartTest(Array.from(selectedSessionIds));
+                  }}
+                  disabled={selectedSessionIds.size === 0}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-[11px] font-mono uppercase tracking-[0.2em] transition-all ${
+                    selectedSessionIds.size > 0
+                      ? 'bg-electric-green text-charcoal hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(163,255,0,0.28)]'
+                      : 'bg-mid-charcoal text-text-dark cursor-not-allowed opacity-70'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-sm">play_arrow</span>
+                  <HoverTranslationText
+                    text={selectedSessionIds.size > 0 ? `START TEST (${selectedSessionIds.size})` : 'SELECT A SESSION'}
+                    translation={selectedSessionIds.size > 0 ? `开始测试（${selectedSessionIds.size}）` : '请先选择学习批次'}
+                  />
+                </button>
+                <button
+                  onClick={onDismissRecentSessionsHighlight}
+                  className="text-xs font-mono text-text-dark hover:text-white uppercase transition-colors"
+                >
+                  <HoverTranslationText text="Dismiss" translation="关闭引导" />
+                </button>
+              </>
+            )}
                 {showAllSessions && selectedSessionIds.size > 0 && (
                     <button
                         onClick={() => onDeleteSessions(Array.from(selectedSessionIds))}
@@ -2237,9 +2392,15 @@ const Dashboard: React.FC<{
                 </div>
             ) : showAllSessions ? (
                 /* Full List View */
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 h-96 overflow-y-auto p-4 custom-scrollbar">
+              <div className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 h-96 overflow-y-auto p-4 custom-scrollbar ${isDraggingListSelection ? 'select-none cursor-crosshair' : ''}`}>
                     {sessions.map(s => (
-                        <div key={s.id} className={`bg-light-charcoal p-4 rounded-xl border flex justify-between items-center group transition-all ${selectedSessionIds.has(s.id) ? 'border-electric-green' : 'border-mid-charcoal hover:border-text-light'}`}>
+                  <div
+                    key={s.id}
+                    onMouseDown={(event) => handleListCardMouseDown(event, s.id)}
+                    onMouseEnter={() => handleListCardMouseEnter(s.id)}
+                    onDragStart={(event) => event.preventDefault()}
+                    className={`bg-light-charcoal p-4 rounded-xl border flex justify-between items-center group transition-all ${selectedSessionIds.has(s.id) ? 'border-electric-green' : 'border-mid-charcoal hover:border-text-light'} ${isDraggingListSelection ? 'cursor-crosshair' : ''}`}
+                  >
                              <div className="flex items-center gap-3">
                                 <input 
                                     type="checkbox" 
@@ -2247,7 +2408,7 @@ const Dashboard: React.FC<{
                                     onChange={() => onToggleSessionSelect(s.id)}
                                     className="w-4 h-4 rounded border-mid-charcoal text-electric-green bg-dark-charcoal cursor-pointer"
                                 />
-                                <div onClick={() => onStartEdit(s.id)} className="cursor-pointer">
+                      <div data-no-drag-select="true" onClick={() => onStartEdit(s.id)} className="cursor-pointer">
                                     <p className="text-xs font-mono text-text-dark mb-1">{new Date(s.timestamp).toLocaleDateString()}</p>
                                     <p className="font-headline text-2xl text-white group-hover:text-electric-blue">{s.wordCount} WORDS</p>
                                 </div>
