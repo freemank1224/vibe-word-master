@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
-import { HoverTranslationText } from './HoverTranslationText';
 
 interface LandingPageProps {
   onStart: () => void;
@@ -128,16 +127,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
             {/* Left Content */}
             <div className="space-y-8 text-center md:text-left">
                 <div className="inline-block px-4 py-1.5 rounded-full border border-electric-blue/30 bg-electric-blue/10 text-electric-blue font-mono text-sm tracking-wider mb-2 animate-pulse">
-                    <HoverTranslationText text="VOCAB MONSTER V1.1" translation="词汇怪兽 V1.1" />
+                  VOCAB MONSTER V1.1
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">
-                    <HoverTranslationText text="BUILD UP" translation="不断积累" /> <br/>
-                    <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]"><HoverTranslationText text="LEVEL UP" translation="持续升级" /></span>
+                  BUILD UP <br/>
+                  <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">LEVEL UP</span>
                 </h1>
                 
                 <p className="font-body text-gray-400 text-lg md:text-xl max-w-md mx-auto md:mx-0 leading-relaxed">
-                    <HoverTranslationText text="Enhance your typing skills. Master your vocabulary. Earn badges and turn your daily learning into an addictive adventure." translation="提升打字能力，掌握词汇，赢取徽章，让每日学习变成会上瘾的冒险。" />
+                  Enhance your typing skills. Master your vocabulary. Earn badges and turn your daily learning into an addictive adventure.
                 </p>
 
                 <div className="pt-4">
@@ -146,13 +145,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                         className="group relative px-8 py-4 bg-gradient-to-r from-electric-blue to-electric-purple rounded-xl font-headline text-2xl tracking-widest text-white shadow-[0_0_20px_rgba(0,240,255,0.3)] hover:shadow-[0_0_40px_rgba(187,0,255,0.5)] transition-all duration-300 transform hover:scale-105 active:scale-95"
                     >
                         <span className="relative z-10 flex items-center gap-3">
-                            <HoverTranslationText text="START NOW" translation="立即开始" />
+                        START NOW
                             <span className="material-symbols-outlined text-3xl group-hover:translate-x-1 transition-transform">arrow_forward</span>
                         </span>
                         <div className="absolute inset-0 bg-white/20 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                     </button>
                     <p className="mt-4 text-sm text-gray-500 font-mono">
-                        <HoverTranslationText text="Create account or Login to sync progress" translation="创建账号或登录以同步学习进度" />
+                      Create account or Login to sync progress
                     </p>
                 </div>
             </div>
@@ -178,8 +177,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
                     <div className="space-y-6">
                         <div className="text-center space-y-2">
-                             <div className="text-electric-blue font-mono text-sm"><HoverTranslationText text="CHALLENGE MODE" translation="挑战模式" /></div>
-                             <div className="font-headline text-3xl text-white"><HoverTranslationText text="TYPE THE WORD" translation="拼出单词" /></div>
+                          <div className="text-electric-blue font-mono text-sm">CHALLENGE MODE</div>
+                          <div className="font-headline text-3xl text-white">TYPE THE WORD</div>
                         </div>
 
                         <div className="pointer-events-none flex justify-center w-full overflow-hidden">
