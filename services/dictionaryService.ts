@@ -15,6 +15,42 @@ const normalizeMeaning = (value?: string | null): string | undefined => {
 
 const normalizeWordKey = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
+const fetchDictionaryDataViaEdge = async (word: string, lang: string): Promise<DictionaryData | null> => {
+  if (!isSupabaseConfigured) return null;
+
+  try {
+    const { data, error } = await supabase.functions.invoke('dictionary-lookup', {
+      body: {
+        word,
+        lang,
+      },
+    });
+
+    if (error) {
+      console.warn('Dictionary edge lookup failed:', error.message);
+      return null;
+    }
+
+    const definition_cn = normalizeMeaning(data?.definition_cn);
+    const definition_en = normalizeMeaning(data?.definition_en);
+    const phonetic = normalizeMeaning(data?.phonetic);
+
+    if (!definition_cn && !definition_en && !phonetic) {
+      return null;
+    }
+
+    return {
+      phonetic,
+      definition_en,
+      definition_cn,
+      audioUrl: undefined,
+    };
+  } catch (error) {
+    console.warn('Dictionary edge invocation threw error:', error);
+    return null;
+  }
+};
+
 const fetchGlobalLexemeData = async (word: string, lang: string): Promise<DictionaryData | null> => {
   if (!isSupabaseConfigured) return null;
 
@@ -146,6 +182,11 @@ export const fetchDictionaryData = async (word: string, lang: string = 'en'): Pr
   const globalLexemeData = await fetchGlobalLexemeData(word, lang);
   if (globalLexemeData?.definition_cn || globalLexemeData?.phonetic || globalLexemeData?.definition_en) {
     return globalLexemeData;
+  }
+
+  const edgeData = await fetchDictionaryDataViaEdge(word, lang);
+  if (edgeData?.definition_cn || edgeData?.phonetic || edgeData?.definition_en) {
+    return edgeData;
   }
 
   if (lang !== 'en') {
