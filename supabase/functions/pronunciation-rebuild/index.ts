@@ -150,7 +150,7 @@ const purgeOrphanedAssetsForWords = async (
   }
 
   // Build set of unique (normalized_word, language) from assets
-  const uniquePairs = [...new Map(
+  const uniquePairs = [...new Map<string, { word: string; lang: string }>(
     assets.map(a => [`${a.normalized_word}::${a.language || 'en'}`, { word: a.normalized_word, lang: a.language || 'en' }])
   ).values()];
 
@@ -242,6 +242,103 @@ const purgeOrphanedAssetsFull = async (): Promise<{ deletedAssets: number; delet
   if (orphanedAssets.length === 0) return { deletedAssets: 0, deletedStorageObjects: 0, orphanedWords: [] };
 
   return await _deleteAssets(orphanedAssets);
+};
+
+const drainStorageCleanupQueue = async (
+  limit: number = 200
+): Promise<{ processedJobs: number; deletedStorageObjects: number; failedJobs: number }> => {
+  const batchSize = Math.max(1, Math.min(500, Number(limit) || 200));
+
+  const { data: jobs, error: jobsError } = await supabase
+    .from('pronunciation_asset_storage_cleanup_jobs')
+    .select('id,storage_bucket,storage_path,attempt_count')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(batchSize);
+
+  if (jobsError) {
+    throw new Error(`Failed loading storage cleanup jobs: ${jobsError.message}`);
+  }
+
+  if (!jobs || jobs.length === 0) {
+    return { processedJobs: 0, deletedStorageObjects: 0, failedJobs: 0 };
+  }
+
+  const jobIds = jobs.map((job: any) => job.id);
+  const { error: markProcessingError } = await supabase
+    .from('pronunciation_asset_storage_cleanup_jobs')
+    .update({ status: 'processing', last_error: null })
+    .in('id', jobIds);
+
+  if (markProcessingError) {
+    throw new Error(`Failed marking storage cleanup jobs as processing: ${markProcessingError.message}`);
+  }
+
+  const jobsByBucket = new Map<string, Array<{ id: string; storage_path: string; attempt_count: number }>>();
+  for (const job of jobs as any[]) {
+    const bucket = (job.storage_bucket || 'word-audio').trim() || 'word-audio';
+    const storagePath = (job.storage_path || '').trim();
+    if (!storagePath) continue;
+
+    if (!jobsByBucket.has(bucket)) {
+      jobsByBucket.set(bucket, []);
+    }
+
+    jobsByBucket.get(bucket)!.push({
+      id: job.id,
+      storage_path: storagePath,
+      attempt_count: Number(job.attempt_count || 0),
+    });
+  }
+
+  let deletedStorageObjects = 0;
+  let failedJobs = 0;
+  const successIds: string[] = [];
+
+  for (const [bucket, bucketJobs] of jobsByBucket.entries()) {
+    const storagePaths = bucketJobs.map(job => job.storage_path);
+    const { error } = await supabase.storage.from(bucket).remove(storagePaths);
+
+    if (error) {
+      failedJobs += bucketJobs.length;
+
+      for (const bucketJob of bucketJobs) {
+        const nextAttemptCount = bucketJob.attempt_count + 1;
+        const nextStatus = nextAttemptCount >= 5 ? 'failed' : 'pending';
+
+        await supabase
+          .from('pronunciation_asset_storage_cleanup_jobs')
+          .update({
+            status: nextStatus,
+            attempt_count: nextAttemptCount,
+            last_error: error.message,
+          })
+          .eq('id', bucketJob.id);
+      }
+
+      continue;
+    }
+
+    deletedStorageObjects += bucketJobs.length;
+    successIds.push(...bucketJobs.map(job => job.id));
+  }
+
+  if (successIds.length > 0) {
+    const { error: deleteJobsError } = await supabase
+      .from('pronunciation_asset_storage_cleanup_jobs')
+      .delete()
+      .in('id', successIds);
+
+    if (deleteJobsError) {
+      throw new Error(`Failed deleting completed storage cleanup jobs: ${deleteJobsError.message}`);
+    }
+  }
+
+  return {
+    processedJobs: jobs.length,
+    deletedStorageObjects,
+    failedJobs,
+  };
 };
 
 /**
@@ -356,6 +453,27 @@ serve(async (req) => {
         deleted_assets: result.deletedAssets,
         deleted_storage_objects: result.deletedStorageObjects,
         orphaned_words: result.orphanedWords,
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (action === 'drain_storage_cleanup_queue') {
+      if (!tokenAuthenticated && email !== superAdminEmail) {
+        return new Response(JSON.stringify({ ok: false, error: 'Token auth required for drain_storage_cleanup_queue' }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const result = await drainStorageCleanupQueue(Number(payload?.limit || 200));
+      return new Response(JSON.stringify({
+        ok: true,
+        action: 'drain_storage_cleanup_queue',
+        processed_jobs: result.processedJobs,
+        deleted_storage_objects: result.deletedStorageObjects,
+        failed_jobs: result.failedJobs,
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }

@@ -321,6 +321,10 @@ export const modifySession = async (
             console.error("Error deleting words:", delError.message);
             throw delError;
         }
+
+        _drainPronunciationStorageCleanupQueue().catch(err =>
+          console.warn('[modifySession] Storage cleanup queue warning:', err?.message || err)
+        );
     }
 
     // 2. Add New Words - they belong to the session's library
@@ -885,6 +889,10 @@ export const deleteSessions = async (
   console.log('[deleteSessions] Words deleted:', deletedWordsCount);
   onProgress?.({ step: 'deleting-words', message: `Deleted ${deletedWordsCount} words`, current: deletedWordsCount, total: deletedWordsCount });
 
+  _drainPronunciationStorageCleanupQueue().catch(err =>
+    console.warn('[deleteSessions] Storage cleanup queue warning:', err?.message || err)
+  );
+
   // 2. Soft Delete sessions
   onProgress?.({ step: 'deleting-sessions', message: 'Deleting sessions...' });
   console.log('[deleteSessions] Step 2: Soft deleting sessions...');
@@ -971,7 +979,7 @@ export const deleteSessions = async (
 /**
  * Soft-delete individual words by their IDs.
  * Used by Library Mode to delete specific words without touching sessions.
- * After deletion, asynchronously triggers orphaned-audio cleanup for those words.
+ * After deletion, asynchronously drains queued pronunciation storage cleanup jobs.
  */
 export const deleteWordsByIds = async (
   userId: string,
@@ -979,13 +987,6 @@ export const deleteWordsByIds = async (
 ): Promise<void> => {
   if (!wordIds || wordIds.length === 0) return;
   console.log('[deleteWordsByIds] Soft-deleting words:', wordIds);
-
-  // Fetch word texts BEFORE deleting so we know what to check for orphaned audio
-  const { data: wordRows } = await supabase
-    .from('words')
-    .select('text')
-    .in('id', wordIds)
-    .eq('user_id', userId);
 
   const { error } = await supabase
     .from('words')
@@ -999,24 +1000,17 @@ export const deleteWordsByIds = async (
   }
   console.log('[deleteWordsByIds] Done, deleted', wordIds.length, 'words');
 
-  // Fire-and-forget: clean up potentially orphaned pronunciation assets
-  if (wordRows && wordRows.length > 0) {
-    const wordTexts = wordRows.map((r: any) => r.text as string).filter(Boolean);
-    _triggerOrphanedAudioCleanup(wordTexts).catch(err =>
-      console.warn('[deleteWordsByIds] Orphaned audio cleanup warning:', err?.message || err)
-    );
-  }
+  _drainPronunciationStorageCleanupQueue().catch(err =>
+    console.warn('[deleteWordsByIds] Storage cleanup queue warning:', err?.message || err)
+  );
 };
 
 /**
- * Fire-and-forget helper: calls the pronunciation-rebuild edge function
- * to purge audio assets that are no longer referenced by any user.
- * Uses the current user's auth session — the edge function accepts any logged-in user
- * for the `purge_orphaned_words` action.
+ * Fire-and-forget helper: drains queued pronunciation storage cleanup jobs.
+ * DB triggers remove orphaned global audio rows immediately and enqueue
+ * storage object deletion here.
  */
-async function _triggerOrphanedAudioCleanup(wordTexts: string[]): Promise<void> {
-  if (!wordTexts.length) return;
-
+async function _drainPronunciationStorageCleanupQueue(): Promise<void> {
   const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
   const anonKey = process.env.SUPABASE_ANON_KEY || '';
   if (!supabaseUrl) return;
@@ -1033,23 +1027,22 @@ async function _triggerOrphanedAudioCleanup(wordTexts: string[]): Promise<void> 
         'Authorization': `Bearer ${token}`,
         'apikey': anonKey,
       },
-      body: JSON.stringify({ action: 'purge_orphaned_words', words: wordTexts }),
+      body: JSON.stringify({ action: 'drain_storage_cleanup_queue' }),
     });
     if (res.ok) {
       const body = await res.json();
-      if (body?.deleted_assets > 0) {
+      if ((body?.deleted_storage_objects || 0) > 0) {
         console.log(
-          `[deleteWordsByIds] Orphan cleanup: removed ${body.deleted_assets} assets, ` +
-          `${body.deleted_storage_objects} storage files for words: ${body.orphaned_words?.join(', ')}`
+          `[global-word-cleanup] Storage cleanup: removed ${body.deleted_storage_objects} file(s)`
         );
       } else {
-        console.log('[deleteWordsByIds] Orphan cleanup: no orphaned assets found.');
+        console.log('[global-word-cleanup] Storage cleanup: no queued files.');
       }
     } else {
-      console.warn('[deleteWordsByIds] Orphan cleanup returned', res.status);
+      console.warn('[global-word-cleanup] Storage cleanup returned', res.status);
     }
   } catch (e: any) {
-    console.warn('[deleteWordsByIds] Orphan cleanup fetch error:', e?.message);
+    console.warn('[global-word-cleanup] Storage cleanup fetch error:', e?.message);
   }
 }
 

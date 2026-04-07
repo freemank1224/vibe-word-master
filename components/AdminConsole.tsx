@@ -3,7 +3,6 @@ import { adminService, AdminStats } from '../services/adminService';
 import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
-import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 import { HoverTranslationText } from './HoverTranslationText';
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -86,8 +85,6 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isReplacingPronunciation, setIsReplacingPronunciation] = useState(false);
-  const [isCleaningAudio, setIsCleaningAudio] = useState(false);
   
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -165,40 +162,6 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
     }
   };
 
-  const handleAudioCleanup = async () => {
-    if (isCleaningAudio) return;
-    try {
-      setIsCleaningAudio(true);
-      addLog('Starting Vocabulary Audio Manager scan...');
-      await adminService.purgeOrphanedAudioAssets((msg) => addLog(msg));
-      loadStats();
-    } catch (e: any) {
-      addLog(`Audio Manager error: ${e.message}`);
-    } finally {
-      setIsCleaningAudio(false);
-    }
-  };
-
-  const togglePronunciationReplacement = async () => {
-    if (isReplacingPronunciation) {
-      adminService.stopPronunciationReplacement();
-      addLog('Stopping pronunciation replacement...');
-      return;
-    }
-
-    try {
-      setIsReplacingPronunciation(true);
-      addLog('Starting pronunciation replacement (dedup + Minimax)...');
-      await adminService.replaceAllPronunciations((msg) => addLog(msg));
-      loadStats();
-      onDataChange?.();
-    } catch (e: any) {
-      addLog(`Pronunciation replacement error: ${e.message}`);
-    } finally {
-      setIsReplacingPronunciation(false);
-    }
-  };
-
   return (
     <div style={PANEL_STYLE}>
       <div style={HEADER_STYLE}>
@@ -218,20 +181,36 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Total Words" translation="总单词数" /></div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Active Unique Words" translation="活跃去重总词库" /></div>
                 <div style={{ fontSize: '24px' }}>{stats?.totalWords || 0}</div>
               </div>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Coverage" translation="覆盖率" /></div>
-                <div style={{ fontSize: '24px' }}>{stats?.coverageRate.toFixed(1)}% <span style={{fontSize: '12px'}}>({stats?.wordsWithImages} imgs)</span></div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Image Coverage" translation="图像覆盖率（基于活跃去重词库）" /></div>
+                <div style={{ fontSize: '24px' }}>{stats?.imageCoverageRate.toFixed(1)}% <span style={{fontSize: '12px'}}>({stats?.wordsWithImages || 0} imgs)</span></div>
               </div>
               <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
-                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Est. Storage" translation="预估存储占用" /></div>
-                <div style={{ fontSize: '24px' }}>{stats?.storageUsageMB.toFixed(2)} MB</div>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Audio Coverage" translation="语音覆盖率（基于活跃去重词库）" /></div>
+                <div style={{ fontSize: '24px' }}>{stats?.pronunciationCoverageRate.toFixed(1)}% <span style={{fontSize: '12px'}}>({stats?.wordsWithPronunciations || 0} audios)</span></div>
               </div>
-              <div style={{ background: '#252525', padding: '10px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                 <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: isRunning ? '#0f0' : '#555', marginRight: '8px' }}></div>
-                 {isRunning ? <HoverTranslationText text="RUNNING" translation="运行中" /> : <HoverTranslationText text="IDLE" translation="空闲" />}
+              <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Registered Users" translation="注册总人数" /></div>
+                <div style={{ fontSize: '24px' }}>{stats?.totalUsers || 0}</div>
+              </div>
+            </div>
+
+            <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#bdbdbd', lineHeight: 1.6 }}>
+              <HoverTranslationText
+                text="Dashboard metrics are calculated from the active deduplicated global word set. Words no longer referenced by any user are removed from the shared pronunciation and meaning libraries."
+                translation="以上统计均以活跃去重总词库为基准。只要某个单词不再被任何用户引用，它就会从共享语音库和中文释义库中自动移除。"
+              />
+            </div>
+
+            <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: isRunning ? '#22c55e' : '#555' }}></div>
+              <div style={{ fontSize: '12px', color: '#cfcfcf' }}>
+                {isRunning
+                  ? <HoverTranslationText text="Image generation loop is running" translation="图像生成循环运行中" />
+                  : <HoverTranslationText text="Image generation loop is idle" translation="图像生成循环空闲" />}
               </div>
             </div>
 
@@ -252,35 +231,6 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
               >
                 {isRunning ? '停止自动后台生成' : '开始自动后台生成'}
               </button>
-              {WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
-                <button
-                  style={{
-                    ...BUTTON_STYLE,
-                    backgroundColor: isReplacingPronunciation ? '#ff9800' : '#6a5acd'
-                  }}
-                  onClick={togglePronunciationReplacement}
-                  disabled={isSyncing}
-                >
-                  {isReplacingPronunciation ? '停止全库语音替换' : '启动全库语音替换（所有用户）'}
-                </button>
-              )}
-              {WORD_LEARNING_CONFIG.pronunciation.enableManualBatchReplacement && (
-                <button
-                  style={{
-                    ...BUTTON_STYLE,
-                    backgroundColor: isCleaningAudio ? '#ff9800' : '#20786e',
-                    marginTop: '8px',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                  }}
-                  onClick={handleAudioCleanup}
-                  disabled={isCleaningAudio || isSyncing}
-                  title="扫描 pronunciation_assets 表，删除词库中不存在单词的孤立音频文件"
-                >
-                  {isCleaningAudio ? '🔍 扫描中...' : '🎵 Vocabulary Audio Manager'}
-                </button>
-              )}
               <button style={{...BUTTON_STYLE, backgroundColor: '#f44336'}} onClick={handleClear}>清空图片</button>
             </div>
             

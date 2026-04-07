@@ -31,6 +31,10 @@ export interface SyncResult {
   success: boolean;
   action: 'uploaded' | 'downloaded' | 'skipped' | 'conflict' | 'error';
   message?: string;
+  cloudData?: {
+    session: InputSession;
+    words: WordEntry[];
+  };
   conflictData?: {
     cloud: InputSession;
     local: InputSession;

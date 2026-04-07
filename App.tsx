@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -36,8 +36,10 @@ import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
 import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
+import { PronunciationMaintenancePanel } from './components/PronunciationMaintenancePanel';
 import { HoverTranslationText } from './components/HoverTranslationText';
 import { getShanghaiDateString } from './utils/timezone';
+import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
 
 // --- Tooltip Component ---
 interface TooltipProps {
@@ -158,6 +160,7 @@ const App: React.FC = () => {
     cloud: InputSession;
     local: InputSession;
   } | null>(null);
+  const [conflictChoice, setConflictChoice] = useState<'cloud' | 'local' | null>(null);
   const [words, setWords] = useState<WordEntry[]>([]);
   const [sessions, setSessions] = useState<InputSession[]>([]);
   const [dailyStats, setDailyStats] = useState<Record<string, DayStats>>({});
@@ -187,6 +190,7 @@ const App: React.FC = () => {
 
   // Admin Console State
   const [showAdminConsole, setShowAdminConsole] = useState(false);
+  const [showPronunciationMaintenancePanel, setShowPronunciationMaintenancePanel] = useState(false);
 
   // Password Reset State
   const [resetToken, setResetToken] = useState<string | null>(null);
@@ -210,20 +214,36 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const superAdminEmail = WORD_LEARNING_CONFIG.pronunciation.superAdminEmail.toLowerCase();
+    const isSuperAdmin = (session?.user?.email || '').toLowerCase().trim() === superAdminEmail;
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = document.activeElement?.tagName.toLowerCase();
+      const isEditing = tag === 'input' || tag === 'textarea';
+
       // Toggle Admin Console with `~` or Backtick
-      if (e.key === '`' || e.key === '~') {
-          // If inputting text, maybe allow it? But `~` is rarely used in standard inputs except code.
-          // Check if active element is input
-          const tag = document.activeElement?.tagName.toLowerCase();
-          if (tag !== 'input' && tag !== 'textarea') {
-              setShowAdminConsole(prev => !prev);
-          }
+      if ((e.key === '`' || e.key === '~') && !isEditing) {
+        if (!isSuperAdmin) {
+          showNotification(`仅超级管理员 ${superAdminEmail} 可打开管理面板`, 'warning');
+          return;
+        }
+        setShowAdminConsole(prev => !prev);
+      }
+
+      const isPronunciationShortcut = (e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'y';
+      if (isPronunciationShortcut && !isEditing) {
+        if (!isSuperAdmin) {
+          e.preventDefault();
+          showNotification(`仅超级管理员 ${superAdminEmail} 可打开音频维护面板`, 'warning');
+          return;
+        }
+        e.preventDefault();
+        setShowPronunciationMaintenancePanel(prev => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [session?.user?.email]);
   
   // Achievement State
   const [unlockedAchievements, setUnlockedAchievements] = useState<Set<string>>(new Set());
@@ -256,8 +276,7 @@ const App: React.FC = () => {
           setTimeout(() => {
             showNotification(
               '⚠️ Please confirm your email address! Check your inbox (including spam folder) to activate your account.',
-              'warning',
-              10000
+              'warning'
             );
           }, 1000);
           localStorage.setItem(notificationKey, 'true');
@@ -741,7 +760,7 @@ const App: React.FC = () => {
     const localBackup = loadLocalBackup();
 
     // Create a map of sessions in local backup for quick lookup
-    const localBackupMap = new Map<string, 'synced' | 'pending' | 'failed'>();
+    const localBackupMap = new Map<string, SyncStatus>();
 
     if (localBackup && localBackup.sessions.length > 0) {
       // Mark sessions that exist in local backup
@@ -1204,7 +1223,7 @@ const App: React.FC = () => {
       console.log(`[ManualSync] Syncing session ${sessionId}...`);
 
       // 调用同步服务
-      const result = await syncSessionToCloud(
+      const result: SyncResult = await syncSessionToCloud(
         session.user.id,
         localSession,
         localWords
@@ -1232,9 +1251,9 @@ const App: React.FC = () => {
               s.id === sessionId ? { ...result.cloudData!.session, syncStatus: 'synced' as const } : s
             ));
             setWords(prev => {
-              const oldIds = prev
+              const oldIds = new Set(prev
                 .filter(w => w.sessionId === sessionId)
-                .map(w => w.id);
+                .map(w => w.id));
               const newWords = result.cloudData!.words.filter(
                 w => !oldIds.has(w.id)
               );
@@ -1297,7 +1316,7 @@ const App: React.FC = () => {
     if (!conflictModal || !conflictChoice || !session?.user) return;
 
     try {
-      const result = await resolveConflict(
+      const result: SyncResult = await resolveConflict(
         session.user.id,
         conflictModal.sessionId,
         conflictChoice,
@@ -1950,6 +1969,9 @@ const App: React.FC = () => {
             }
           }}
         />
+      )}
+      {showPronunciationMaintenancePanel && (
+        <PronunciationMaintenancePanel onClose={() => setShowPronunciationMaintenancePanel(false)} />
       )}
     </div>
   );

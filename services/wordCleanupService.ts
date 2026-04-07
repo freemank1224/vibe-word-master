@@ -1,7 +1,7 @@
 
 import { supabase } from '../lib/supabaseClient';
 import { aiService } from './ai';
-import { updateWordStatusV2 } from './dataService';
+import { deleteWordsByIds, updateWordStatusV2 } from './dataService';
 
 export interface CleanupStats {
     totalProcessed: number;
@@ -66,10 +66,7 @@ export const cleanExistingWords = async (userId: string): Promise<CleanupStats> 
         // 2. Perform Batch Deletions (ONLY for single letters)
         if (wordsToDelete.length > 0) {
             console.log(`[WordCleanup] Deleting ${wordsToDelete.length} single-letter words...`);
-            await supabase
-                .from('words')
-                .update({ deleted: true })
-                .in('id', wordsToDelete);
+            await deleteWordsByIds(userId, wordsToDelete);
         }
 
         // 3. Perform Updates (Corrected words)

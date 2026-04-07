@@ -9,8 +9,23 @@ import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 export interface AdminStats {
   totalWords: number;
   wordsWithImages: number;
-  coverageRate: number;
-  storageUsageMB: number; // Estimated
+  imageCoverageRate: number;
+  wordsWithPronunciations: number;
+  pronunciationCoverageRate: number;
+  totalUsers: number;
+}
+
+export interface PronunciationReplacementStatus {
+  runId: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  total: number;
+  done: number;
+  generated: number;
+  skipped: number;
+  failed: number;
+  message?: string;
+  updatedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 export type GenerationStatus = 'idle' | 'running' | 'paused';
@@ -18,6 +33,48 @@ export type GenerationStatus = 'idle' | 'running' | 'paused';
 class AdminService {
   private _status: GenerationStatus = 'idle';
   private _stopSignal = false;
+
+  private async _getPronunciationCoverageFallback(): Promise<Pick<AdminStats, 'totalWords' | 'wordsWithPronunciations' | 'pronunciationCoverageRate'>> {
+    const pageSize = 1000;
+    let page = 0;
+    let hasMore = true;
+    const readyWordKeys = new Set<string>();
+
+    while (hasMore) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      const { data, error } = await supabase
+        .from('pronunciation_assets')
+        .select('normalized_word,language')
+        .eq('status', 'ready')
+        .range(from, to);
+
+      if (error) {
+        throw new Error(`Fallback pronunciation stats failed on page ${page}: ${error.message}`);
+      }
+
+      if (!data || data.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (const row of data as Array<{ normalized_word?: string | null; language?: string | null }>) {
+        const normalizedWord = (row.normalized_word || '').trim();
+        if (!normalizedWord) continue;
+        readyWordKeys.add(`${normalizedWord}::${(row.language || 'en').trim()}`);
+      }
+
+      hasMore = data.length === pageSize;
+      page += 1;
+    }
+
+    const readyCount = readyWordKeys.size;
+    return {
+      totalWords: readyCount,
+      wordsWithPronunciations: readyCount,
+      pronunciationCoverageRate: readyCount > 0 ? 100 : 0,
+    };
+  }
 
   /**
    * Invoke Edge Function with session-aware auth.
@@ -460,23 +517,67 @@ class AdminService {
   }
 
   async getStats(): Promise<AdminStats> {
-    const userId = await getCurrentUserId();
-    if (!userId) return { totalWords: 0, wordsWithImages: 0, coverageRate: 0, storageUsageMB: 0 };
+    try {
+      const data = await this._invokeFn('admin-console', { action: 'stats' });
+      const stats = data?.stats || {};
 
-    const { count: total } = await supabase.from('words').select('id', { count: 'exact', head: true }).eq('user_id', userId);
-    const { count: withImg } = await supabase.from('words').select('id', { count: 'exact', head: true }).eq('user_id', userId).not('image_path', 'is', null);
+      return {
+        totalWords: Number(stats.totalWords || 0),
+        wordsWithImages: Number(stats.wordsWithImages || 0),
+        imageCoverageRate: Number(stats.imageCoverageRate || 0),
+        wordsWithPronunciations: Number(stats.wordsWithPronunciations || 0),
+        pronunciationCoverageRate: Number(stats.pronunciationCoverageRate || 0),
+        totalUsers: Number(stats.totalUsers || 0),
+      };
+    } catch (error) {
+      console.warn('[adminService.getStats] global stats unavailable, using fallback:', error);
 
-    const t = total || 0;
-    const i = withImg || 0;
-    
-    // Estimate: 512x512 WebP ~= 30KB
-    const size = (i * 30) / 1024; // MB
+      try {
+        const fallback = await this._getPronunciationCoverageFallback();
+        return {
+          totalWords: fallback.totalWords,
+          wordsWithImages: 0,
+          imageCoverageRate: 0,
+          wordsWithPronunciations: fallback.wordsWithPronunciations,
+          pronunciationCoverageRate: fallback.pronunciationCoverageRate,
+          totalUsers: 0,
+        };
+      } catch (fallbackError) {
+        console.warn('[adminService.getStats] fallback stats failed:', fallbackError);
+        return {
+          totalWords: 0,
+          wordsWithImages: 0,
+          imageCoverageRate: 0,
+          wordsWithPronunciations: 0,
+          pronunciationCoverageRate: 0,
+          totalUsers: 0,
+        };
+      }
+    }
+  }
+
+  async getPronunciationReplacementStatus(runId: string): Promise<PronunciationReplacementStatus> {
+    const data = await this._invokeFn('pronunciation-rebuild', {
+      action: 'status',
+      run_id: runId,
+    });
+
+    const run = data?.run;
+    if (!run) {
+      throw new Error('Pronunciation replacement status not found');
+    }
 
     return {
-      totalWords: t,
-      wordsWithImages: i,
-      coverageRate: t > 0 ? (i / t) * 100 : 0,
-      storageUsageMB: size
+      runId: run.run_id,
+      status: run.status,
+      total: Number(run.total || 0),
+      done: Number(run.done || 0),
+      generated: Number(run.generated || 0),
+      skipped: Number(run.skipped || 0),
+      failed: Number(run.failed || 0),
+      message: run.message || '',
+      updatedAt: run.updated_at || null,
+      finishedAt: run.finished_at || null,
     };
   }
 }
