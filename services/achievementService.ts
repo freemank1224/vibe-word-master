@@ -1,4 +1,5 @@
-import { WordEntry, InputSession } from '../types';
+import { DayStats, WordEntry, InputSession } from '../types';
+import { getShanghaiDateString } from '../utils/timezone';
 
 export interface Achievement {
   id: string;
@@ -112,7 +113,63 @@ export interface AchievementStatus {
   formattedProgress: string; // e.g., "5/10" or "85%"
 }
 
-export function calculateAchievements(words: WordEntry[], sessions: InputSession[]): AchievementStatus[] {
+const shiftDateString = (dateStr: string, deltaDays: number): string => {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  utcDate.setUTCDate(utcDate.getUTCDate() + deltaDays);
+
+  const nextYear = utcDate.getUTCFullYear();
+  const nextMonth = String(utcDate.getUTCMonth() + 1).padStart(2, '0');
+  const nextDay = String(utcDate.getUTCDate()).padStart(2, '0');
+  return `${nextYear}-${nextMonth}-${nextDay}`;
+};
+
+const calculateLearningStreak = (sessions: InputSession[], dailyStats?: DayStats[]): number => {
+  const activeDates = new Set<string>();
+
+  if (dailyStats && dailyStats.length > 0) {
+    dailyStats.forEach(stat => {
+      if ((stat.total || 0) > 0) {
+        activeDates.add(stat.date);
+      }
+    });
+  } else {
+    sessions.forEach(s => {
+      const date = new Date(s.timestamp);
+      const dateStr = date.toISOString().split('T')[0];
+      activeDates.add(dateStr);
+    });
+  }
+
+  if (activeDates.size === 0) {
+    return 0;
+  }
+
+  const sortedDates = Array.from(activeDates).sort().reverse();
+  const today = getShanghaiDateString();
+  const yesterday = shiftDateString(today, -1);
+
+  if (sortedDates[0] !== today && sortedDates[0] !== yesterday) {
+    return 0;
+  }
+
+  let streak = 1;
+  let currentDate = sortedDates[0];
+
+  for (let i = 1; i < sortedDates.length; i++) {
+    const expectedPrevDate = shiftDateString(currentDate, -1);
+    if (sortedDates[i] === expectedPrevDate) {
+      streak++;
+      currentDate = sortedDates[i];
+    } else {
+      break;
+    }
+  }
+
+  return streak;
+};
+
+export function calculateAchievements(words: WordEntry[], sessions: InputSession[], dailyStats?: DayStats[]): AchievementStatus[] {
     // 1. Calculate base metrics
     
     // Total Words - ONLY count manually added words (tags includes 'Custom')
@@ -151,50 +208,7 @@ export function calculateAchievements(words: WordEntry[], sessions: InputSession
         }
     });
 
-    // Streak Calculation
-    // Extract unique dates from sessions
-    const uniqueDates = new Set<string>();
-    sessions.forEach(s => {
-        const date = new Date(s.timestamp);
-        // Correctly handle timezone or use local date string? 
-        // Assuming simple day continuity is desired.
-        const dateStr = date.toISOString().split('T')[0];
-        uniqueDates.add(dateStr);
-    });
-    const sortedDates = Array.from(uniqueDates).sort().reverse(); // Newest first
-
-    let streak = 0;
-    if (sortedDates.length > 0) {
-        const today = new Date().toISOString().split('T')[0];
-        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-        
-        // Check if streak is currently active (last session was today or yesterday)
-        let isActive = false;
-        if (sortedDates[0] === today || sortedDates[0] === yesterday) {
-            isActive = true;
-        }
-
-        if (isActive) {
-            streak = 1;
-            let currentDate = new Date(sortedDates[0]); // Start with the most recent active day
-            
-            for (let i = 1; i < sortedDates.length; i++) {
-                const prevDateStr = sortedDates[i];
-                
-                // Calculate the date before the current date in the loop
-                const expectedPrevDate = new Date(currentDate);
-                expectedPrevDate.setDate(currentDate.getDate() - 1);
-                const expectedPrevDateStr = expectedPrevDate.toISOString().split('T')[0];
-
-                if (prevDateStr === expectedPrevDateStr) {
-                    streak++;
-                    currentDate = new Date(prevDateStr);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
+    const streak = calculateLearningStreak(sessions, dailyStats);
 
     // 2. Map to achievements
     return ACHIEVEMENTS.map(ach => {

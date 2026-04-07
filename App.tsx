@@ -527,7 +527,7 @@ const App: React.FC = () => {
     
     // NOTE: This runs even if sessions/words are emptySets, which is correct (clears nothing, adds nothing).
 
-    const currentCalculated = calculateAchievements(words, sessions);
+    const currentCalculated = calculateAchievements(words, sessions, Object.values(dailyStats));
     const missingInDb: string[] = [];
     const newUnlockedSet = new Set(unlockedAchievements);
 
@@ -559,7 +559,7 @@ const App: React.FC = () => {
     // Mark as reconciled so we can start listening for REAL new events
     setIsReconciled(true);
     
-  }, [loadingData, isReconciled, words, sessions, unlockedAchievements, session]);
+  }, [loadingData, isReconciled, words, sessions, dailyStats, unlockedAchievements, session]);
 
 
   // Achievement Tracking (Phase 2: Live Events)
@@ -567,7 +567,7 @@ const App: React.FC = () => {
     // Block until reconciliation is complete to avoid "double-counting" historical achievements
     if (loadingData || !isReconciled) return;
 
-    const currentStatuses = calculateAchievements(words, sessions);
+    const currentStatuses = calculateAchievements(words, sessions, Object.values(dailyStats));
 
     // Check for NEW unlocks only (compare with what we already have in state)
     // Since we are Reconciled, any difference here is a GENUINE new event.
@@ -593,7 +593,7 @@ const App: React.FC = () => {
             }
         }
     });
-  }, [words, sessions, loadingData, unlockedAchievements, session, isReconciled]);
+  }, [words, sessions, dailyStats, loadingData, unlockedAchievements, session, isReconciled]);
 
   // Derived Stats (Merged: DB History + Live Local Updates)
   // We use the DB loaded stats as base.
@@ -1946,6 +1946,7 @@ const App: React.FC = () => {
           user={session.user}
           words={visibleWords}
           sessions={visibleSessions}
+          dailyStats={dailyStats}
           onClose={() => setShowAccountPanel(false)}
           onLogout={() => {
               handleLogout();
@@ -2523,7 +2524,7 @@ const Dashboard: React.FC<{
 
         <LeaderboardPanel stats={stats} words={words} />
 
-        <AchievementsPanel words={words} sessions={sessions} className="flex-1" />
+        <AchievementsPanel words={words} sessions={sessions} dailyStats={stats} className="flex-1" />
       </div>
     </div>
   );

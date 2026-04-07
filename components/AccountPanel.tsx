@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect, useState } from 'react';
-import { WordEntry, InputSession } from '../types';
+import { DayStats, WordEntry, InputSession } from '../types';
 import { calculateAchievements } from '../services/achievementService';
 import { HoverTranslationText } from './HoverTranslationText';
 import { AccountPanelHeader } from './AccountPanel/AccountPanelHeader';
@@ -13,11 +13,12 @@ interface AccountPanelProps {
   user: any;
   words: WordEntry[];
   sessions: InputSession[];
+  dailyStats: Record<string, DayStats>;
   onClose: () => void;
   onLogout: () => void;
 }
 
-export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, onClose, onLogout }) => {
+export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, dailyStats, onClose, onLogout }) => {
   const [activeChartTab, setActiveChartTab] = useState<AccountChartTab>('progress');
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -51,7 +52,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     const accuracy = testedWords.length > 0 ? (correctWords.length / testedWords.length) * 100 : 0;
     
     // 获取成就统计（包含 streak 等信息）
-    const achievementStatuses = calculateAchievements(words, sessions);
+    const achievementStatuses = calculateAchievements(words, sessions, Object.values(dailyStats));
     
     // 计算使用时长（天）
     const firstSession = sessions.length > 0 
@@ -73,7 +74,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
       currentStreak,
       achievementStatuses
     };
-  }, [words, sessions]);
+  }, [words, sessions, dailyStats]);
 
   const unlockedCount = stats.achievementStatuses.filter(s => s.unlocked).length;
 

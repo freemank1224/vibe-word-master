@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { WordEntry, InputSession } from '../../types';
+import { DayStats, WordEntry, InputSession } from '../../types';
 import { calculateAchievements, ACHIEVEMENTS } from '../../services/achievementService';
 import { Badge } from './Badge';
 import { HoverTranslationText } from '../HoverTranslationText';
@@ -7,13 +7,14 @@ import { HoverTranslationText } from '../HoverTranslationText';
 interface AchievementsPanelProps {
   words: WordEntry[];
   sessions: InputSession[];
+  dailyStats?: Record<string, DayStats>;
   className?: string;
 }
 
-export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions, className = "" }) => {
+export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions, dailyStats, className = "" }) => {
   const [expanded, setExpanded] = useState(false);
 
-  const stats = useMemo(() => calculateAchievements(words, sessions), [words, sessions]);
+  const stats = useMemo(() => calculateAchievements(words, sessions, dailyStats ? Object.values(dailyStats) : undefined), [words, sessions, dailyStats]);
 
   // Combine definition with status
   const badges = ACHIEVEMENTS.map(ach => ({
