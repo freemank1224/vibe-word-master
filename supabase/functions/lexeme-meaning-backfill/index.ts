@@ -10,6 +10,8 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const backfillSecret = Deno.env.get('LEXEME_BACKFILL_SECRET') || '';
+const uapisTranslateEndpoint = Deno.env.get('UAPIS_TRANSLATE_ENDPOINT') || 'https://uapis.cn/api/v1/translate/text';
+const uapisApiKey = Deno.env.get('UAPIS_API_KEY') || '';
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -40,6 +42,38 @@ const splitMeaningCandidates = (value?: string | null): string[] => {
   return Array.from(unique);
 };
 
+const fetchWithTimeout = async (input: string, timeoutMs: number, init?: RequestInit): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...(init || {}), signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
+const fetchUapisTranslation = async (text: string) => {
+  const response = await fetchWithTimeout(`${uapisTranslateEndpoint}?to_lang=zh`, 2500, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(uapisApiKey ? {
+        Authorization: `Bearer ${uapisApiKey}`,
+        'x-api-key': uapisApiKey,
+      } : {}),
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => '');
+    throw new Error(`UAPIs translate failed (${response.status}): ${details.slice(0, 300)}`);
+  }
+
+  const data = await response.json().catch(() => ({}));
+  return splitMeaningCandidates(data?.translated_text);
+};
+
 const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
   const query = text.trim();
   if (!query) {
@@ -47,6 +81,17 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
   }
 
   const googleTargets = [query, fallbackText].filter((item): item is string => !!item?.trim());
+
+  for (const target of googleTargets) {
+    try {
+      const meanings = await fetchUapisTranslation(target);
+      if (meanings.length > 0) {
+        return { provider: 'uapis', meanings };
+      }
+    } catch (error) {
+      console.warn('UAPIs translation failed:', error);
+    }
+  }
 
   for (const target of googleTargets) {
     try {
@@ -206,8 +251,12 @@ const processJobs = async (batchSize: number) => {
       }
 
       const translation = await fetchChineseTranslation(job.display_text || job.normalized_text, job.definition_en || undefined);
-      const meanings = translation.meanings.length > 0 ? translation.meanings : ['暂无中文释义'];
-      const provider = translation.provider === 'none' ? 'fallback-none' : translation.provider;
+      if (translation.meanings.length === 0) {
+        throw new Error('No translation result returned from all providers');
+      }
+
+      const meanings = translation.meanings;
+      const provider = translation.provider;
 
       await upsertMeanings(job.lexeme_id, meanings, provider);
       await propagateMeaningToWords(job.lexeme_id, meanings[0]);

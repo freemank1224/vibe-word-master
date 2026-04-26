@@ -23,6 +23,14 @@ export class OpenAIProvider implements AIService {
     return readRuntimeEnv('OPENAI_ENDPOINT') || readRuntimeEnv('VITE_OPENAI_ENDPOINT') || "https://api.openai.com/v1";
   }
 
+  private get spellingModel(): string {
+    return readRuntimeEnv('SPELLING_CHECK_MODEL')
+      || readRuntimeEnv('VITE_SPELLING_CHECK_MODEL')
+      || readRuntimeEnv('OPENAI_MODEL')
+      || readRuntimeEnv('VITE_OPENAI_MODEL')
+      || 'gpt-4o-mini';
+  }
+
   // Helper for OpenAI API calls
   private async fetchOpenAI(path: string, body: any, apiKey?: string, endpoint?: string) {
     const baseUrl = (endpoint || this.defaultEndpoint).replace(/\/$/, "");
@@ -251,7 +259,7 @@ export class OpenAIProvider implements AIService {
   async validateSpelling(word: string, apiKey?: string, endpoint?: string): Promise<SpellingResult> {
     try {
       const data = await this.fetchOpenAI("chat/completions", {
-        model: "gpt-4o-mini",
+        model: this.spellingModel,
         messages: [
           {
             role: "system",

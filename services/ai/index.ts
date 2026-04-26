@@ -5,6 +5,7 @@ import { GeminiProvider } from "./geminiProvider";
 import { OpenAIProvider } from "./openaiProvider";
 import { LocalProvider } from "./localProvider";
 import { AISettings, AEServiceProvider, AITask } from "./settings";
+import { isSupabaseConfigured, supabase } from "../../lib/supabaseClient";
 
 const readRuntimeEnv = (key: string): string | undefined => {
   const viteEnv = (import.meta as any)?.env;
@@ -22,6 +23,8 @@ class AIServiceManager implements AIService {
   private gemini = new GeminiProvider();
   private openai = new OpenAIProvider();
   private local = new LocalProvider();
+  private missingSpellingApiKeyWarned = false;
+  private spellingEdgeUnavailableWarned = false;
 
   // Track AI availability for graceful degradation
   private enabled: boolean = false;
@@ -51,6 +54,58 @@ class AIServiceManager implements AIService {
       promise,
       new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
     ]);
+  }
+
+  private resolveProviderApiKey(providerType: string): string | undefined {
+    const lowered = (providerType || 'gemini').toLowerCase();
+    if (lowered === 'openai' || lowered === 'custom') {
+      return readRuntimeEnv('OPENAI_API_KEY') || readRuntimeEnv('VITE_OPENAI_API_KEY');
+    }
+    return readRuntimeEnv('GEMINI_API_KEY') || readRuntimeEnv('VITE_GEMINI_API_KEY');
+  }
+
+  private async validateSpellingViaEdge(word: string): Promise<SpellingResult | null> {
+    if (!isSupabaseConfigured) return null;
+
+    try {
+      const edgeCall = supabase.functions.invoke('spelling-check', {
+        body: { word }
+      });
+
+      const timeoutMs = 2500;
+      const result = await Promise.race([
+        edgeCall,
+        new Promise<{ data: any; error: any }>((resolve) =>
+          setTimeout(() => resolve({ data: null, error: new Error('spelling-check invoke timeout') }), timeoutMs)
+        )
+      ]);
+
+      const { data, error } = result;
+
+      if (error) {
+        if (!this.spellingEdgeUnavailableWarned) {
+          console.warn('spelling-check edge invoke failed, using permissive fallback:', error.message || error);
+          this.spellingEdgeUnavailableWarned = true;
+        }
+        return { isValid: true, serviceError: true };
+      }
+
+      if (typeof data?.isValid === 'boolean') {
+        return {
+          isValid: data.isValid,
+          suggestion: typeof data?.suggestion === 'string' ? data.suggestion : undefined,
+          serviceError: data?.serviceError === true,
+        };
+      }
+
+      return { isValid: true, serviceError: true };
+    } catch (error) {
+      if (!this.spellingEdgeUnavailableWarned) {
+        console.warn('spelling-check edge invocation error, using permissive fallback:', error);
+        this.spellingEdgeUnavailableWarned = true;
+      }
+      return { isValid: true, serviceError: true };
+    }
   }
 
   private async checkAvailability() {
@@ -101,9 +156,11 @@ class AIServiceManager implements AIService {
       readRuntimeEnv(`${task}_PROVIDER`)
       || readRuntimeEnv(`VITE_${task}_PROVIDER`)
       || 'gemini';
+    const providerFallbackKey = this.resolveProviderApiKey(envProvider);
     const envKey =
       readRuntimeEnv(`${task}_API_KEY`)
-      || readRuntimeEnv(`VITE_${task}_API_KEY`);
+      || readRuntimeEnv(`VITE_${task}_API_KEY`)
+      || providerFallbackKey;
     const envEndpoint =
       readRuntimeEnv(`${task}_ENDPOINT`)
       || readRuntimeEnv(`VITE_${task}_ENDPOINT`)
@@ -158,25 +215,61 @@ class AIServiceManager implements AIService {
         return { isValid: false, found: false };
     }
 
-    // 2. Fallback to LLM
-    console.log(`Local validation miss for: "${word}", falling back to LLM...`);
-    
+    const edgeResult = await this.validateSpellingViaEdge(word);
+    if (edgeResult) {
+      if (edgeResult.serviceError) {
+        return { isValid: true };
+      }
+      return edgeResult;
+    }
+
+     // 2. Fallback to remote spelling check
     // If explicit args provided (e.g. from testing UI), use them
     if (apiKey) {
+       console.log(`Local validation miss for: "${word}", falling back to remote spelling check...`);
        const userProvider = AISettings.getProvider();
        const provider = this.getProvider(userProvider);
        return provider.validateSpelling(word, apiKey, endpoint);
     }
 
     const { providerType, apiKey: resolvedKey, endpoint: resolvedEndpoint } = this.resolveConfig('TEXT');
-    const provider = this.getProvider(providerType);
+    const spellingProviderType =
+      readRuntimeEnv('SPELLING_CHECK_PROVIDER')
+      || readRuntimeEnv('VITE_SPELLING_CHECK_PROVIDER')
+      || providerType;
+    const spellingProvider = this.getProvider(spellingProviderType);
+
+    const spellingApiKey =
+      readRuntimeEnv('SPELLING_CHECK_API_KEY')
+      || readRuntimeEnv('VITE_SPELLING_CHECK_API_KEY')
+      || resolvedKey;
+
+    const spellingEndpoint =
+      readRuntimeEnv('SPELLING_CHECK_ENDPOINT')
+      || readRuntimeEnv('VITE_SPELLING_CHECK_ENDPOINT')
+      || resolvedEndpoint;
+
+    if (!spellingApiKey) {
+      if (!this.missingSpellingApiKeyWarned) {
+        console.warn('No spelling API key configured (SPELLING_CHECK_API_KEY / GEMINI_API_KEY). Remote spelling check is disabled, using permissive fallback.');
+        this.missingSpellingApiKeyWarned = true;
+      }
+      return { isValid: true };
+    }
+
+    console.log(`Local validation miss for: "${word}", falling back to remote spelling check...`);
 
     const timeoutMs = this.getValidationTimeoutMs();
-    return this.withTimeout(
-      provider.validateSpelling(word, resolvedKey, resolvedEndpoint),
-      timeoutMs,
-      { isValid: false, serviceError: true }
-    );
+    try {
+      return await this.withTimeout(
+        spellingProvider.validateSpelling(word, spellingApiKey, spellingEndpoint),
+        timeoutMs,
+        { isValid: true }
+      );
+    } catch (error) {
+      console.warn(`Remote spelling check failed, fallback to permissive mode for "${word}":`, error);
+      return { isValid: true };
+    }
   }
 
   async optimizeWordSelection(

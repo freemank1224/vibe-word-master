@@ -8,12 +8,25 @@ export interface DictionaryData {
   definition_cn?: string;
 }
 
+const PLACEHOLDER_MEANINGS = new Set([
+  '暂无中文释义',
+  '无中文释义',
+  '暂无释义',
+  'n/a',
+  'na',
+  '-',
+]);
+
 const normalizeMeaning = (value?: string | null): string | undefined => {
   const normalized = value?.replace(/\s+/g, ' ').trim();
-  return normalized ? normalized : undefined;
+  if (!normalized) return undefined;
+  if (PLACEHOLDER_MEANINGS.has(normalized.toLowerCase())) return undefined;
+  return normalized;
 };
 
 const normalizeWordKey = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
+const uapisTranslateEndpoint = (import.meta as any)?.env?.VITE_UAPIS_TRANSLATE_ENDPOINT || 'https://uapis.cn/api/v1/translate/text';
+const uapisApiKey = (import.meta as any)?.env?.VITE_UAPIS_API_KEY || '';
 
 const PROPER_NOUN_TRANSLATIONS: Record<string, string> = {
   january: '一月',
@@ -47,13 +60,37 @@ const lookupProperNounTranslation = (value: string): string | undefined => {
   return PROPER_NOUN_TRANSLATIONS[key];
 };
 
-const fetchWithTimeout = async (input: string, timeoutMs: number): Promise<Response> => {
+const fetchWithTimeout = async (input: string, timeoutMs: number, init?: RequestInit): Promise<Response> => {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { signal: controller.signal });
+    return await fetch(input, { ...(init || {}), signal: controller.signal });
   } finally {
     clearTimeout(timeoutHandle);
+  }
+};
+
+const fetchUapisTranslation = async (text: string): Promise<string | undefined> => {
+  try {
+    const response = await fetchWithTimeout(`${uapisTranslateEndpoint}?to_lang=zh`, 2500, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(uapisApiKey ? {
+          Authorization: `Bearer ${uapisApiKey}`,
+          'x-api-key': uapisApiKey,
+        } : {}),
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) return undefined;
+
+    const data = await response.json().catch(() => ({}));
+    return normalizeMeaning(data?.translated_text);
+  } catch (error) {
+    console.warn('UAPIs translation failed:', error);
+    return undefined;
   }
 };
 
@@ -156,6 +193,11 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string): Pro
     ...buildQueryVariants(query),
     ...buildQueryVariants(fallbackText || ''),
   ])).filter((item): item is string => !!item?.trim());
+
+  for (const target of googleTargets) {
+    const translated = await fetchUapisTranslation(target);
+    if (translated) return translated;
+  }
 
   for (const target of googleTargets) {
     try {
