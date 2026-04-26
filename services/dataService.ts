@@ -41,6 +41,16 @@ const triggerPronunciationBatch = (items: { text: string; language?: string | nu
   for (let i = 0; i < concurrency; i++) {
     void worker();
   }
+
+  void supabase.functions.invoke('pronunciation-rebuild', {
+    body: {
+      action: 'process_generation_jobs',
+      limit: 20,
+      uniqueness_mode: WORD_LEARNING_CONFIG.pronunciation.uniquenessMode,
+    },
+  }).catch((error) => {
+    console.warn('[pronunciation-jobs] trigger retry worker failed:', error?.message || error);
+  });
 };
 
 // Helper to get current user ID

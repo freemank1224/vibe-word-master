@@ -124,6 +124,9 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
+            if (disabled) {
+              return;
+            }
             if (e.key === 'Enter') {
               e.preventDefault();
               onEnter?.();

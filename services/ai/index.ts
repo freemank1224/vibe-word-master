@@ -31,6 +31,28 @@ class AIServiceManager implements AIService {
     this.checkAvailability();
   }
 
+  private getValidationTimeoutMs(): number {
+    const raw = readRuntimeEnv('VITE_SPELLING_TIMEOUT_MS') || readRuntimeEnv('SPELLING_TIMEOUT_MS') || '2000';
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return 2000;
+    return Math.max(500, Math.min(5000, parsed));
+  }
+
+  private getPreferredTextEndpoint(defaultEndpoint?: string): string | undefined {
+    return (
+      readRuntimeEnv('VITE_TEXT_ENDPOINT_CN')
+      || readRuntimeEnv('TEXT_ENDPOINT_CN')
+      || defaultEndpoint
+    );
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
+    ]);
+  }
+
   private async checkAvailability() {
     // Check if AI service has valid configuration
     const config = this.resolveConfig('TEXT');
@@ -89,12 +111,18 @@ class AIServiceManager implements AIService {
         ? (readRuntimeEnv('OPENAI_ENDPOINT') || readRuntimeEnv('VITE_OPENAI_ENDPOINT'))
         : (readRuntimeEnv('GEMINI_ENDPOINT') || readRuntimeEnv('VITE_GEMINI_ENDPOINT')));
 
-    return {
+    const resolved = {
       providerType: envProvider,
       apiKey: envKey,
       endpoint: envEndpoint,
       modelName: undefined
     };
+
+    if (task === 'TEXT') {
+      resolved.endpoint = this.getPreferredTextEndpoint(resolved.endpoint);
+    }
+
+    return resolved;
   }
 
   async generateImageHint(word: string, promptOverride?: string): Promise<string | null> {
@@ -143,7 +171,12 @@ class AIServiceManager implements AIService {
     const { providerType, apiKey: resolvedKey, endpoint: resolvedEndpoint } = this.resolveConfig('TEXT');
     const provider = this.getProvider(providerType);
 
-    return provider.validateSpelling(word, resolvedKey, resolvedEndpoint);
+    const timeoutMs = this.getValidationTimeoutMs();
+    return this.withTimeout(
+      provider.validateSpelling(word, resolvedKey, resolvedEndpoint),
+      timeoutMs,
+      { isValid: false, serviceError: true }
+    );
   }
 
   async optimizeWordSelection(
@@ -186,11 +219,12 @@ class AIServiceManager implements AIService {
     }
 
     try {
-      // 5-second timeout protection
+      // Timeout protection (default 2s, configurable)
+      const timeoutMs = this.getValidationTimeoutMs();
       const result = await Promise.race([
         this.performCollocationCheck(phrase),
         new Promise<{ isCommon: boolean }>((resolve) =>
-          setTimeout(() => resolve({ isCommon: true }), 5000)
+          setTimeout(() => resolve({ isCommon: true }), timeoutMs)
         )
       ]);
       return result;

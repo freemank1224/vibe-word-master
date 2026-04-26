@@ -28,6 +28,47 @@ const normalizeMeaning = (value?: string | null): string | undefined => {
 
 const normalizeWordKey = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
+const PROPER_NOUN_TRANSLATIONS: Record<string, string> = {
+  january: '一月',
+  february: '二月',
+  march: '三月',
+  april: '四月',
+  may: '五月',
+  june: '六月',
+  july: '七月',
+  august: '八月',
+  september: '九月',
+  october: '十月',
+  november: '十一月',
+  december: '十二月',
+};
+
+const toTitleCase = (value: string) => {
+  const lowered = value.toLowerCase();
+  return lowered.charAt(0).toUpperCase() + lowered.slice(1);
+};
+
+const buildQueryVariants = (value?: string | null): string[] => {
+  const normalized = normalizeMeaning(value);
+  if (!normalized) return [];
+  const lower = normalized.toLowerCase();
+  return Array.from(new Set([normalized, lower, toTitleCase(normalized)]));
+};
+
+const lookupProperNounTranslation = (value: string): string | undefined => {
+  return PROPER_NOUN_TRANSLATIONS[value.trim().toLowerCase()];
+};
+
+const fetchWithTimeout = async (input: string, timeoutMs: number): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
 const splitMeaningCandidates = (value?: string | null): string[] => {
   const normalized = normalizeMeaning(value);
   if (!normalized) return [];
@@ -98,12 +139,21 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
     return { provider: 'none', meanings: [] as string[] };
   }
 
-  const googleTargets = [query, fallbackText].filter((item): item is string => !!item?.trim());
+  const localFallback = lookupProperNounTranslation(query);
+  if (localFallback) {
+    return { provider: 'local-proper-noun', meanings: [localFallback] };
+  }
+
+  const googleTargets = Array.from(new Set([
+    ...buildQueryVariants(query),
+    ...buildQueryVariants(fallbackText),
+  ])).filter((item): item is string => !!item?.trim());
 
   for (const target of googleTargets) {
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(target)}`
+      , 2000
       );
 
       if (response.ok) {
@@ -122,8 +172,9 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
   }
 
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://api.mymemory.translated.net/get?q=${encodeURIComponent(query)}&langpair=en|zh-CN`
+    , 2000
     );
 
     if (response.ok) {
@@ -135,6 +186,10 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
     }
   } catch (error) {
     console.warn('MyMemory translation failed:', error);
+  }
+
+  if (localFallback) {
+    return { provider: 'local-proper-noun', meanings: [localFallback] };
   }
 
   return { provider: 'none', meanings: [] as string[] };

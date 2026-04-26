@@ -10,6 +10,31 @@ export class LocalProvider implements Partial<AIService> {
   private spell: any = null;
   private loadingPromise: Promise<void> | null = null;
 
+  private buildCaseCandidates(input: string): string[] {
+    const trimmed = input.trim();
+    if (!trimmed) return [];
+
+    const lower = trimmed.toLowerCase();
+    const title = lower.charAt(0).toUpperCase() + lower.slice(1);
+    const upper = trimmed.toUpperCase();
+
+    return Array.from(new Set([trimmed, lower, title, upper]));
+  }
+
+  private resolveWordValidation(input: string): { isValid: boolean; normalized?: string } {
+    const candidates = this.buildCaseCandidates(input);
+    for (const candidate of candidates) {
+      if (this.spell.correct(candidate)) {
+        return {
+          isValid: true,
+          normalized: candidate !== input.trim() ? candidate : undefined,
+        };
+      }
+    }
+
+    return { isValid: false };
+  }
+
   constructor() {
     this.ensureLoaded();
   }
@@ -49,17 +74,15 @@ export class LocalProvider implements Partial<AIService> {
     }
 
     const normalizedWord = word.trim();
-    // Huntspell is case-sensitive, but for simple vocab check we usually want to be permissive
-    // or check both original and lowercase.
-    let isValid = this.spell.correct(normalizedWord);
-
-    // Try lowercase if original failed
-    if (!isValid && normalizedWord !== normalizedWord.toLowerCase()) {
-      isValid = this.spell.correct(normalizedWord.toLowerCase());
-    }
+    const validation = this.resolveWordValidation(normalizedWord);
+    const isValid = validation.isValid;
 
     if (isValid) {
-      return { found: true, isValid: true };
+      return {
+        found: true,
+        isValid: true,
+        suggestion: validation.normalized || undefined,
+      };
     } else {
       const suggestions = this.spell.suggest(normalizedWord);
 
@@ -107,17 +130,13 @@ export class LocalProvider implements Partial<AIService> {
     // Validate each word's spelling
     const wordResults = words.map(word => {
       const normalizedWord = word.trim();
-      let isValid = this.spell.correct(normalizedWord);
-
-      // Try lowercase if original failed
-      if (!isValid && normalizedWord !== normalizedWord.toLowerCase()) {
-        isValid = this.spell.correct(normalizedWord.toLowerCase());
-      }
+      const validation = this.resolveWordValidation(normalizedWord);
 
       return {
         word: normalizedWord,
-        isValid,
-        suggestion: isValid ? undefined : this.spell.suggest(normalizedWord)?.[0]
+        isValid: validation.isValid,
+        normalized: validation.normalized,
+        suggestion: validation.isValid ? validation.normalized : this.spell.suggest(normalizedWord)?.[0]
       };
     });
 
@@ -143,17 +162,23 @@ export class LocalProvider implements Partial<AIService> {
     }
 
     // All words are spelled correctly
+    const normalizedSuggestion = wordResults
+      .map(r => r.normalized || r.word)
+      .join(' ');
+
     // 2-word phrases need collocation check
     if (words.length === 2) {
       return {
         isValid: true,
+        suggestion: normalizedSuggestion !== trimmedPhrase ? normalizedSuggestion : undefined,
         needsCollocationCheck: true
       };
     }
 
     // 3-word phrases: assume they are reasonable combinations
     return {
-      isValid: true
+      isValid: true,
+      suggestion: normalizedSuggestion !== trimmedPhrase ? normalizedSuggestion : undefined,
     };
   }
 }

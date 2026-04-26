@@ -3259,7 +3259,15 @@ const InputMode: React.FC<{
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const processingLockRef = useRef(false);
   const fallbackMeaning = '暂无中文释义';
+
+  const normalizeAcceptedInput = (rawInput: string, suggestion?: string) => {
+    const trimmedRaw = rawInput.trim();
+    const trimmedSuggestion = suggestion?.trim();
+    if (!trimmedSuggestion) return trimmedRaw;
+    return trimmedSuggestion.toLowerCase() === trimmedRaw.toLowerCase() ? trimmedSuggestion : trimmedRaw;
+  };
 
   const resolveDictionaryDetails = async (text: string) => {
     try {
@@ -3324,6 +3332,10 @@ const InputMode: React.FC<{
   };
 
   const handleInputEnter = async () => {
+    if (processingLockRef.current || isProcessing) {
+      return;
+    }
+
     setErrorMsg(null);
     setServiceErrorWord(null);
     setInputStatus('idle');
@@ -3349,70 +3361,70 @@ const InputMode: React.FC<{
       }
 
       setIsProcessing(true);
+      processingLockRef.current = true;
 
-      // Check if input is a phrase (contains spaces)
-      const isPhrase = trimmed.includes(' ');
+      try {
+        // Check if input is a phrase (contains spaces)
+        const isPhrase = trimmed.includes(' ');
 
-      let validation;
-      if (isPhrase) {
-        // Use phrase validation for multi-word inputs
-        validation = await aiService.validatePhrase(trimmed);
-      } else {
-        // Use single word validation
-        validation = await aiService.validateSpelling(trimmed);
-      }
-      if (validation.serviceError) {
-        setIsProcessing(false);
-        setServiceErrorWord(trimmed);
-        playBuzzer();
-        return;
-      }
-
-      // Handle phrase length errors
-      if (validation.error === 'TOO_MANY_WORDS' || validation.error === 'TOO_FEW_WORDS') {
-        setIsProcessing(false);
-        playBuzzer();
-        setErrorMsg(validation.suggestion || 'Please enter 2-3 words only');
-        return;
-      }
-
-      if (!validation.isValid) {
-        setIsProcessing(false);
-        playBuzzer();
-        // Show highlighted phrase if available
-        const displayText = validation.highlightedPhrase || validation.suggestion || 'something else';
-        setErrorMsg(`Did you mean "${displayText}"?`);
-        return;
-      }
-
-      // Handle 2-word phrase collocation check
-      if (validation.needsCollocationCheck) {
-        setIsProcessing(true);
-        try {
-          const collocationResult = await aiService.validateCollocation(trimmed);
-          setIsProcessing(false);
-
-          if (!collocationResult.isCommon) {
-            setIsProcessing(false);
-            // Show collocation warning
-            setCollocationWarning({
-              phrase: trimmed,
-              suggestion: validation.suggestion
-            });
-            setPendingPhrase(trimmed);
-            playBuzzer();
-            return;
-          }
-        } catch (error) {
-          console.error('Collocation check error:', error);
-          setIsProcessing(false);
-          // On error, continue with the phrase
+        let validation;
+        if (isPhrase) {
+          // Use phrase validation for multi-word inputs
+          validation = await aiService.validatePhrase(trimmed);
+        } else {
+          // Use single word validation
+          validation = await aiService.validateSpelling(trimmed);
         }
-      }
 
-      const dictionaryDetails = await resolveDictionaryDetails(trimmed);
-      setIsProcessing(false);
-      startWordDrill(trimmed, dictionaryDetails);
+        if (validation.serviceError) {
+          setServiceErrorWord(trimmed);
+          playBuzzer();
+          return;
+        }
+
+        // Handle phrase length errors
+        if (validation.error === 'TOO_MANY_WORDS' || validation.error === 'TOO_FEW_WORDS') {
+          playBuzzer();
+          setErrorMsg(validation.suggestion || 'Please enter 2-3 words only');
+          return;
+        }
+
+        if (!validation.isValid) {
+          playBuzzer();
+          // Show highlighted phrase if available
+          const displayText = validation.highlightedPhrase || validation.suggestion || 'something else';
+          setErrorMsg(`Did you mean "${displayText}"?`);
+          return;
+        }
+
+        // Handle 2-word phrase collocation check
+        if (validation.needsCollocationCheck) {
+          try {
+            const collocationResult = await aiService.validateCollocation(trimmed);
+
+            if (!collocationResult.isCommon) {
+              // Show collocation warning
+              setCollocationWarning({
+                phrase: trimmed,
+                suggestion: validation.suggestion
+              });
+              setPendingPhrase(trimmed);
+              playBuzzer();
+              return;
+            }
+          } catch (error) {
+            console.error('Collocation check error:', error);
+            // On error, continue with the phrase
+          }
+        }
+
+        const normalizedInput = normalizeAcceptedInput(trimmed, validation.suggestion);
+        const dictionaryDetails = await resolveDictionaryDetails(normalizedInput);
+        startWordDrill(normalizedInput, dictionaryDetails);
+      } finally {
+        setIsProcessing(false);
+        processingLockRef.current = false;
+      }
       return;
     }
 
@@ -3765,7 +3777,7 @@ const InputMode: React.FC<{
         </button>
         <button 
           onClick={handleInputEnter}
-          disabled={!inputValue.trim()}
+          disabled={!inputValue.trim() || isProcessing}
           className="flex h-24 items-center justify-center px-10 bg-mid-charcoal text-white font-headline text-3xl rounded-full hover:bg-electric-blue hover:text-charcoal transition-all disabled:opacity-50 disabled:hover:bg-mid-charcoal disabled:hover:text-white border-2 border-electric-blue"
         >
           <HoverTranslationText text="ENTER" translation="确认输入" />

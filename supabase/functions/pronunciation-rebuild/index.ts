@@ -380,6 +380,81 @@ const _deleteAssets = async (
   return { deletedAssets: ids.length, deletedStorageObjects, orphanedWords };
 };
 
+const processPronunciationGenerationJobs = async (
+  limit: number,
+  uniquenessMode: UniquenessMode,
+): Promise<{ picked: number; triggered: number; failed: number }> => {
+  const batchSize = Math.max(1, Math.min(100, Number(limit) || 20));
+  const nowIso = new Date().toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('pronunciation_generation_jobs')
+    .select('id, asset_id, status, scheduled_at, pronunciation_assets!inner(normalized_word, language)')
+    .in('status', ['pending', 'failed'])
+    .lte('scheduled_at', nowIso)
+    .order('priority', { ascending: false })
+    .order('scheduled_at', { ascending: true })
+    .limit(batchSize);
+
+  if (error) {
+    throw new Error(`Failed loading pronunciation generation jobs: ${error.message}`);
+  }
+
+  const jobs = (rows || []) as any[];
+  if (jobs.length === 0) {
+    return { picked: 0, triggered: 0, failed: 0 };
+  }
+
+  const projectRefMatch = supabaseUrl.match(/https:\/\/([^.]+)\.supabase\.co/);
+  if (!projectRefMatch) {
+    throw new Error('Invalid SUPABASE_URL');
+  }
+
+  const projectRef = projectRefMatch[1];
+  let triggered = 0;
+  let failed = 0;
+
+  for (const job of jobs) {
+    const asset = job.pronunciation_assets;
+    const word = (asset?.normalized_word || '').trim();
+    const lang = (asset?.language || 'en').trim();
+
+    if (!word) {
+      failed++;
+      continue;
+    }
+
+    await supabase
+      .from('pronunciation_generation_jobs')
+      .update({ status: 'processing', started_at: new Date().toISOString(), last_error: null })
+      .eq('id', job.id);
+
+    const functionUrl = `https://${projectRef}.supabase.co/functions/v1/pronunciation?word=${encodeURIComponent(word)}&lang=${encodeURIComponent(lang)}&uniqueness_mode=${encodeURIComponent(uniquenessMode)}&force=1`;
+    const resp = await fetch(functionUrl, { method: 'GET' });
+
+    if (resp.ok) {
+      triggered++;
+    } else {
+      failed++;
+      const errText = await resp.text();
+      await supabase
+        .from('pronunciation_generation_jobs')
+        .update({
+          status: 'pending',
+          last_error: `worker trigger failed: ${resp.status} ${errText}`.slice(0, 2000),
+          scheduled_at: new Date(Date.now() + 30000).toISOString(),
+        })
+        .eq('id', job.id);
+    }
+  }
+
+  return {
+    picked: jobs.length,
+    triggered,
+    failed,
+  };
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -474,6 +549,28 @@ serve(async (req) => {
         processed_jobs: result.processedJobs,
         deleted_storage_objects: result.deletedStorageObjects,
         failed_jobs: result.failedJobs,
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (action === 'process_generation_jobs') {
+      if (!tokenAuthenticated && email !== superAdminEmail) {
+        return new Response(JSON.stringify({ ok: false, error: 'Token auth required for process_generation_jobs' }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const mode: UniquenessMode = payload?.uniqueness_mode === 'relaxed' ? 'relaxed' : 'strict';
+      const result = await processPronunciationGenerationJobs(Number(payload?.limit || 20), mode);
+      return new Response(JSON.stringify({
+        ok: true,
+        action: 'process_generation_jobs',
+        picked: result.picked,
+        triggered: result.triggered,
+        failed: result.failed,
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
