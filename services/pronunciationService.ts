@@ -19,6 +19,30 @@ export interface PronunciationSource {
 const audioElementCache = new Map<string, HTMLAudioElement>();
 let currentPlayingKey: string | null = null;
 
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isSupabasePronunciationUrl = (url: string): boolean => {
+  return /https:\/\/[^.]+\.supabase\.co\/functions\/v1\/pronunciation\?/.test(url);
+};
+
+const appendRetryQuery = (url: string, attempt: number): string => {
+  if (attempt <= 0) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}_retry=${attempt}&_ts=${Date.now()}`;
+};
+
+const stripTransientQueryParams = (url: string): string => {
+  return url
+    .replace(/([?&])_retry=\d+(&)?/g, (match, prefix, suffix) => (suffix ? prefix : ''))
+    .replace(/([?&])_ts=\d+(&)?/g, (match, prefix, suffix) => (suffix ? prefix : ''))
+    .replace(/[?&]$/, '');
+};
+
+const switchToRelaxedUniquenessMode = (url: string): string => {
+  if (!url.includes('uniqueness_mode=strict')) return url;
+  return url.replace('uniqueness_mode=strict', 'uniqueness_mode=relaxed');
+};
+
 const getSupabaseUrl = (): string | null => {
   // process.env.SUPABASE_URL is statically replaced by vite.config.ts `define` at build time.
   const url = process.env.SUPABASE_URL || '';
@@ -118,6 +142,32 @@ const playAudioFromUrl = async (url: string, cacheKey: string, word: string): Pr
   });
 };
 
+const playAudioWithResilience = async (url: string, cacheKey: string, word: string): Promise<{ success: boolean; playedUrl: string }> => {
+  const isSupabaseUrl = isSupabasePronunciationUrl(url);
+  const maxAttempts = isSupabaseUrl ? 2 : 1;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const attemptUrl = appendRetryQuery(url, attempt);
+    const success = await playAudioFromUrl(attemptUrl, cacheKey, word);
+    if (success) {
+      return { success: true, playedUrl: attemptUrl };
+    }
+    if (attempt < maxAttempts - 1) {
+      await wait(200 * (attempt + 1));
+    }
+  }
+
+  if (isSupabaseUrl && url.includes('uniqueness_mode=strict')) {
+    const relaxedUrl = switchToRelaxedUniquenessMode(url);
+    const relaxedSuccess = await playAudioFromUrl(appendRetryQuery(relaxedUrl, 1), cacheKey, word);
+    if (relaxedSuccess) {
+      return { success: true, playedUrl: relaxedUrl };
+    }
+  }
+
+  return { success: false, playedUrl: url };
+};
+
 export const stopCurrentAudio = async (): Promise<void> => {
   if (currentPlayingKey) {
     const cachedAudio = audioElementCache.get(currentPlayingKey);
@@ -166,9 +216,9 @@ export const playWordPronunciation = async (
 
     const audioUrl = await source.getAudioUrl(word, lang);
     if (!audioUrl) continue;
-    const success = await playAudioFromUrl(audioUrl, cacheKey, word);
-    if (success) {
-      audioCacheManager.set(word, lang, audioUrl, source.name);
+    const result = await playAudioWithResilience(audioUrl, cacheKey, word);
+    if (result.success) {
+      audioCacheManager.set(word, lang, stripTransientQueryParams(result.playedUrl), source.name);
       return { success: true, sourceUsed: source.name };
     }
   }
