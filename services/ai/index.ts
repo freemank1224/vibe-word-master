@@ -155,7 +155,7 @@ class AIServiceManager implements AIService {
     const envProvider =
       readRuntimeEnv(`${task}_PROVIDER`)
       || readRuntimeEnv(`VITE_${task}_PROVIDER`)
-      || 'gemini';
+      || (task === 'IMAGE_GEN' ? 'openai' : 'gemini');
     const providerFallbackKey = this.resolveProviderApiKey(envProvider);
     const envKey =
       readRuntimeEnv(`${task}_API_KEY`)
@@ -184,8 +184,35 @@ class AIServiceManager implements AIService {
 
   async generateImageHint(word: string, promptOverride?: string): Promise<string | null> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('IMAGE_GEN');
-    const provider = this.getProvider(providerType);
+    const effectiveProvider = (providerType || 'openai').toLowerCase();
+    const provider = (effectiveProvider === 'openai' || effectiveProvider === 'custom')
+      ? this.openai
+      : this.getProvider(providerType);
     return provider.generateImageHint(word, promptOverride, apiKey, endpoint);
+  }
+
+  getImageGenerationDebugInfo() {
+    const resolved = this.resolveConfig('IMAGE_GEN');
+    const fromEnv = {
+      provider: readRuntimeEnv('IMAGE_GEN_PROVIDER') || readRuntimeEnv('VITE_IMAGE_GEN_PROVIDER') || null,
+      endpoint: readRuntimeEnv('IMAGE_GEN_ENDPOINT') || readRuntimeEnv('VITE_IMAGE_GEN_ENDPOINT') || null,
+      hasApiKey: !!(readRuntimeEnv('IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_IMAGE_GEN_API_KEY')),
+      primaryBaseUrl: readRuntimeEnv('PRIMARY_IMAGE_GEN_BASE_URL') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_BASE_URL') || null,
+      hasPrimaryApiKey: !!(readRuntimeEnv('PRIMARY_IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_API_KEY')),
+      primaryModel: readRuntimeEnv('PRIMARY_IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_MODEL') || null,
+      backupBaseUrl: readRuntimeEnv('BACKUP_IMAGE_GEN_BASE_URL') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_BASE_URL') || null,
+      hasBackupApiKey: !!(readRuntimeEnv('BACKUP_IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_API_KEY')),
+      backupModel: readRuntimeEnv('BACKUP_IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_MODEL') || null,
+      imageModel: readRuntimeEnv('IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_IMAGE_GEN_MODEL') || null,
+    };
+
+    return {
+      resolvedProviderType: resolved.providerType,
+      resolvedEndpoint: resolved.endpoint || null,
+      resolvedHasApiKey: !!resolved.apiKey,
+      env: fromEnv,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   async generateSpeech(text: string): Promise<AudioBuffer | string | null> {

@@ -26,8 +26,10 @@ import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
+import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from './services/dictionaryService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
+import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordIds } from './services/imageCache';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
@@ -106,6 +108,8 @@ type EditableWord = {
   id?: string;
   text: string;
   imageBase64?: string;
+  hasImage?: boolean;
+  imageGenerating?: boolean;
   definition_cn?: string;
   definition_en?: string;
   language?: string;
@@ -125,10 +129,20 @@ const createEditableWord = (word: Omit<EditableWord, 'tempId'> & { tempId?: stri
   id: word.id,
   text: word.text,
   imageBase64: word.imageBase64,
+  hasImage: word.hasImage,
+  imageGenerating: word.imageGenerating,
   definition_cn: word.definition_cn,
   definition_en: word.definition_en,
   language: word.language || 'en',
 });
+
+type ImageGenDebugEntry = {
+  ts: string;
+  stage: string;
+  payload?: any;
+};
+
+const IMAGE_GEN_DEBUG_STORAGE_KEY = 'vibe_word_image_gen_debug_logs_v1';
 
 const normalizeDefinitionBackfillKey = (text: string, language: string = 'en') => {
   return `${language.toLowerCase()}:${text.trim().toLowerCase().replace(/\s+/g, ' ')}`;
@@ -147,11 +161,55 @@ const App: React.FC = () => {
 
   // 通知系统
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
+  const imageGenDebugRef = useRef<ImageGenDebugEntry[]>([]);
 
   const showNotification = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
   };
+
+  const appendImageGenDebug = useCallback((stage: string, payload?: any) => {
+    const entry: ImageGenDebugEntry = {
+      ts: new Date().toISOString(),
+      stage,
+      payload,
+    };
+
+    imageGenDebugRef.current = [...imageGenDebugRef.current, entry].slice(-300);
+    try {
+      localStorage.setItem(IMAGE_GEN_DEBUG_STORAGE_KEY, JSON.stringify(imageGenDebugRef.current));
+    } catch {
+    }
+
+    (window as any).__vibeImageGenDebug = imageGenDebugRef.current;
+    console.log('[image-gen-debug]', entry);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(IMAGE_GEN_DEBUG_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        imageGenDebugRef.current = parsed.slice(-300);
+      }
+    } catch {
+      imageGenDebugRef.current = [];
+    }
+
+    (window as any).__vibeImageGenDebug = imageGenDebugRef.current;
+    (window as any).dumpImageGenDebug = () => {
+      const logs = imageGenDebugRef.current;
+      console.table(logs.map(item => ({ ts: item.ts, stage: item.stage })));
+      console.log('full_logs', logs);
+      return logs;
+    };
+    (window as any).clearImageGenDebug = () => {
+      imageGenDebugRef.current = [];
+      localStorage.removeItem(IMAGE_GEN_DEBUG_STORAGE_KEY);
+      (window as any).__vibeImageGenDebug = [];
+      console.log('[image-gen-debug] logs cleared');
+    };
+  }, []);
 
   useEffect(() => {
     definitionBackfillInFlightRef.current.clear();
@@ -171,6 +229,8 @@ const App: React.FC = () => {
   } | null>(null);
   const [conflictChoice, setConflictChoice] = useState<'cloud' | 'local' | null>(null);
   const [words, setWords] = useState<WordEntry[]>([]);
+  const [cachedImageWordIds, setCachedImageWordIds] = useState<Set<string>>(new Set());
+  const [cachedImageDataUrls, setCachedImageDataUrls] = useState<Record<string, string>>({});
   const [sessions, setSessions] = useState<InputSession[]>([]);
   const [dailyStats, setDailyStats] = useState<Record<string, DayStats>>({});
   const [loadingData, setLoadingData] = useState(false);
@@ -179,6 +239,51 @@ const App: React.FC = () => {
   useEffect(() => {
     latestWordsRef.current = words;
   }, [words]);
+
+  useEffect(() => {
+    setCachedImageWordIds(getCachedImageWordIds());
+  }, [session?.user?.id, words.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCachedUrls = async () => {
+      const targetWords = words.filter(w => !w.image_url && cachedImageWordIds.has(w.id));
+      if (targetWords.length === 0) {
+        setCachedImageDataUrls(prev => {
+          const existingIds = new Set(words.map(w => w.id));
+          const next: Record<string, string> = {};
+          Object.keys(prev).forEach(id => {
+            if (existingIds.has(id)) next[id] = prev[id];
+          });
+          return next;
+        });
+        return;
+      }
+
+      const pairs = await Promise.all(
+        targetWords.map(async (w) => {
+          const url = await getCachedImageDataUrl(w.id);
+          return [w.id, url] as const;
+        })
+      );
+
+      if (cancelled) return;
+
+      setCachedImageDataUrls(prev => {
+        const next: Record<string, string> = { ...prev };
+        for (const [id, url] of pairs) {
+          if (url) next[id] = url;
+        }
+        return next;
+      });
+    };
+
+    void loadCachedUrls();
+    return () => {
+      cancelled = true;
+    };
+  }, [words, cachedImageWordIds]);
 
   // Edit Mode State
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -796,29 +901,70 @@ const App: React.FC = () => {
 
   // Background Process
   const processBackgroundData = async (userId: string, wordsToProcess: any[]) => {
-    if (!wordsToProcess || !Array.isArray(wordsToProcess)) return;
+    if (!wordsToProcess || !Array.isArray(wordsToProcess)) {
+      appendImageGenDebug('background_process_invalid_input', { userId, wordsToProcessType: typeof wordsToProcess });
+      return;
+    }
+
+    appendImageGenDebug('background_process_start', {
+      userId,
+      total: wordsToProcess.length,
+      wordIds: wordsToProcess.map((w: any) => w.id),
+      words: wordsToProcess.map((w: any) => w.text),
+    });
+
+    const imageGenRuntimeInfo = (aiService as any).getImageGenerationDebugInfo?.();
+    appendImageGenDebug('image_gen_runtime_info', imageGenRuntimeInfo || { available: false });
+    appendImageGenDebug('image_gen_queue_snapshot', getImageGenerationQueueSnapshot());
+
+    if (wordsToProcess.length === 0) {
+      appendImageGenDebug('background_process_no_words', { reason: 'No words selected for processing' });
+      return;
+    }
+
     for (const w of wordsToProcess) {
-        // 1. Process Images
-        /*
-        if (!w.image_path) {
-            try {
-                const base64 = await aiService.generateImageHint(w.text);
-                if (base64) {
-                    const path = await uploadImage(base64, userId);
-                    if (path) {
-                        await updateWordImage(w.id, path);
-                        setWords(prev => prev.map(word => 
-                            word.id === w.id 
-                            ? { ...word, image_path: path, image_url: getImageUrl(path) } 
-                            : word
-                        ));
-                    }
-                }
-            } catch (e) {
-                console.warn(`Background image generation failed for ${w.text}:`, e);
+        appendImageGenDebug('word_process_begin', { id: w.id, text: w.text, hasImagePath: !!w.image_path, language: w.language || 'en' });
+
+      if (!w.image_path) {
+        try {
+                appendImageGenDebug('image_gen_request_start', { id: w.id, text: w.text });
+          const generated = await requestQueuedWordImage(w.text, { language: w.language || 'en' });
+          const base64 = generated.dataUrl;
+          if (base64) {
+            appendImageGenDebug('image_gen_request_success', { id: w.id, text: w.text, base64Length: base64.length, provider: generated.providerId });
+            const path = await uploadImage(base64, userId);
+            if (path) {
+                        appendImageGenDebug('image_upload_success', { id: w.id, text: w.text, imagePath: path });
+              await updateWordImage(w.id, path);
+              await cacheGeneratedImageForWord({ id: w.id, text: w.text, language: w.language || 'en' }, base64);
+              setCachedImageWordIds(prev => {
+                const next = new Set(prev);
+                next.add(w.id);
+                return next;
+              });
+              setCachedImageDataUrls(prev => ({ ...prev, [w.id]: base64 }));
+              showNotification(`🖼️ 已生成图片：${w.text}`, 'success');
+              setWords(prev => prev.map(word =>
+                word.id === w.id
+                ? { ...word, image_path: path, image_url: getImageUrl(path) }
+                : word
+              ));
+            } else {
+              appendImageGenDebug('image_upload_failed', { id: w.id, text: w.text, reason: 'uploadImage returned null' });
+              showNotification(`⚠️ 图片生成成功但上传失败：${w.text}`, 'warning');
             }
+          } else {
+            appendImageGenDebug('image_gen_request_failed', { id: w.id, text: w.text, reason: 'aiService returned null' });
+            showNotification(`⚠️ 图片生成失败：${w.text}（已自动尝试备用服务）`, 'warning');
+          }
+        } catch (e) {
+          console.warn(`Background image generation failed for ${w.text}:`, e);
+          appendImageGenDebug('image_gen_exception', { id: w.id, text: w.text, error: (e as any)?.message || String(e) });
+          showNotification(`⚠️ 图片生成异常：${w.text}`, 'warning');
         }
-        */
+      } else {
+        appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path });
+      }
 
         // 2. Process Dictionary Info (Phonetic, Audio, Definition)
         try {
@@ -842,9 +988,73 @@ const App: React.FC = () => {
             }
         } catch (e) {
             console.warn(`Background dictionary fetch failed for ${w.text}:`, e);
+          appendImageGenDebug('dictionary_fetch_failed', { id: w.id, text: w.text, error: (e as any)?.message || String(e) });
         }
     }
+
+      appendImageGenDebug('background_process_complete', { total: wordsToProcess.length });
   };
+
+  const handleGenerateImageForWord = useCallback(async (
+    word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }
+  ): Promise<boolean> => {
+    if (!session?.user?.id) {
+      showNotification('请先登录后再生成图片', 'warning');
+      return false;
+    }
+
+    if (word.hasExistingImage) {
+      const confirmed = window.confirm(`"${word.text}" 已有图片，是否重新生成并替换当前图片？`);
+      if (!confirmed) return false;
+    }
+
+    appendImageGenDebug('manual_image_gen_start', {
+      id: word.id,
+      text: word.text,
+      language: word.language || 'en',
+      hasExistingImage: !!word.hasExistingImage,
+    });
+    appendImageGenDebug('manual_image_gen_queue_before_enqueue', getImageGenerationQueueSnapshot());
+    showNotification(`🕒 已加入生图队列：${word.text}`, 'success');
+
+    try {
+      const generated = await requestQueuedWordImage(word.text, { language: word.language || 'en' });
+      const base64 = generated.dataUrl;
+      if (!base64) {
+        appendImageGenDebug('manual_image_gen_failed', { id: word.id, text: word.text, reason: 'aiService returned null' });
+        showNotification(`⚠️ 图片生成失败：${word.text}`, 'warning');
+        return false;
+      }
+
+      const path = await uploadImage(base64, session.user.id);
+      if (!path) {
+        appendImageGenDebug('manual_image_upload_failed', { id: word.id, text: word.text });
+        showNotification(`⚠️ 图片上传失败：${word.text}`, 'warning');
+        return false;
+      }
+
+      await updateWordImage(word.id, path);
+      await cacheGeneratedImageForWord({ id: word.id, text: word.text, language: word.language || 'en' }, base64);
+
+      setCachedImageWordIds(prev => {
+        const next = new Set(prev);
+        next.add(word.id);
+        return next;
+      });
+      setCachedImageDataUrls(prev => ({ ...prev, [word.id]: base64 }));
+      setWords(prev => prev.map(item =>
+        item.id === word.id ? { ...item, image_path: path, image_url: getImageUrl(path) } : item
+      ));
+
+      appendImageGenDebug('manual_image_gen_success', { id: word.id, text: word.text, imagePath: path, provider: generated.providerId });
+      showNotification(`🖼️ 已${word.hasExistingImage ? '重新生成' : '生成'}图片：${word.text}`, 'success');
+      return true;
+    } catch (error: any) {
+      appendImageGenDebug('manual_image_gen_exception', { id: word.id, text: word.text, error: error?.message || String(error) });
+      showNotification(`⚠️ 手动生图异常：${word.text}`, 'warning');
+      return false;
+    }
+  }, [appendImageGenDebug, session?.user?.id]);
 
   // Handle Save (New Session or Update Existing)
   const handleSaveSession = async (
@@ -886,6 +1096,12 @@ const App: React.FC = () => {
         }));
 
         const { newWordsData } = await modifySession(session.user.id, editingSessionId, addedWords, deletedIds, updatedWords);
+        appendImageGenDebug('save_session_edit_mode', {
+          sessionId: editingSessionId,
+          addedWordsCount: addedWords.length,
+          updatedWordsCount: updatedWords.length,
+          newWordsSavedCount: newWordsData?.length || 0,
+        });
         
         newWordsData.forEach((w: any) => idsToProcess.add(w.id));
         updatedWords.forEach(w => idsToProcess.add(w.id));
@@ -893,6 +1109,11 @@ const App: React.FC = () => {
       } else {
         // CREATE NEW SESSION
         const { wordsData } = await saveSessionData(session.user.id, wordList.length, wordList);
+        appendImageGenDebug('save_session_create_mode', {
+          inputWordCount: wordList.length,
+          savedWordsCount: wordsData?.length || 0,
+          inputWords: wordList.map(w => w.text),
+        });
         wordsData.forEach((w: any) => idsToProcess.add(w.id));
       }
       
@@ -907,6 +1128,16 @@ const App: React.FC = () => {
 
       // Trigger Background Process
       const wordsToProcess = dashboardWords.filter(w => idsToProcess.has(w.id));
+      appendImageGenDebug('post_save_process_selection', {
+        idsToProcessCount: idsToProcess.size,
+        wordsToProcessCount: wordsToProcess.length,
+        wordsToProcess: wordsToProcess.map(w => ({ id: w.id, text: w.text, hasImagePath: !!w.image_path })),
+      });
+
+      if (idsToProcess.size > 0 && wordsToProcess.length === 0) {
+        showNotification('⚠️ 生图任务未启动：保存后未匹配到可处理词条（请查看控制台 dumpImageGenDebug()）', 'warning');
+      }
+
       processBackgroundData(session.user.id, wordsToProcess);
 
       // ✅ 成功保存到云端，清除本地备份
@@ -1721,6 +1952,7 @@ const App: React.FC = () => {
             stats={getStats()}
             sessions={visibleSessions}
             words={visibleWords}
+            cachedImageDataUrls={cachedImageDataUrls}
             selectedSessionIds={selectedDashboardSessionIds}
             onToggleSessionSelect={(id) => {
                 setSelectedDashboardSessionIds(prev => {
@@ -1759,6 +1991,8 @@ const App: React.FC = () => {
             }}
             onDeleteWord={handleInputModeDeleteWord}
             allWords={visibleWords}
+            cachedImageWordIds={cachedImageWordIds}
+            onGenerateImageForWord={handleGenerateImageForWord}
           />
         )}
         {mode === 'TEST' && (
@@ -1785,6 +2019,8 @@ const App: React.FC = () => {
                 onTest={handleStartTestFromLibrary}
                 userId={session?.user?.id}
                 onRefresh={refreshData}
+            cachedImageWordIds={cachedImageWordIds}
+            onGenerateImageForWord={handleGenerateImageForWord}
             />
         )}
 
@@ -2208,6 +2444,7 @@ const Dashboard: React.FC<{
   stats: Record<string, DayStats>,
   sessions: InputSession[],
   words: WordEntry[],
+  cachedImageDataUrls?: Record<string, string>;
   selectedSessionIds: Set<string>,
   onToggleSessionSelect: (id: string) => void,
   onStartInput: () => void,
@@ -2220,7 +2457,7 @@ const Dashboard: React.FC<{
   syncingSessionId?: string | null,
   highlightRecentSessions?: boolean,
   onDismissRecentSessionsHighlight?: () => void,
-}> = ({ stats, sessions, words, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
+}> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const recentSessionsRef = useRef<HTMLDivElement>(null);
@@ -2230,13 +2467,23 @@ const Dashboard: React.FC<{
     handleCardMouseEnter: handleListCardMouseEnter,
   } = useSessionDragSelection(selectedSessionIds, onToggleSessionSelect);
 
-  // Filter words that already have images for the carousel
-  const wordsWithImages = useMemo(() => words.filter(w => w.image_url), [words]);
+  const wordsWithImages = useMemo(() => {
+    return words
+      .map((word) => {
+        const src = word.image_url || cachedImageDataUrls[word.id] || null;
+        if (!src) return null;
+        return {
+          id: word.id,
+          text: word.text,
+          imageSrc: src,
+        };
+      })
+      .filter(Boolean) as { id: string; text: string; imageSrc: string }[];
+  }, [words, cachedImageDataUrls]);
 
   // 1. Auto-rotation logic (5 seconds)
   useEffect(() => {
-    // Only start carousel if we have at least 10 images, as requested
-    if (wordsWithImages.length < 10) return;
+    if (wordsWithImages.length <= 1) return;
 
     const timer = setInterval(() => {
       setCarouselIndex(prev => (prev + 1) % wordsWithImages.length);
@@ -2283,10 +2530,10 @@ const Dashboard: React.FC<{
           <div className="w-full md:w-80 h-80 flex-shrink-0 relative group order-last md:order-first">
             <div className="absolute -inset-1 bg-gradient-to-r from-electric-blue to-electric-purple rounded-3xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative w-full h-full bg-light-charcoal rounded-3xl border border-mid-charcoal overflow-hidden flex flex-col items-center justify-center">
-              {wordsWithImages.length >= 10 ? (
+              {wordsWithImages.length > 0 ? (
                 <div key={wordsWithImages[carouselIndex].id} className="w-full h-full relative animate-in fade-in duration-1000">
                   <img 
-                    src={wordsWithImages[carouselIndex].image_url!} 
+                    src={wordsWithImages[carouselIndex].imageSrc} 
                     alt={wordsWithImages[carouselIndex].text} 
                     className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" 
                   />
@@ -2294,11 +2541,13 @@ const Dashboard: React.FC<{
                   <div className="absolute bottom-4 left-4 right-4 z-10 animate-in slide-in-from-bottom-2 fade-in duration-700 delay-150">
                     <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1 drop-shadow-sm">Featured</p>
                     <p className="font-serif text-2xl text-white italic capitalize drop-shadow-lg">{wordsWithImages[carouselIndex].text}</p>
-                    <div className="flex gap-1 mt-3">
-                        {wordsWithImages.map((_, idx) => (
-                            <div key={idx} className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20'}`} />
-                        ))}
-                    </div>
+                    {wordsWithImages.length > 1 && (
+                      <div className="flex gap-1 mt-3">
+                          {wordsWithImages.map((_, idx) => (
+                              <div key={idx} className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20'}`} />
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -2546,8 +2795,11 @@ const LibraryMode: React.FC<{
     onTest: (ids: string[]) => void;
     userId?: string;
     onRefresh?: () => void;
-}> = ({ words, onClose, onTest, userId, onRefresh }) => {
+  cachedImageWordIds?: Set<string>;
+  onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>;
+}> = ({ words, onClose, onTest, userId, onRefresh, cachedImageWordIds = new Set(), onGenerateImageForWord }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [generatingWordIds, setGeneratingWordIds] = useState<Set<string>>(new Set());
 
     // Helper function to determine error severity level
     // 辅助函数：确定错误严重度等级
@@ -2788,6 +3040,32 @@ const LibraryMode: React.FC<{
         console.error('[LibraryMode] Preview audio failed:', error);
       } finally {
         setPlayingPreviewWordId(null);
+      }
+    };
+
+    const handleGenerateImageClick = async (e: React.MouseEvent, word: WordEntry) => {
+      e.stopPropagation();
+      if (!onGenerateImageForWord || generatingWordIds.has(word.id)) return;
+
+      const hasExistingImage = cachedImageWordIds.has(word.id) || !!word.image_url || !!word.image_path;
+      setGeneratingWordIds(prev => {
+        const next = new Set(prev);
+        next.add(word.id);
+        return next;
+      });
+      try {
+        await onGenerateImageForWord({
+          id: word.id,
+          text: word.text,
+          language: word.language || 'en',
+          hasExistingImage,
+        });
+      } finally {
+        setGeneratingWordIds(prev => {
+          const next = new Set(prev);
+          next.delete(word.id);
+          return next;
+        });
       }
     };
 
@@ -3100,6 +3378,8 @@ const LibraryMode: React.FC<{
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                                         {grouped[letter].map(word => {
                                             const severity = getErrorSeverity(word.error_count);
+                                          const hasGeneratedImage = (cachedImageWordIds.has(word.id) || !!word.image_url || !!word.image_path);
+                                          const isGenerating = generatingWordIds.has(word.id);
                                             return (
                                                 <div
                                                     key={word.id}
@@ -3110,10 +3390,20 @@ const LibraryMode: React.FC<{
                                                         : 'bg-light-charcoal border-mid-charcoal hover:border-text-light'
                                                     }`}
                                                 >
+                                                    <button
+                                                      onClick={(e) => handleGenerateImageClick(e, word)}
+                                                      disabled={isGenerating}
+                                                      className={`absolute top-1 right-1 z-10 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
+                                                      title={hasGeneratedImage ? '已生成，点击可重新生成并替换' : '未生成，点击立即生成'}
+                                                      aria-label={hasGeneratedImage ? `重新生成 ${word.text} 的图片` : `生成 ${word.text} 的图片`}
+                                                    >
+                                                      <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
+                                                    </button>
+
                                                     {/* Delete Button - hover visible */}
                                                     <button
                                                         onClick={(e) => requestDeleteWords(e, [word.id])}
-                                                        className="absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-text-dark hover:text-red-400 transition-all z-10"
+                                                        className="absolute top-1 right-8 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-text-dark hover:text-red-400 transition-all z-10"
                                                         title={`删除 "${word.text}"`}
                                                         aria-label={`删除 ${word.text}`}
                                                     >
@@ -3229,10 +3519,19 @@ const InputMode: React.FC<{
   onComplete: (words: EditableWord[], deletedIds: string[]) => void,
   onCancel: () => void,
   onDeleteWord?: (id: string) => Promise<void>,
-  allWords: WordEntry[]
-}> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords }) => {
+  allWords: WordEntry[],
+  cachedImageWordIds?: Set<string>,
+  onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>
+}> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords, cachedImageWordIds = new Set(), onGenerateImageForWord }) => {
   const [currentWords, setCurrentWords] = useState<EditableWord[]>(
-    initialWords.map(w => createEditableWord({ id: w.id, text: w.text, definition_cn: w.definition_cn || undefined, definition_en: w.definition_en || undefined, language: w.language || 'en' }))
+    initialWords.map(w => createEditableWord({
+      id: w.id,
+      text: w.text,
+      hasImage: !!w.image_url || !!w.image_path,
+      definition_cn: w.definition_cn || undefined,
+      definition_en: w.definition_en || undefined,
+      language: w.language || 'en'
+    }))
   );
   // We don't use deletedIds for batch delete anymore based on new requirements, 
   // but keeping it empty for compatibility with onComplete refactoring if needed.
@@ -3267,6 +3566,7 @@ const InputMode: React.FC<{
   
   // Bug Fix: Unsaved Changes Warning
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
+  const [generatingWordTempIds, setGeneratingWordTempIds] = useState<Set<string>>(new Set());
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingLockRef = useRef(false);
@@ -3500,11 +3800,14 @@ const InputMode: React.FC<{
       const newEntry = createEditableWord({
         text,
         imageBase64: undefined,
+        hasImage: false,
+        imageGenerating: true,
         definition_cn: details?.definition_cn || targetDefinitionCn || fallbackMeaning,
         definition_en: details?.definition_en || targetDefinitionEn || undefined,
         language: 'en',
       });
       setCurrentWords(prev => [...prev, newEntry]);
+      triggerDraftImageGeneration(newEntry.tempId, text, 'en');
       setTargetWord(null);
       setTargetDefinitionCn(null);
       setTargetDefinitionEn(null);
@@ -3576,6 +3879,83 @@ const InputMode: React.FC<{
     setIsSaving(true);
     // deletedIds should be empty if we exclusively use immediate delete, but passing it just in case
     await onComplete(currentWords, deletedIds);
+  };
+
+  const triggerDraftImageGeneration = useCallback((tempId: string, text: string, language: string = 'en') => {
+    setCurrentWords(prev => prev.map(item => item.tempId === tempId ? { ...item, imageGenerating: true } : item));
+
+    void requestQueuedWordImage(text, { language })
+      .then(({ dataUrl }) => {
+        setCurrentWords(prev => prev.map(item =>
+          item.tempId === tempId
+            ? { ...item, imageBase64: dataUrl, hasImage: true, imageGenerating: false }
+            : item
+        ));
+      })
+      .catch((error) => {
+        console.warn('[InputMode] draft image generation failed:', error);
+        setCurrentWords(prev => prev.map(item =>
+          item.tempId === tempId
+            ? { ...item, imageGenerating: false }
+            : item
+        ));
+      });
+  }, []);
+
+  const handleGenerateWordImageClick = async (event: React.MouseEvent, word: EditableWord) => {
+    event.stopPropagation();
+    if (generatingWordTempIds.has(word.tempId)) return;
+
+    const hasGeneratedImage = !!word.imageBase64 || !!word.hasImage || (!!word.id && cachedImageWordIds.has(word.id));
+    if (hasGeneratedImage) {
+      const confirmed = window.confirm(`"${word.text}" 已有图片，是否重新生成并替换当前图片？`);
+      if (!confirmed) return;
+    }
+
+    setGeneratingWordTempIds(prev => {
+      const next = new Set(prev);
+      next.add(word.tempId);
+      return next;
+    });
+    try {
+      if (word.id && onGenerateImageForWord) {
+        const success = await onGenerateImageForWord({
+          id: word.id,
+          text: word.text,
+          language: word.language || 'en',
+          hasExistingImage: hasGeneratedImage,
+        });
+        if (success) {
+          setCurrentWords(prev => prev.map(item =>
+            item.tempId === word.tempId
+              ? { ...item, hasImage: true, imageBase64: undefined }
+              : item
+          ));
+        }
+      } else {
+        const generated = await requestQueuedWordImage(word.text, { language: word.language || 'en' });
+        const base64 = generated.dataUrl;
+        if (base64) {
+          setCurrentWords(prev => prev.map(item =>
+            item.tempId === word.tempId
+              ? { ...item, imageBase64: base64, hasImage: true }
+              : item
+          ));
+          alert(`已为 ${word.text} 生成图片（本地待保存）`);
+        } else {
+          alert(`图片生成失败：${word.text}`);
+        }
+      }
+    } catch (error: any) {
+      console.warn('[InputMode] generate image failed:', error);
+      alert(`图片生成异常：${word.text}`);
+    } finally {
+      setGeneratingWordTempIds(prev => {
+        const next = new Set(prev);
+        next.delete(word.tempId);
+        return next;
+      });
+    }
   };
 
   const handleVoiceInput = () => {
@@ -3852,6 +4232,20 @@ const InputMode: React.FC<{
                 backClassName="rounded-xl border border-electric-blue/30 bg-light-charcoal p-3"
                 front={
                   <div className="group relative flex h-full items-center justify-between rounded-xl border border-mid-charcoal bg-light-charcoal p-3 text-center transition-all hover:border-text-light">
+                    {(() => {
+                      const hasGeneratedImage = !!w.imageBase64 || !!w.hasImage || (!!w.id && cachedImageWordIds.has(w.id));
+                      const isGenerating = generatingWordTempIds.has(w.tempId) || !!w.imageGenerating;
+                      return (
+                      <button
+                        onClick={(event) => handleGenerateWordImageClick(event, w)}
+                        disabled={isGenerating}
+                        className={`absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
+                        title={hasGeneratedImage ? '已生成，点击可重新生成并替换' : '未生成，点击立即生成'}
+                      >
+                        <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
+                      </button>
+                      );
+                    })()}
                     <div className="flex items-center gap-2 overflow-hidden flex-1">
                         <button 
                             onClick={(event) => {
