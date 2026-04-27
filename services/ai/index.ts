@@ -6,6 +6,7 @@ import { OpenAIProvider } from "./openaiProvider";
 import { LocalProvider } from "./localProvider";
 import { AISettings, AEServiceProvider, AITask } from "./settings";
 import { isSupabaseConfigured, supabase } from "../../lib/supabaseClient";
+import { getImageGenerationEdgeDebugInfo, requestImageGenerationViaEdge } from '../imageGenerationEdge';
 
 const readRuntimeEnv = (key: string): string | undefined => {
   const viteEnv = (import.meta as any)?.env;
@@ -183,34 +184,25 @@ class AIServiceManager implements AIService {
   }
 
   async generateImageHint(word: string, promptOverride?: string): Promise<string | null> {
-    const { providerType, apiKey, endpoint } = this.resolveConfig('IMAGE_GEN');
-    const effectiveProvider = (providerType || 'openai').toLowerCase();
-    const provider = (effectiveProvider === 'openai' || effectiveProvider === 'custom')
-      ? this.openai
-      : this.getProvider(providerType);
-    return provider.generateImageHint(word, promptOverride, apiKey, endpoint);
+    try {
+      const result = await requestImageGenerationViaEdge({
+        word,
+        language: 'en',
+        promptOverride,
+      });
+      return result.dataUrl;
+    } catch (error) {
+      console.error('Image generation via edge failed:', error);
+      return null;
+    }
   }
 
   getImageGenerationDebugInfo() {
-    const resolved = this.resolveConfig('IMAGE_GEN');
-    const fromEnv = {
-      provider: readRuntimeEnv('IMAGE_GEN_PROVIDER') || readRuntimeEnv('VITE_IMAGE_GEN_PROVIDER') || null,
-      endpoint: readRuntimeEnv('IMAGE_GEN_ENDPOINT') || readRuntimeEnv('VITE_IMAGE_GEN_ENDPOINT') || null,
-      hasApiKey: !!(readRuntimeEnv('IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_IMAGE_GEN_API_KEY')),
-      primaryBaseUrl: readRuntimeEnv('PRIMARY_IMAGE_GEN_BASE_URL') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_BASE_URL') || null,
-      hasPrimaryApiKey: !!(readRuntimeEnv('PRIMARY_IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_API_KEY')),
-      primaryModel: readRuntimeEnv('PRIMARY_IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_MODEL') || null,
-      backupBaseUrl: readRuntimeEnv('BACKUP_IMAGE_GEN_BASE_URL') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_BASE_URL') || null,
-      hasBackupApiKey: !!(readRuntimeEnv('BACKUP_IMAGE_GEN_API_KEY') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_API_KEY')),
-      backupModel: readRuntimeEnv('BACKUP_IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_MODEL') || null,
-      imageModel: readRuntimeEnv('IMAGE_GEN_MODEL') || readRuntimeEnv('VITE_IMAGE_GEN_MODEL') || null,
-    };
-
     return {
-      resolvedProviderType: resolved.providerType,
-      resolvedEndpoint: resolved.endpoint || null,
-      resolvedHasApiKey: !!resolved.apiKey,
-      env: fromEnv,
+      ...getImageGenerationEdgeDebugInfo(),
+      resolvedProviderType: 'supabase-edge-function',
+      resolvedEndpoint: 'image-generate',
+      resolvedHasApiKey: isSupabaseConfigured,
       timestamp: new Date().toISOString(),
     };
   }

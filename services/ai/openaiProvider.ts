@@ -1,6 +1,7 @@
 
 import { AIService, SpellingResult } from "./types";
 import { WordEntry, InputSession } from "../../types";
+import { requestImageGenerationViaEdge } from '../imageGenerationEdge';
 
 const readRuntimeEnv = (key: string): string => {
   const viteEnv = (import.meta as any)?.env;
@@ -21,54 +22,6 @@ export class OpenAIProvider implements AIService {
 
   private get defaultEndpoint(): string {
     return readRuntimeEnv('OPENAI_ENDPOINT') || readRuntimeEnv('VITE_OPENAI_ENDPOINT') || "https://api.openai.com/v1";
-  }
-
-  private get primaryImageEndpoint(): string {
-    return readRuntimeEnv('PRIMARY_IMAGE_GEN_BASE_URL')
-      || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_BASE_URL')
-      || readRuntimeEnv('IMAGE_GEN_ENDPOINT')
-      || readRuntimeEnv('VITE_IMAGE_GEN_ENDPOINT')
-      || 'https://newapi.omgteam.me';
-  }
-
-  private get primaryImageApiKey(): string {
-    return readRuntimeEnv('PRIMARY_IMAGE_GEN_API_KEY')
-      || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_API_KEY')
-      || readRuntimeEnv('IMAGE_GEN_API_KEY')
-      || readRuntimeEnv('VITE_IMAGE_GEN_API_KEY')
-      || this.defaultApiKey;
-  }
-
-  private get backupImageEndpoint(): string {
-    return readRuntimeEnv('BACKUP_IMAGE_GEN_BASE_URL')
-      || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_BASE_URL')
-      || 'https://tokendance.space/gateway/v1/images/generations';
-  }
-
-  private get backupImageApiKey(): string {
-    return readRuntimeEnv('BACKUP_IMAGE_GEN_API_KEY')
-      || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_API_KEY')
-      || '';
-  }
-
-  private get imageGenModel(): string {
-    return readRuntimeEnv('PRIMARY_IMAGE_GEN_MODEL')
-      || readRuntimeEnv('VITE_PRIMARY_IMAGE_GEN_MODEL')
-      || readRuntimeEnv('IMAGE_GEN_MODEL')
-      || readRuntimeEnv('VITE_IMAGE_GEN_MODEL')
-      || 'gpt-image-2';
-  }
-
-  private get backupImageModel(): string {
-    return readRuntimeEnv('BACKUP_IMAGE_GEN_MODEL')
-      || readRuntimeEnv('VITE_BACKUP_IMAGE_GEN_MODEL')
-      || 'ernie-image';
-  }
-
-  private get primaryImageModel(): string {
-    return readRuntimeEnv('IMAGE_GEN_MODEL')
-      || readRuntimeEnv('VITE_IMAGE_GEN_MODEL')
-      || this.imageGenModel;
   }
 
   private get spellingModel(): string {
@@ -95,94 +48,6 @@ export class OpenAIProvider implements AIService {
         throw new Error(`OpenAI API Error: ${err.error?.message || response.statusText}`);
     }
     return response.json();
-  }
-
-  private getImageGenerationUrls(endpoint: string): string[] {
-    const sanitized = (endpoint || '').trim().replace(/\/$/, '');
-    if (!sanitized) return [];
-    if (sanitized.endsWith('/images/generations')) return [sanitized];
-    return [
-      `${sanitized}/v1/images/generations`,
-      `${sanitized}/images/generations`,
-    ];
-  }
-
-  private async convertImageUrlToDataUrl(imageUrl: string): Promise<string | null> {
-    try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) return null;
-      const blob = await response.blob();
-      return await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('Failed to read generated image blob'));
-        reader.readAsDataURL(blob);
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  private buildImagePrompt(word: string): string {
-    const normalized = word.trim();
-    return [
-      `Target word or phrase: "${normalized}".`,
-      'Create a cartoon-style illustration that is highly intuitive and semantically accurate for this exact target.',
-      'Critical requirement: key semantic details must be realistic enough to clearly express the meaning.',
-      'If the target is a noun, make that noun the central subject.',
-      'If the target is a verb or phrase, design a clear action scene that conveys the meaning.',
-      'Do not add artificial overlay subtitles, UI labels, watermark-like text, or unrelated floating captions.',
-      'Natural text that belongs to objects in the scene is allowed and should be preserved when semantically necessary, such as blackboard writing, book covers/pages, street signs, or packaging text.',
-      'Single scene, clean composition, vivid colors, high clarity, educational illustration quality.'
-    ].join(' ');
-  }
-
-  private async tryGenerateImageByEndpoint(options: {
-    endpoint: string;
-    apiKey: string;
-    prompt: string;
-    model: string;
-  }): Promise<string | null> {
-    const urls = this.getImageGenerationUrls(options.endpoint);
-    if (urls.length === 0 || !options.apiKey) return null;
-
-    for (const url of urls) {
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${options.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: options.model,
-            prompt: options.prompt,
-            n: 1,
-            size: '1024x1024',
-            response_format: 'b64_json',
-          }),
-        });
-
-        if (!response.ok) {
-          continue;
-        }
-
-        const data = await response.json();
-        const b64 = data?.data?.[0]?.b64_json;
-        if (typeof b64 === 'string' && b64.length > 0) {
-          return `data:image/png;base64,${b64}`;
-        }
-
-        const imageUrl = data?.data?.[0]?.url;
-        if (typeof imageUrl === 'string' && imageUrl.length > 0) {
-          const dataUrl = await this.convertImageUrlToDataUrl(imageUrl);
-          if (dataUrl) return dataUrl;
-        }
-      } catch {
-      }
-    }
-
-    return null;
   }
 
   async optimizeWordSelection(
@@ -326,30 +191,17 @@ export class OpenAIProvider implements AIService {
 
 
   async generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null> {
-    const prompt = promptOverride || this.buildImagePrompt(word);
-
-    const primaryEndpoint = endpoint || this.primaryImageEndpoint;
-    const primaryKey = apiKey || this.primaryImageApiKey;
-    const model = this.primaryImageModel;
-
-    const primaryResult = await this.tryGenerateImageByEndpoint({
-      endpoint: primaryEndpoint,
-      apiKey: primaryKey,
-      prompt,
-      model,
-    });
-    if (primaryResult) return primaryResult;
-
-    const backupResult = await this.tryGenerateImageByEndpoint({
-      endpoint: this.backupImageEndpoint,
-      apiKey: this.backupImageApiKey,
-      prompt,
-      model: this.backupImageModel,
-    });
-    if (backupResult) return backupResult;
-
-    console.error('OpenAI-compatible image generation failed on both primary and backup providers.');
-    return null;
+    try {
+      const result = await requestImageGenerationViaEdge({
+        word,
+        language: 'en',
+        promptOverride,
+      });
+      return result.dataUrl;
+    } catch (error) {
+      console.error('OpenAI-compatible image generation via edge failed:', error);
+      return null;
+    }
   }
 
   async generateSpeech(text: string, apiKey?: string, endpoint?: string): Promise<AudioBuffer | string | null> {

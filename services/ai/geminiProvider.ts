@@ -2,6 +2,7 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { AIService, SpellingResult } from "./types";
 import { WordEntry, InputSession } from "../../types";
+import { requestImageGenerationViaEdge } from '../imageGenerationEdge';
 
 const readRuntimeEnv = (key: string): string => {
   const viteEnv = (import.meta as any)?.env;
@@ -36,26 +37,14 @@ export class GeminiProvider implements AIService {
 
   async generateImageHint(word: string, promptOverride?: string, apiKey?: string, endpoint?: string): Promise<string | null> {
     try {
-      const ai = this.getClient(apiKey, endpoint);
-      const prompt = promptOverride || `A clear, artistic, and descriptive illustration representing the English word: "${word}". Style: high-quality digital art, clean background. No words or characters in the generated image.`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [{ text: prompt }]
-        },
-        config: {
-          imageConfig: { aspectRatio: "1:1" }
-        }
+      const result = await requestImageGenerationViaEdge({
+        word,
+        language: 'en',
+        promptOverride,
       });
-
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          return `data:image/png;base64,${part.inlineData.data}`;
-        }
-      }
+      return result.dataUrl;
     } catch (error) {
-      console.error("Gemini image generation failed:", error);
+      console.error("Gemini image generation via edge failed:", error);
     }
     return null;
   }
