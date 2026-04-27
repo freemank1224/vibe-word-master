@@ -5,6 +5,11 @@ type ProviderConfig = {
   model: string;
 };
 
+type ProviderFailure = Error & {
+  providerId?: ProviderConfig['id'];
+  connectionUnavailable?: boolean;
+};
+
 type QueueTask = {
   id: string;
   word: string;
@@ -104,6 +109,26 @@ const getProviderConfigs = (): ProviderConfig[] => {
 class ImageGenerationQueue {
   private queue: QueueTask[] = [];
   private busyProviders = new Set<ProviderConfig['id']>();
+  private primaryUnavailableUntil = 0;
+
+  private isPrimaryUnavailable(): boolean {
+    return Date.now() < this.primaryUnavailableUntil;
+  }
+
+  private markPrimaryUnavailable() {
+    this.primaryUnavailableUntil = Date.now() + 60_000;
+  }
+
+  private clearPrimaryUnavailable() {
+    this.primaryUnavailableUntil = 0;
+  }
+
+  private createProviderError(provider: ProviderConfig, message: string, connectionUnavailable: boolean): ProviderFailure {
+    const error = new Error(message) as ProviderFailure;
+    error.providerId = provider.id;
+    error.connectionUnavailable = connectionUnavailable;
+    return error;
+  }
 
   private async generateByProvider(provider: ProviderConfig, prompt: string): Promise<string> {
     const urls = getImageGenerationUrls(provider.baseUrl);
@@ -111,7 +136,7 @@ class ImageGenerationQueue {
       throw new Error(`[${provider.id}] Invalid base URL`);
     }
 
-    let lastError: string | null = null;
+    let lastError: ProviderFailure | null = null;
 
     for (const url of urls) {
       try {
@@ -134,8 +159,13 @@ class ImageGenerationQueue {
 
         if (!response.ok) {
           const errorMessage = data?.error?.message || `${response.status} ${response.statusText}`;
-          lastError = `[${provider.id}] ${errorMessage}`;
+          const connectionUnavailable = [408, 429, 500, 502, 503, 504, 520, 522, 524].includes(response.status);
+          lastError = this.createProviderError(provider, `[${provider.id}] ${errorMessage}`, connectionUnavailable);
           continue;
+        }
+
+        if (provider.id === 'newapi') {
+          this.clearPrimaryUnavailable();
         }
 
         const b64 = data?.data?.[0]?.b64_json;
@@ -149,17 +179,27 @@ class ImageGenerationQueue {
           if (dataUrl) return dataUrl;
         }
 
-        lastError = `[${provider.id}] response has no b64_json/url`;
+        lastError = this.createProviderError(provider, `[${provider.id}] response has no b64_json/url`, false);
       } catch (error: any) {
-        lastError = `[${provider.id}] ${error?.message || String(error)}`;
+        lastError = this.createProviderError(provider, `[${provider.id}] ${error?.message || String(error)}`, true);
       }
     }
 
-    throw new Error(lastError || `[${provider.id}] generation failed`);
+    if (provider.id === 'newapi' && lastError?.connectionUnavailable) {
+      this.markPrimaryUnavailable();
+    }
+
+    throw lastError || this.createProviderError(provider, `[${provider.id}] generation failed`, false);
   }
 
   private pickTaskForProvider(provider: ProviderConfig): QueueTask | null {
-    const idx = this.queue.findIndex(task => !task.attemptedProviders.has(provider.id));
+    const idx = this.queue.findIndex(task => {
+      if (task.attemptedProviders.has(provider.id)) return false;
+      if (provider.id === 'tokendance') {
+        return this.isPrimaryUnavailable() || task.attemptedProviders.has('newapi');
+      }
+      return true;
+    });
     if (idx < 0) return null;
     const [task] = this.queue.splice(idx, 1);
     return task || null;
@@ -183,7 +223,13 @@ class ImageGenerationQueue {
         task.attemptedProviders.add(provider.id);
 
         const providers = getProviderConfigs();
-        const hasAnotherProvider = providers.some(p => !task.attemptedProviders.has(p.id));
+        const hasAnotherProvider = providers.some(p => {
+          if (task.attemptedProviders.has(p.id)) return false;
+          if (p.id === 'tokendance') {
+            return this.isPrimaryUnavailable() || task.attemptedProviders.has('newapi');
+          }
+          return true;
+        });
 
         if (hasAnotherProvider) {
           this.queue.push(task);
@@ -199,7 +245,16 @@ class ImageGenerationQueue {
 
   private pump() {
     const providers = getProviderConfigs();
-    for (const provider of providers) {
+    const orderedProviders = providers.sort((a, b) => {
+      if (a.id === 'newapi') return -1;
+      if (b.id === 'newapi') return 1;
+      return 0;
+    });
+
+    for (const provider of orderedProviders) {
+      if (provider.id === 'tokendance' && !this.isPrimaryUnavailable()) {
+        continue;
+      }
       this.runProvider(provider);
     }
   }
@@ -234,6 +289,8 @@ class ImageGenerationQueue {
     return {
       pendingCount: this.queue.length,
       busyProviders: Array.from(this.busyProviders),
+      mode: this.isPrimaryUnavailable() ? 'backup-fallback' : 'primary-only',
+      primaryUnavailableUntil: this.primaryUnavailableUntil || null,
       providers: getProviderConfigs().map(p => ({ id: p.id, baseUrl: p.baseUrl, model: p.model, hasApiKey: !!p.apiKey })),
     };
   }
