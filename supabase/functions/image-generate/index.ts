@@ -144,28 +144,36 @@ const tryGenerateByProvider = async (
 
   for (const url of urls) {
     try {
-      const timeoutMs = isPrimary ? 10000 : 20000;
+      const timeoutMs = isPrimary ? 45000 : 60000;
+      const requestBody = JSON.stringify({
+        model: provider.model,
+        prompt,
+        n: 1,
+        size: '1024x1024',
+        response_format: 'b64_json',
+      });
+
+      console.log(`[image-generate] Attempting ${provider.id} at ${url}, timeout: ${timeoutMs}ms, body length: ${requestBody.length}`);
+
       const response = await withTimeout(
         fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${provider.apiKey}`,
+            'Authorization': `Bearer ${provider.apiKey}`,
+            'User-Agent': 'Supabase-Edge-Function',
           },
-          body: JSON.stringify({
-            model: provider.model,
-            prompt,
-            n: 1,
-            size: '1024x1024',
-            response_format: 'b64_json',
-          }),
+          body: requestBody,
         }),
         timeoutMs,
         `Provider ${provider.id} timeout after ${timeoutMs}ms`
       );
 
+      console.log(`[image-generate] ${provider.id} response status: ${response.status}`);
+
       const data = await parseResponseJson(response);
       if (!response.ok) {
+        console.log(`[image-generate] ${provider.id} failed: ${response.status}, error: ${JSON.stringify(data)?.substring(0, 200)}`);
         lastFailure = {
           providerId: provider.id,
           url,
@@ -209,7 +217,7 @@ const tryGenerateByProvider = async (
         providerId: provider.id,
         url,
         message: isTimeout
-          ? `Request timeout after ${isPrimary ? '10s' : '20s'}`
+          ? `Request timeout after ${isPrimary ? '45s' : '60s'}`
           : (error instanceof Error ? error.message : String(error)),
       };
     }
@@ -227,6 +235,56 @@ const tryGenerateByProvider = async (
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
+  }
+
+  // Network test endpoint
+  if (req.method === 'GET' && new URL(req.url).searchParams.get('test') === 'network') {
+    const testResults = [];
+
+    // Test 1: Simple HTTP request
+    try {
+      const start = Date.now();
+      const resp = await fetch('https://httpbin.org/get', { signal: AbortSignal.timeout(5000) });
+      const elapsed = Date.now() - start;
+      testResults.push({ name: 'httpbin', status: resp.status, elapsed: `${elapsed}ms`, success: true });
+    } catch (e) {
+      testResults.push({ name: 'httpbin', error: String(e), success: false });
+    }
+
+    // Test 2: Test newapi connectivity (without auth)
+    try {
+      const start = Date.now();
+      const resp = await fetch('https://newapi.omgteam.me/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'test', prompt: 'test' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      const elapsed = Date.now() - start;
+      testResults.push({ name: 'newapi', status: resp.status, elapsed: `${elapsed}ms`, success: resp.status < 500 });
+    } catch (e) {
+      testResults.push({ name: 'newapi', error: String(e), success: false });
+    }
+
+    // Test 3: Test tokendance connectivity (without auth)
+    try {
+      const start = Date.now();
+      const resp = await fetch('https://tokendance.space/gateway/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'test', prompt: 'test' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      const elapsed = Date.now() - start;
+      testResults.push({ name: 'tokendance', status: resp.status, elapsed: `${elapsed}ms`, success: resp.status < 500 });
+    } catch (e) {
+      testResults.push({ name: 'tokendance', error: String(e), success: false });
+    }
+
+    return new Response(JSON.stringify({ testResults, timestamp: new Date().toISOString() }), {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   }
 
   if (req.method !== 'POST') {
