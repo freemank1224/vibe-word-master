@@ -144,7 +144,9 @@ const tryGenerateByProvider = async (
 
   for (const url of urls) {
     try {
-      const timeoutMs = isPrimary ? 45000 : 60000;
+      // Primary: longer timeout (90s), only backup on explicit errors
+      // Backup: shorter timeout (60s) since it's the fallback
+      const timeoutMs = isPrimary ? 90000 : 60000;
       const requestBody = JSON.stringify({
         model: provider.model,
         prompt,
@@ -217,7 +219,7 @@ const tryGenerateByProvider = async (
         providerId: provider.id,
         url,
         message: isTimeout
-          ? `Request timeout after ${isPrimary ? '45s' : '60s'}`
+          ? `Request timeout after ${isPrimary ? '90s' : '60s'}`
           : (error instanceof Error ? error.message : String(error)),
       };
     }
