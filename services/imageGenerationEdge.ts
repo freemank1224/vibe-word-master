@@ -14,7 +14,7 @@ export type ImageGenerationEdgeResult = {
   model?: string | null;
 };
 
-const IMAGE_GENERATION_TIMEOUT_MS = 45_000;
+const IMAGE_GENERATION_TIMEOUT_MS = 120_000; // 2 minutes - allow primary + backup timeout
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   return await Promise.race([
