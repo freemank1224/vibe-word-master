@@ -111,6 +111,15 @@ type EditableWord = {
   language?: string;
 };
 
+type InputValidationStage =
+  | 'IDLE'
+  | 'VALIDATING_SPELLING'
+  | 'VALIDATING_PHRASE'
+  | 'CHECKING_COLLOCATION'
+  | 'GENERATING_CHINESE_MEANING'
+  | 'GENERATING_PRONUNCIATION'
+  | 'FINALIZING';
+
 const createEditableWord = (word: Omit<EditableWord, 'tempId'> & { tempId?: string }): EditableWord => ({
   tempId: word.tempId || word.id || globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   id: word.id,
@@ -3230,6 +3239,7 @@ const InputMode: React.FC<{
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [validationStage, setValidationStage] = useState<InputValidationStage>('IDLE');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [serviceErrorWord, setServiceErrorWord] = useState<string | null>(null);
@@ -3261,6 +3271,26 @@ const InputMode: React.FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingLockRef = useRef(false);
   const fallbackMeaning = '暂无中文释义';
+
+  const validationStageLabel: Record<InputValidationStage, string> = {
+    IDLE: 'VALIDATING...',
+    VALIDATING_SPELLING: 'VALIDATING SPELLING...',
+    VALIDATING_PHRASE: 'VALIDATING PHRASE STRUCTURE...',
+    CHECKING_COLLOCATION: 'CHECKING PHRASE NATURALNESS...',
+    GENERATING_CHINESE_MEANING: 'GENERATING CHINESE MEANING...',
+    GENERATING_PRONUNCIATION: 'GENERATING PRONUNCIATION...',
+    FINALIZING: 'FINALIZING WORD...',
+  };
+
+  const validationStageStep: Partial<Record<InputValidationStage, number>> = {
+    VALIDATING_SPELLING: 1,
+    VALIDATING_PHRASE: 1,
+    CHECKING_COLLOCATION: 2,
+    GENERATING_CHINESE_MEANING: 3,
+    GENERATING_PRONUNCIATION: 4,
+    FINALIZING: 5,
+  };
+  const validationTotalSteps = 5;
 
   const normalizeAcceptedInput = (rawInput: string, suggestion?: string) => {
     const trimmedRaw = rawInput.trim();
@@ -3366,6 +3396,7 @@ const InputMode: React.FC<{
       try {
         // Check if input is a phrase (contains spaces)
         const isPhrase = trimmed.includes(' ');
+        setValidationStage(isPhrase ? 'VALIDATING_PHRASE' : 'VALIDATING_SPELLING');
 
         let validation;
         if (isPhrase) {
@@ -3400,6 +3431,7 @@ const InputMode: React.FC<{
         // Handle 2-word phrase collocation check
         if (validation.needsCollocationCheck) {
           try {
+            setValidationStage('CHECKING_COLLOCATION');
             const collocationResult = await aiService.validateCollocation(trimmed);
 
             if (!collocationResult.isCommon) {
@@ -3419,10 +3451,20 @@ const InputMode: React.FC<{
         }
 
         const normalizedInput = normalizeAcceptedInput(trimmed, validation.suggestion);
+        setValidationStage('GENERATING_CHINESE_MEANING');
         const dictionaryDetails = await resolveDictionaryDetails(normalizedInput);
+        setValidationStage('GENERATING_PRONUNCIATION');
+        try {
+          const { preloadAudio } = await import('./services/pronunciationService');
+          await preloadAudio(normalizedInput, 'en');
+        } catch (error) {
+          console.warn('Pronunciation preload failed:', error);
+        }
+        setValidationStage('FINALIZING');
         startWordDrill(normalizedInput, dictionaryDetails);
       } finally {
         setIsProcessing(false);
+        setValidationStage('IDLE');
         processingLockRef.current = false;
       }
       return;
@@ -3545,14 +3587,21 @@ const InputMode: React.FC<{
     }
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.onstart = () => setIsProcessing(true);
+    recognition.onstart = () => {
+      setValidationStage('VALIDATING_SPELLING');
+      setIsProcessing(true);
+    };
     recognition.onresult = (event: any) => {
       const text = event.results[0][0].transcript;
       setInputValue(text);
       setIsProcessing(false);
+      setValidationStage('IDLE');
       // Auto-submit if needed? No, let user confirm.
     };
-    recognition.onerror = () => setIsProcessing(false);
+    recognition.onerror = () => {
+      setIsProcessing(false);
+      setValidationStage('IDLE');
+    };
     recognition.start();
   };
 
@@ -3659,6 +3708,10 @@ const InputMode: React.FC<{
           disabled={isProcessing}
           status={inputStatus}
           hintOverlay={targetWord ? undefined : undefined} 
+          showProcessingOverlay={isProcessing}
+          processingLabel={validationStageLabel[validationStage]}
+          processingStep={validationStageStep[validationStage]}
+          processingTotalSteps={validationTotalSteps}
         />
         
         {/* Drill Info Text */}
@@ -3676,15 +3729,6 @@ const InputMode: React.FC<{
             </div>
         )}
 
-        {isProcessing && (
-          <div className="absolute inset-0 bg-charcoal/50 backdrop-blur-sm flex items-center justify-center rounded-xl z-10 h-64 md:h-80">
-             <div className="flex items-center gap-3 text-electric-blue font-headline text-2xl animate-pulse">
-                <span className="material-symbols-outlined animate-spin">sync</span>
-                <HoverTranslationText text="VALIDATING..." translation="正在校验..." />
-             </div>
-          </div>
-        )}
-        
         {errorMsg && (
           <div className="absolute top-full text-center mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
             <div className="bg-red-600 border border-red-400 text-white px-6 py-3 rounded-xl flex items-center gap-3 shadow-[0_0_25px_rgba(220,38,38,0.4)]">

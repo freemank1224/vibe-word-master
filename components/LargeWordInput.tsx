@@ -14,6 +14,10 @@ interface LargeWordInputProps {
   theme?: 'default' | 'review';
   maxWidth?: string;
   fitToContent?: boolean;
+  showProcessingOverlay?: boolean;
+  processingLabel?: string;
+  processingStep?: number;
+  processingTotalSteps?: number;
 }
 
 export const LargeWordInput: React.FC<LargeWordInputProps> = ({ 
@@ -28,7 +32,11 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   targetWord = '',
   theme = 'default',
   maxWidth = 'calc(100vw - 6rem)',
-  fitToContent = false
+  fitToContent = false,
+  showProcessingOverlay = false,
+  processingLabel = 'VALIDATING...',
+  processingStep,
+  processingTotalSteps
 }) => {
   const [inputWidth, setInputWidth] = useState('400px');
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -118,37 +126,66 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
       </span>
 
       <div className="relative max-w-full flex justify-center h-full items-center transition-[width,max-width] duration-300 ease-out">
-        <input
-          ref={inputRef}
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (disabled) {
-              return;
-            }
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              onEnter?.();
-            }
-          }}
-          placeholder={placeholder}
-          readOnly={disabled}
-          spellCheck="false"
-          style={{ width: inputWidth, maxWidth }}
-          className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
-            status === 'correct' 
-              ? 'status-correct scale-105' 
-              : status === 'wrong' 
-              ? 'status-wrong animate-shake' 
-              : theme === 'review'
-                ? 'theme-review-idle focus:border-red-400'
-              : showWordBlocks 
-                ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white'
-                : 'border-mid-charcoal focus:border-electric-blue text-white'
-          }`}
-          autoFocus
-        />
+        <div className="relative w-fit max-w-full">
+          <input
+            ref={inputRef}
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (disabled) {
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onEnter?.();
+              }
+            }}
+            placeholder={placeholder}
+            readOnly={disabled}
+            spellCheck="false"
+            style={{ width: inputWidth, maxWidth }}
+            className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
+              status === 'correct' 
+                ? 'status-correct scale-105' 
+                : status === 'wrong' 
+                ? 'status-wrong animate-shake' 
+                : theme === 'review'
+                  ? 'theme-review-idle focus:border-red-400'
+                : showWordBlocks 
+                  ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white'
+                  : 'border-mid-charcoal focus:border-electric-blue text-white'
+            }`}
+            autoFocus
+          />
+
+          {showProcessingOverlay && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-charcoal/70 backdrop-blur-sm border border-mid-charcoal/40 px-4">
+              <div className="flex flex-col items-center gap-2 text-electric-blue animate-pulse">
+                <div className="flex items-center gap-3 font-headline text-lg md:text-2xl whitespace-nowrap">
+                  <span className="material-symbols-outlined animate-spin">sync</span>
+                  <span>{processingLabel}</span>
+                </div>
+                {!!processingTotalSteps && !!processingStep && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] tracking-widest text-electric-blue/80">{processingStep}/{processingTotalSteps}</span>
+                    <div className="flex items-center gap-1.5">
+                      {Array.from({ length: processingTotalSteps }).map((_, index) => {
+                        const active = index < processingStep;
+                        return (
+                          <span
+                            key={index}
+                            className={`h-1.5 w-1.5 rounded-full transition-all ${active ? 'bg-electric-blue shadow-[0_0_8px_rgba(0,240,255,0.7)]' : 'bg-mid-charcoal/80'}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {hintOverlay && (
           <div 
