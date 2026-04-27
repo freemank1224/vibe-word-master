@@ -3636,52 +3636,59 @@ const InputMode: React.FC<{
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-12 py-10 animate-in fade-in duration-500 relative">
-      <div className="w-full flex items-center justify-between px-2">
-         <button 
-            onClick={handleCancelClick} 
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-light-charcoal border border-mid-charcoal text-text-light hover:text-white hover:border-electric-blue transition-all group"
-         >
-            <span className="material-symbols-outlined group-hover:-translate-x-1 transition-transform">arrow_back</span>
-            <span className="font-mono text-xs uppercase tracking-wider"><HoverTranslationText text="Dashboard" translation="仪表盘" /></span>
-         </button>
-         
-         {/* Repetition Setting */}
-         <div className="flex items-center gap-3 bg-light-charcoal border border-mid-charcoal px-4 py-2 rounded-full">
-            <span className="text-[10px] font-mono uppercase text-text-dark"><HoverTranslationText text="Repetitions" translation="重复次数" /></span>
-            <div className="flex items-center gap-2">
+    <div className="max-w-4xl mx-auto space-y-6 py-6 animate-in fade-in duration-500 relative">
+      <div className="w-full flex flex-col items-center gap-3 px-2">
+        <div className="w-full grid grid-cols-3 items-center gap-3">
+          <div className="flex justify-start">
+            <button 
+              onClick={handleCancelClick} 
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-light-charcoal border border-mid-charcoal text-text-light hover:text-white hover:border-electric-blue transition-all group"
+            >
+              <span className="material-symbols-outlined group-hover:-translate-x-1 transition-transform">arrow_back</span>
+              <span className="font-mono text-xs uppercase tracking-wider"><HoverTranslationText text="Dashboard" translation="仪表盘" /></span>
+            </button>
+          </div>
+
+          <div className="flex justify-center">
+            <div className="flex items-center gap-3 bg-light-charcoal px-4 py-2 rounded-xl border border-mid-charcoal shadow-lg">
+              <span className="material-symbols-outlined text-electric-blue">checklist</span>
+              <label className="text-xs font-headline text-text-dark tracking-widest uppercase"><HoverTranslationText text="Session Words:" translation="本批次单词：" /></label>
+              <span className="font-mono font-bold text-xl text-electric-green leading-none">{currentWords.length}</span>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <div className="flex items-center gap-3 bg-light-charcoal border border-mid-charcoal px-4 py-2 rounded-full">
+              <span className="text-[10px] font-mono uppercase text-text-dark"><HoverTranslationText text="Repetitions" translation="添加单词时，要重复输入的次数" /></span>
+              <div className="flex items-center gap-2">
                 <button 
-                    onClick={() => setRepeatCount(Math.max(1, repeatCount - 1))}
-                    className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
+                  onClick={() => setRepeatCount(Math.max(1, repeatCount - 1))}
+                  className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
                 >
-                    -
+                  -
                 </button>
                 <span className="font-mono text-electric-blue font-bold w-4 text-center">{repeatCount}</span>
                 <button 
-                    onClick={() => setRepeatCount(Math.min(10, repeatCount + 1))}
-                    className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
+                  onClick={() => setRepeatCount(Math.min(10, repeatCount + 1))}
+                  className="w-6 h-6 rounded-full bg-dark-charcoal flex items-center justify-center hover:bg-mid-charcoal text-white"
                 >
-                    +
+                  +
                 </button>
+              </div>
             </div>
-         </div>
-         
-         {initialWords.length > 0 && (
-             <span className="font-mono text-xs text-electric-blue border border-electric-blue/30 px-3 py-1 rounded-full uppercase tracking-wider"><HoverTranslationText text="Editing Mode" translation="编辑模式" /></span>
-         )}
-      </div>
+          </div>
+        </div>
 
-      <div className="flex flex-col items-center gap-6">
-        <div className="flex items-center gap-4 bg-light-charcoal p-4 rounded-2xl border border-mid-charcoal shadow-lg">
-          <span className="material-symbols-outlined text-electric-blue">checklist</span>
-          <label className="text-sm font-headline text-text-dark tracking-widest uppercase"><HoverTranslationText text="Session Words:" translation="本批次单词：" /></label>
-          <span className="font-mono font-bold text-2xl text-electric-green">{currentWords.length}</span>
+        <div className="h-6 flex items-center justify-center">
+          {initialWords.length > 0 && (
+            <span className="font-mono text-xs text-electric-blue border border-electric-blue/30 px-3 py-1 rounded-full uppercase tracking-wider"><HoverTranslationText text="Editing Mode" translation="编辑模式" /></span>
+          )}
         </div>
       </div>
 
       <div className="relative flex flex-col items-center">
         {/* Drill Indicators */}
-        <div className="flex gap-4 mb-4 h-8 items-end">
+        <div className="flex gap-3 mb-3 h-7 items-end">
             {targetWord && Array.from({ length: repeatCount }).map((_, i) => (
                 <div 
                     key={i} 
@@ -3705,6 +3712,7 @@ const InputMode: React.FC<{
           }} 
           onEnter={handleInputEnter}
           placeholder={targetWord ? `TYPE "${targetWord}"` : "TYPE WORD..."}
+          maxWidth="100%"
           disabled={isProcessing}
           status={inputStatus}
           hintOverlay={targetWord ? undefined : undefined} 
