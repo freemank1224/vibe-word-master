@@ -115,9 +115,19 @@ const parseResponseJson = async (response: Response) => {
   }));
 };
 
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, timeoutError: string): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(timeoutError)), timeoutMs)
+    ),
+  ]);
+};
+
 const tryGenerateByProvider = async (
   provider: ProviderConfig,
   prompt: string,
+  isPrimary: boolean,
 ): Promise<{ dataUrl: string; providerId: ProviderId; model: string; attemptedUrl: string } | { error: ProviderAttemptFailure }> => {
   const urls = getImageGenerationUrls(provider.baseUrl);
   if (urls.length === 0) {
@@ -134,20 +144,25 @@ const tryGenerateByProvider = async (
 
   for (const url of urls) {
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: provider.model,
-          prompt,
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
+      const timeoutMs = isPrimary ? 10000 : 20000;
+      const response = await withTimeout(
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${provider.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            prompt,
+            n: 1,
+            size: '1024x1024',
+            response_format: 'b64_json',
+          }),
         }),
-      });
+        timeoutMs,
+        `Provider ${provider.id} timeout after ${timeoutMs}ms`
+      );
 
       const data = await parseResponseJson(response);
       if (!response.ok) {
@@ -189,10 +204,13 @@ const tryGenerateByProvider = async (
         message: 'response has no b64_json/url',
       };
     } catch (error) {
+      const isTimeout = error instanceof Error && error.message.includes('timeout');
       lastFailure = {
         providerId: provider.id,
         url,
-        message: error instanceof Error ? error.message : String(error),
+        message: isTimeout
+          ? `Request timeout after ${isPrimary ? '10s' : '20s'}`
+          : (error instanceof Error ? error.message : String(error)),
       };
     }
   }
@@ -242,8 +260,11 @@ serve(async (req) => {
     const prompt = promptOverride || buildPrompt(word);
     const failures: ProviderAttemptFailure[] = [];
 
-    for (const provider of providers) {
-      const result = await tryGenerateByProvider(provider, prompt);
+    const providerCount = providers.length;
+    for (let i = 0; i < providerCount; i++) {
+      const provider = providers[i];
+      const isPrimary = providerCount > 1 && i === 0;
+      const result = await tryGenerateByProvider(provider, prompt, isPrimary);
       if ('error' in result) {
         failures.push(result.error);
         continue;
