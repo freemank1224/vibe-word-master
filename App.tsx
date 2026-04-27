@@ -2459,6 +2459,8 @@ const Dashboard: React.FC<{
   onDismissRecentSessionsHighlight?: () => void,
 }> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
   const [carouselIndex, setCarouselIndex] = useState(0);
+  const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
+  const [previewScale, setPreviewScale] = useState(1);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const recentSessionsRef = useRef<HTMLDivElement>(null);
   const {
@@ -2476,9 +2478,10 @@ const Dashboard: React.FC<{
           id: word.id,
           text: word.text,
           imageSrc: src,
+          sessionId: word.sessionId,
         };
       })
-      .filter(Boolean) as { id: string; text: string; imageSrc: string }[];
+      .filter(Boolean) as { id: string; text: string; imageSrc: string; sessionId: string }[];
   }, [words, cachedImageDataUrls]);
 
   // 1. Auto-rotation logic (5 seconds)
@@ -2515,8 +2518,79 @@ const Dashboard: React.FC<{
   const totalAll = Object.values(stats).reduce((acc: number, curr: DayStats) => acc + curr.total, 0);
   const accuracy = (totalAll as number) > 0 ? ((totalCorrect as number) / (totalAll as number)) * 100 : 0;
 
+  const openPreview = (item: { id: string; text: string; imageSrc: string; sessionId: string }) => {
+    setPreviewImage(item);
+    setPreviewScale(1);
+  };
+
+  const closePreview = () => {
+    setPreviewImage(null);
+    setPreviewScale(1);
+  };
+
+  const handlePreviewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.12 : -0.12;
+    setPreviewScale(prev => Math.max(0.5, Math.min(4, Number((prev + delta).toFixed(2)))));
+  };
+
   return (
     <div className="relative grid lg:grid-cols-12 gap-8 items-stretch animate-in fade-in slide-in-from-bottom-4 duration-700">
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-[220] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
+          onClick={closePreview}
+        >
+          <div
+            className="relative inline-block max-w-[calc(100vw-40px)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="relative rounded-2xl overflow-hidden border border-mid-charcoal"
+              onWheel={handlePreviewWheel}
+              title="可使用鼠标滚轮缩放图片"
+            >
+              <img
+                src={previewImage.imageSrc}
+                alt={previewImage.text}
+                className="block max-w-[calc(100vw-40px)] max-h-[calc(100vh-180px)] w-auto h-auto transition-transform duration-150"
+                style={{ transform: `scale(${previewScale})`, transformOrigin: 'center center' }}
+              />
+
+              <div className="absolute left-3 top-3 flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    closePreview();
+                    onStartEdit(previewImage.sessionId);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-electric-blue text-charcoal hover:bg-white transition-colors text-xs font-headline"
+                >
+                  打开所属 Session
+                </button>
+              </div>
+
+              <div className="absolute right-3 top-3 flex items-center gap-2">
+                <span className="px-2 py-1 rounded-md bg-black/45 text-white font-mono text-[10px]">
+                  {Math.round(previewScale * 100)}%
+                </span>
+                <button
+                  onClick={closePreview}
+                  className="w-8 h-8 rounded-lg bg-black/45 text-text-light hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center"
+                  title="关闭预览"
+                >
+                  <span className="material-symbols-outlined text-base">close</span>
+                </button>
+              </div>
+
+              <div className="absolute left-0 right-0 bottom-0 px-4 py-3 bg-gradient-to-t from-black/75 to-transparent">
+                <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em]">Image Preview</p>
+                <p className="text-white font-serif text-lg truncate">{previewImage.text}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {highlightRecentSessions && (
         <div
           className="fixed inset-0 z-30 bg-black/75 backdrop-blur-[2px] animate-in fade-in duration-300"
@@ -2531,25 +2605,66 @@ const Dashboard: React.FC<{
             <div className="absolute -inset-1 bg-gradient-to-r from-electric-blue to-electric-purple rounded-3xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative w-full h-full bg-light-charcoal rounded-3xl border border-mid-charcoal overflow-hidden flex flex-col items-center justify-center">
               {wordsWithImages.length > 0 ? (
-                <div key={wordsWithImages[carouselIndex].id} className="w-full h-full relative animate-in fade-in duration-1000">
-                  <img 
-                    src={wordsWithImages[carouselIndex].imageSrc} 
-                    alt={wordsWithImages[carouselIndex].text} 
-                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" 
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80 shadow-[inset_0_-40px_60px_rgba(0,0,0,0.5)]"></div>
-                  <div className="absolute bottom-4 left-4 right-4 z-10 animate-in slide-in-from-bottom-2 fade-in duration-700 delay-150">
+                <>
+                  <div className="relative w-full h-full overflow-hidden">
+                    <div
+                      className="flex w-full h-full transition-transform duration-700 ease-out"
+                      style={{ transform: `translateX(-${carouselIndex * 100}%)` }}
+                    >
+                      {wordsWithImages.map((item) => (
+                        <button
+                          key={item.id}
+                          className="relative w-full h-full shrink-0 text-left"
+                          onClick={() => openPreview(item)}
+                          title="点击预览大图（可右键保存）"
+                        >
+                          <img
+                            src={item.imageSrc}
+                            alt={item.text}
+                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80 shadow-[inset_0_-40px_60px_rgba(0,0,0,0.5)]"></div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {wordsWithImages.length > 1 && (
+                    <>
+                      <button
+                        onClick={() => setCarouselIndex(prev => (prev - 1 + wordsWithImages.length) % wordsWithImages.length)}
+                        className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 transition-colors flex items-center justify-center"
+                        title="上一张"
+                      >
+                        <span className="material-symbols-outlined text-base">chevron_left</span>
+                      </button>
+                      <button
+                        onClick={() => setCarouselIndex(prev => (prev + 1) % wordsWithImages.length)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 transition-colors flex items-center justify-center"
+                        title="下一张"
+                      >
+                        <span className="material-symbols-outlined text-base">chevron_right</span>
+                      </button>
+                    </>
+                  )}
+
+                  <div className="absolute bottom-4 left-4 right-4 z-10 animate-in slide-in-from-bottom-2 fade-in duration-700 delay-150 pointer-events-none">
                     <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1 drop-shadow-sm">Featured</p>
                     <p className="font-serif text-2xl text-white italic capitalize drop-shadow-lg">{wordsWithImages[carouselIndex].text}</p>
                     {wordsWithImages.length > 1 && (
-                      <div className="flex gap-1 mt-3">
+                      <div className="flex gap-1 mt-3 pointer-events-auto">
                           {wordsWithImages.map((_, idx) => (
-                              <div key={idx} className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20'}`} />
+                              <button
+                                key={idx}
+                                onClick={() => setCarouselIndex(idx)}
+                                className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20 hover:bg-white/40'}`}
+                                title={`切换到第 ${idx + 1} 张`}
+                              />
                           ))}
                       </div>
                     )}
                   </div>
-                </div>
+                </>
               ) : (
                 <div className="w-full h-full relative animate-in fade-in duration-700">
                   <img src="/publicImages/ALL.webp" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
