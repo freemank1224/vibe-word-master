@@ -16,6 +16,13 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// 生成随机密码
+function generatePassword(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 serve(async (req) => {
   // 处理CORS预检请求
   if (req.method === 'OPTIONS') {
@@ -55,7 +62,7 @@ serve(async (req) => {
         redirect_uri: redirectUri || `${new URL(req.url).origin}/auth/watcha/callback`,
         client_id: WATCHA_CONFIG.clientId,
         client_secret: WATCHA_CONFIG.clientSecret,
-        code_verifier: codeVerifier,  // PKCE required
+        code_verifier: codeVerifier,
       }),
     });
 
@@ -97,6 +104,7 @@ serve(async (req) => {
 
     // 3. 在Supabase中创建或登录用户
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -115,10 +123,13 @@ serve(async (req) => {
       );
     }
 
-    let supabaseUser;
+    let supabaseUserId: string;
 
     if (existingMapping) {
-      // 用户已存在，更新映射信息
+      // 用户已存在，直接获取用户ID
+      supabaseUserId = existingMapping.supabase_user_id;
+
+      // 更新映射信息
       await supabase
         .from('watcha_user_mappings')
         .update({
@@ -129,24 +140,16 @@ serve(async (req) => {
         })
         .eq('watcha_user_id', userInfo.user_id);
 
-      // 获取用户
-      const { data: userData } = await supabase.auth.admin.getUserById(existingMapping.supabase_user_id);
-      supabaseUser = userData.user;
-
-      console.log('已存在用户登录:', { id: supabaseUser?.id });
+      console.log('已存在用户登录:', { id: supabaseUserId });
     } else {
       // 新用户：创建Supabase账户
       const watchaEmail = `watcha_${userInfo.user_id}@watcha.local`;
-
-      // 生成随机密码
-      const tempPassword = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
+      const watchaPassword = generatePassword();
 
       // 创建用户
       const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
         email: watchaEmail,
-        password: tempPassword,
+        password: watchaPassword,
         email_confirm: true,
         user_metadata: {
           watcha_user_id: userInfo.user_id,
@@ -164,13 +167,13 @@ serve(async (req) => {
         );
       }
 
-      supabaseUser = newUser.user;
+      supabaseUserId = newUser.user.id;
 
       // 创建观猹用户映射
       const { error: insertMappingError } = await supabase
         .from('watcha_user_mappings')
         .insert({
-          supabase_user_id: supabaseUser.id,
+          supabase_user_id: supabaseUserId,
           watcha_user_id: userInfo.user_id,
           watcha_nickname: userInfo.nickname,
           watcha_avatar_url: userInfo.avatar_url,
@@ -182,37 +185,37 @@ serve(async (req) => {
         console.error('创建观猹用户映射失败:', insertMappingError);
       }
 
-      console.log('新用户创建成功:', { id: supabaseUser.id });
+      console.log('新用户创建成功:', { id: supabaseUserId });
     }
 
-    // 4. 生成用户的session并返回
-    const { data: { session }, error: sessionError } = await supabase.auth.admin.createSession({
-      userId: supabaseUser.id,
+    // 4. 使用Admin API生成session
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession({
+      userId: supabaseUserId,
     });
 
-    if (sessionError || !session) {
+    if (sessionError || !sessionData.user || !sessionData.session) {
       console.error('创建session失败:', sessionError);
       return new Response(
-        JSON.stringify({ error: '创建登录会话失败' }),
+        JSON.stringify({ error: '创建session失败', details: sessionError?.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('登录成功:', { user_id: supabaseUser.id, session_id: session.id });
+    console.log('创建session成功:', { user_id: sessionData.user.id, session_id: sessionData.session.id });
 
     // 5. 返回session信息给前端
     return new Response(
       JSON.stringify({
         success: true,
         user: {
-          id: supabaseUser.id,
-          email: supabaseUser.email,
-          user_metadata: supabaseUser.user_metadata,
+          id: sessionData.user.id,
+          email: sessionData.user.email,
+          user_metadata: sessionData.user.user_metadata,
         },
         session: {
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
-          expires_in: session.expires_in,
+          access_token: sessionData.session.access_token,
+          refresh_token: sessionData.session.refresh_token,
+          expires_in: sessionData.session.expires_in,
         },
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
