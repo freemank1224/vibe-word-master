@@ -4,8 +4,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 // 观猹OAuth配置
 const WATCHA_CONFIG = {
-  clientId: Deno.env.get('WATCHA_CLIENT_ID') || '1p9Mcr+CNLPAMFC0',
-  clientSecret: Deno.env.get('WATCHA_CLIENT_SECRET') || 'aqkUs+5ZGLSVG6A/L/I0ib9uownWxH+w',
+  clientId: Deno.env.get('WATCHA_CLIENT_ID') || 'cXz3npcXTL0595ZS',
+  clientSecret: Deno.env.get('WATCHA_CLIENT_SECRET') || 'Y7I5gj7rTzsqXsNaWQiWDzZzoelB9tLk',
   tokenUrl: 'https://watcha.cn/oauth/api/token',
   userInfoUrl: 'https://watcha.cn/oauth/api/userinfo',
 };

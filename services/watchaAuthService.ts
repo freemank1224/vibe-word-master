@@ -5,9 +5,9 @@
 
 // 观猹OAuth2配置
 const WATCHA_CONFIG = {
-  // 测试环境配置（生产环境需替换为正式client_id）
-  clientId: import.meta.env.VITE_WATCHA_CLIENT_ID || '1p9Mcr+CNLPAMFC0',
-  clientSecret: import.meta.env.VITE_WATCHA_CLIENT_SECRET || 'aqkUs+5ZGLSVG6A/L/I0ib9uownWxH+w',
+  // 正式环境配置（前端只需要 client_id）
+  clientId: import.meta.env.VITE_WATCHA_CLIENT_ID || 'cXz3npcXTL0595ZS',
+  // clientSecret 只在服务端 Edge Function 中使用，前端不暴露
   // OAuth2 端点
   authorizeUrl: 'https://watcha.cn/oauth/authorize',
   tokenUrl: 'https://watcha.cn/oauth/api/token',
@@ -82,17 +82,6 @@ export interface WatchaUserInfo {
 }
 
 /**
- * Token响应类型
- */
-interface WatchaTokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-  refresh_token: string;
-  scope: string;
-}
-
-/**
  * 启动观猹OAuth2登录流程
  */
 export const startWatchaOAuth = (): void => {
@@ -122,7 +111,7 @@ export const startWatchaOAuth = (): void => {
 };
 
 /**
- * 处理OAuth2回调，交换授权码获取token
+ * 处理OAuth2回调，调用 Edge Function 交换授权码获取用户信息
  */
 export const handleWatchaCallback = async (
   searchParams: URLSearchParams
@@ -152,45 +141,46 @@ export const handleWatchaCallback = async (
   }
 
   try {
-    // 交换授权码获取token
-    const tokenResponse = await fetch(WATCHA_CONFIG.tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code: code,
-        redirect_uri: WATCHA_CONFIG.redirectUri,
-        client_id: WATCHA_CONFIG.clientId,
-        client_secret: WATCHA_CONFIG.clientSecret,
-        code_verifier: codeVerifier,
-      }),
-    });
+    // 调用 Edge Function 处理 OAuth 回调（服务端安全存储 client_secret）
+    const { supabase } = await import('../lib/supabaseClient');
+    const { data: { session } } = await supabase.auth.getSession();
 
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      return { success: false, error: `获取Token失败: ${errorText}` };
-    }
-
-    const tokenData: WatchaTokenResponse = await tokenResponse.json();
-
-    // 获取用户信息
-    const userInfoResponse = await fetch(
-      `${WATCHA_CONFIG.userInfoUrl}?access_token=${tokenData.access_token}`
+    const edgeFunctionResponse = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/watcha-oauth-callback`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token || import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          code,
+          redirectUri: WATCHA_CONFIG.redirectUri,
+          codeVerifier,
+        }),
+      }
     );
 
-    if (!userInfoResponse.ok) {
-      return { success: false, error: '获取用户信息失败' };
+    if (!edgeFunctionResponse.ok) {
+      const errorText = await edgeFunctionResponse.text();
+      return { success: false, error: `Edge Function 调用失败: ${errorText}` };
     }
 
-    const userInfoResult = await userInfoResponse.json();
+    const result = await edgeFunctionResponse.json();
 
-    if (userInfoResult.statusCode !== 200) {
-      return { success: false, error: userInfoResult.message || '获取用户信息失败' };
+    if (!result.success) {
+      return { success: false, error: result.error || 'OAuth 登录失败' };
     }
 
-    return { success: true, userInfo: userInfoResult.data as WatchaUserInfo };
+    // 设置 Supabase session
+    if (result.session) {
+      await supabase.auth.setSession({
+        access_token: result.session.access_token,
+        refresh_token: result.session.refresh_token,
+      });
+    }
+
+    return { success: true, userInfo: result.user?.user_metadata as WatchaUserInfo };
   } catch (err) {
     return {
       success: false,
