@@ -27,7 +27,7 @@ serve(async (req) => {
   }
 
   try {
-    const { code, redirectUri } = await req.json();
+    const { code, redirectUri, codeVerifier } = await req.json();
 
     if (!code) {
       return new Response(
@@ -36,7 +36,14 @@ serve(async (req) => {
       );
     }
 
-    // 1. 使用授权码换取access_token
+    if (!codeVerifier) {
+      return new Response(
+        JSON.stringify({ error: '缺少code_verifier' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 1. 使用授权码和code_verifier换取access_token
     const tokenResponse = await fetch(WATCHA_CONFIG.tokenUrl, {
       method: 'POST',
       headers: {
@@ -48,6 +55,7 @@ serve(async (req) => {
         redirect_uri: redirectUri || `${new URL(req.url).origin}/auth/watcha/callback`,
         client_id: WATCHA_CONFIG.clientId,
         client_secret: WATCHA_CONFIG.clientSecret,
+        code_verifier: codeVerifier,  // PKCE required
       }),
     });
 

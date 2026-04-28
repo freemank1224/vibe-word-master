@@ -35,6 +35,24 @@ export const WatchaCallback: React.FC = () => {
         setStatus('processing');
         setMessage('正在登录...');
 
+        // 从sessionStorage获取PKCE code_verifier
+        const codeVerifier = sessionStorage.getItem('watcha_code_verifier');
+        const state = sessionStorage.getItem('watcha_oauth_state');
+
+        // 验证state
+        const urlState = searchParams.get('state');
+        if (state && urlState !== state) {
+          setStatus('error');
+          setMessage('State验证失败，可能存在CSRF攻击');
+          return;
+        }
+
+        if (!codeVerifier) {
+          setStatus('error');
+          setMessage('缺少PKCE verifier，请重新登录');
+          return;
+        }
+
         // 调用Edge Function处理OAuth回调
         const { data: { session: currentSession } } = await supabase.auth.getSession();
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || supabase.auth.url?.replace('/auth/v1', '');
@@ -50,11 +68,11 @@ export const WatchaCallback: React.FC = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentSession?.access_token || ''}`,
           },
           body: JSON.stringify({
             code,
             redirectUri,
+            codeVerifier,
           }),
         });
 
