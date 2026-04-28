@@ -40,6 +40,7 @@ import { LibrarySelector } from './components/LibrarySelector';
 import { AdminConsole } from './components/AdminConsole';
 import { PronunciationMaintenancePanel } from './components/PronunciationMaintenancePanel';
 import { HoverTranslationText } from './components/HoverTranslationText';
+import { WatchaCallback } from './components/WatchaCallback';
 import { getShanghaiDateString } from './utils/timezone';
 import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
 
@@ -310,6 +311,9 @@ const App: React.FC = () => {
   const [resetToken, setResetToken] = useState<string | null>(null);
   const [showPasswordForgot, setShowPasswordForgot] = useState(false);
 
+  // Watcha OAuth Callback State
+  const [isWatchaCallback, setIsWatchaCallback] = useState(false);
+
   // Check for password reset in URL hash
   useEffect(() => {
     const hash = window.location.hash;
@@ -324,6 +328,18 @@ const App: React.FC = () => {
         // but still indicate a password recovery flow.
         setResetToken('recovery');
       }
+    }
+  }, []);
+
+  // Check for Watcha OAuth callback in URL
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const code = searchParams.get('code');
+    const state = searchParams.get('state');
+
+    // Check if this is a Watcha callback (has code and state params)
+    if (code && state) {
+      setIsWatchaCallback(true);
     }
   }, []);
 
@@ -1728,6 +1744,11 @@ const App: React.FC = () => {
   if (resetToken) {
     // Show password reset page - don't sign out as the access token will set the session
     return <PasswordReset accessToken={resetToken} onClose={() => setResetToken(null)} />;
+  }
+
+  // Watcha OAuth callback handling
+  if (isWatchaCallback) {
+    return <WatchaCallback />;
   }
 
   // Password forgot request page

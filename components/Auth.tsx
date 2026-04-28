@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { HoverTranslationText } from './HoverTranslationText';
+import { startWatchaOAuth } from '../services/watchaAuthService';
 
 interface AuthProps {
   onForgotPassword?: () => void;
@@ -148,6 +149,16 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
     } catch (error: unknown) {
       setMsgType('error');
       const errorMessage = error instanceof Error ? error.message : 'Failed to login with Google';
+      setMsg(errorMessage);
+    }
+  };
+
+  const handleWatchaLogin = async () => {
+    try {
+      startWatchaOAuth();
+    } catch (error: unknown) {
+      setMsgType('error');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to login with Watcha';
       setMsg(errorMessage);
     }
   };
@@ -372,6 +383,18 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             />
             </svg>
           CONTINUE WITH GOOGLE
+        </button>
+
+        <button
+          onClick={handleWatchaLogin}
+          className="mt-4 w-full py-4 bg-white/5 border border-white/10 text-white font-headline text-lg rounded-xl hover:bg-white/10 transition-all flex items-center justify-center gap-3"
+        >
+          <img
+            src="https://watcha.tos-cn-beijing.volces.com/products/logo/1752064513_guan-cha-insights.png?x-tos-process=image/resize,w_72/format,webp"
+            alt="观猹"
+            className="w-5 h-5 object-contain"
+          />
+          CONTINUE WITH 观猹
         </button>
 
         <div className="mt-6 text-center">
