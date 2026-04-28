@@ -124,10 +124,28 @@ serve(async (req) => {
     }
 
     let supabaseUserId: string;
+    let watchaEmail: string;
+    let watchaPassword: string;
 
     if (existingMapping) {
-      // 用户已存在，直接获取用户ID
+      // 用户已存在，生成新密码并更新
       supabaseUserId = existingMapping.supabase_user_id;
+      watchaEmail = `watcha_${userInfo.user_id}@watcha.local`;
+      watchaPassword = generatePassword();
+
+      // 更新用户密码
+      const { error: updateError } = await supabase.auth.admin.updateUserById(
+        supabaseUserId,
+        { password: watchaPassword }
+      );
+
+      if (updateError) {
+        console.error('更新用户密码失败:', updateError);
+        return new Response(
+          JSON.stringify({ error: '更新用户密码失败' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
 
       // 更新映射信息
       await supabase
@@ -143,8 +161,8 @@ serve(async (req) => {
       console.log('已存在用户登录:', { id: supabaseUserId });
     } else {
       // 新用户：创建Supabase账户
-      const watchaEmail = `watcha_${userInfo.user_id}@watcha.local`;
-      const watchaPassword = generatePassword();
+      watchaEmail = `watcha_${userInfo.user_id}@watcha.local`;
+      watchaPassword = generatePassword();
 
       // 创建用户
       const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
@@ -188,34 +206,36 @@ serve(async (req) => {
       console.log('新用户创建成功:', { id: supabaseUserId });
     }
 
-    // 4. 使用Admin API生成session
-    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession({
-      userId: supabaseUserId,
+    // 4. 使用密码登录获取session
+    // 使用service_role key的客户端直接调用signInWithPassword
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email: watchaEmail,
+      password: watchaPassword,
     });
 
-    if (sessionError || !sessionData.user || !sessionData.session) {
-      console.error('创建session失败:', sessionError);
+    if (signInError || !signInData.user || !signInData.session) {
+      console.error('登录失败:', signInError);
       return new Response(
-        JSON.stringify({ error: '创建session失败', details: sessionError?.message }),
+        JSON.stringify({ error: '登录失败', details: signInError?.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('创建session成功:', { user_id: sessionData.user.id, session_id: sessionData.session.id });
+    console.log('登录成功:', { user_id: signInData.user.id, session_id: signInData.session.id });
 
     // 5. 返回session信息给前端
     return new Response(
       JSON.stringify({
         success: true,
         user: {
-          id: sessionData.user.id,
-          email: sessionData.user.email,
-          user_metadata: sessionData.user.user_metadata,
+          id: signInData.user.id,
+          email: signInData.user.email,
+          user_metadata: signInData.user.user_metadata,
         },
         session: {
-          access_token: sessionData.session.access_token,
-          refresh_token: sessionData.session.refresh_token,
-          expires_in: sessionData.session.expires_in,
+          access_token: signInData.session.access_token,
+          refresh_token: signInData.session.refresh_token,
+          expires_in: signInData.session.expires_in,
         },
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
