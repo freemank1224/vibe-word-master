@@ -3,12 +3,14 @@ import React, { useState } from 'react';
 import { DayStats } from '../types';
 import { getShanghaiDateString } from '../utils/timezone';
 import { HoverTranslationText } from './HoverTranslationText';
+import { useT } from '../hooks/useT';
 
 interface CalendarViewProps {
   stats: Record<string, DayStats>;
 }
 
 export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
+  const t = useT();
   const [viewDate, setViewDate] = useState(new Date());
   const [flashingDate, setFlashingDate] = useState<string | null>(null);
   const shanghaiToday = getShanghaiDateString();
@@ -20,8 +22,6 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
   const firstDayOfMonth = new Date(year, month, 1).getDay();
   // Adjust for Monday start (0=Sun, 1=Mon... -> 0=Mon, 1=Tue... 6=Sun)
   const firstDay = firstDayOfMonth === 0 ? 6 : firstDayOfMonth - 1;
-
-  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const blanks = Array.from({ length: firstDay }, (_, i) => i);
@@ -70,7 +70,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
     <div className="bg-light-charcoal p-8 rounded-3xl border border-mid-charcoal shadow-2xl flex flex-col min-h-[500px]">
       <div className="flex justify-between items-center mb-8">
         <div className="flex flex-col">
-            <h3 className="font-headline text-3xl text-electric-blue tracking-widest uppercase">{monthNames[month]}</h3>
+            <h3 className="font-headline text-3xl text-electric-blue tracking-widest uppercase">{t.monthNames[month]}</h3>
             <span className="font-mono text-sm text-text-dark tracking-tighter">{year}</span>
         </div>
         <div className="flex items-center gap-3">
@@ -84,7 +84,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                 onClick={jumpToToday}
                 className="px-3 py-1 text-[10px] font-mono border border-mid-charcoal rounded hover:bg-mid-charcoal transition-colors uppercase"
             >
-                Today
+                {t.today}
             </button>
             <button 
                 onClick={() => changeMonth(1)}
@@ -96,7 +96,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
       </div>
       
       <div className="flex-1 grid grid-cols-7 gap-3 h-full">
-        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+        {t.dayLabels.map((d, i) => (
           <div key={`${d}-${i}`} className="text-center text-text-dark text-xs font-black mb-2 opacity-50">{d}</div>
         ))}
         

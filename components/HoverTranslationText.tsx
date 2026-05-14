@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface HoverTranslationTextProps {
   text: string;
@@ -11,6 +12,12 @@ export const HoverTranslationText: React.FC<HoverTranslationTextProps> = ({
   translation,
   className = ''
 }) => {
+  const { isZh } = useLanguage();
+
+  if (isZh) {
+    return <span className={`text-inherit ${className}`}>{translation}</span>;
+  }
+
   return (
     <span className={`group/translation relative inline-flex cursor-help bg-inherit bg-clip-text text-inherit ${className}`}>
       <span className="text-inherit">{text}</span>

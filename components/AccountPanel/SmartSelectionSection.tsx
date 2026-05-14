@@ -1,6 +1,7 @@
 import React from 'react';
 import { ToggleSwitch } from '../ToggleSwitch';
 import { HoverTranslationText } from '../HoverTranslationText';
+import { useT } from '../../hooks/useT';
 
 interface SmartSelectionSectionProps {
   enabled: boolean;
@@ -8,6 +9,7 @@ interface SmartSelectionSectionProps {
 }
 
 export const SmartSelectionSection: React.FC<SmartSelectionSectionProps> = ({ enabled, onToggle }) => {
+  const t = useT();
   return (
     <div className="space-y-4">
       <h3 className="font-headline text-lg text-text-dark tracking-[0.2em] uppercase"><HoverTranslationText text="Smart Selection" translation="智能选择" /></h3>
@@ -15,8 +17,8 @@ export const SmartSelectionSection: React.FC<SmartSelectionSectionProps> = ({ en
         <div>
           <div className="text-white font-mono text-sm mb-1"><HoverTranslationText text="Smart Selection Assistant" translation="智能选择助手" /></div>
           <div className="text-[10px] text-text-light font-mono max-w-[200px] leading-tight">
-            OFF: Random selection from checked words<br/>
-            ON: Intelligent selection based on error history & forgetting curve
+            {t.smartSelectionOff}<br/>
+            {t.smartSelectionOn}
           </div>
         </div>
         <ToggleSwitch

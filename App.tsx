@@ -43,6 +43,8 @@ import { HoverTranslationText } from './components/HoverTranslationText';
 import { WatchaCallback } from './components/WatchaCallback';
 import { getShanghaiDateString } from './utils/timezone';
 import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
+import { LanguageProvider } from './contexts/LanguageContext';
+import { useT } from './hooks/useT';
 
 // --- Tooltip Component ---
 interface TooltipProps {
@@ -150,6 +152,7 @@ const normalizeDefinitionBackfillKey = (text: string, language: string = 'en') =
 };
 
 const App: React.FC = () => {
+  const t = useT();
   const [session, setSession] = useState<any>(null);
   const [showLanding, setShowLanding] = useState(true);
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
@@ -1725,16 +1728,16 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-dark-charcoal p-4 text-center animate-in fade-in duration-700">
         <span className="material-symbols-outlined text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]">cloud_off</span>
-        <h1 className="font-headline text-4xl text-white mb-4 tracking-wider">NEURAL LINK SEVERED</h1>
+        <h1 className="font-headline text-4xl text-white mb-4 tracking-wider">{t.neuralLinkSevered}</h1>
         <div className="bg-light-charcoal border border-mid-charcoal p-6 rounded-2xl max-w-lg shadow-2xl">
           <p className="font-mono text-text-dark text-sm mb-4 leading-relaxed">
-            Database credentials are missing. The application cannot synchronize with the cloud matrix.
+            {t.dbMissingDesc}
           </p>
           <div className="bg-dark-charcoal p-4 rounded-lg text-left mb-4 overflow-x-auto">
              <code className="text-xs font-mono text-electric-blue block mb-2">SUPABASE_URL=...</code>
              <code className="text-xs font-mono text-electric-blue block">SUPABASE_ANON_KEY=...</code>
           </div>
-          <p className="text-xs text-text-dark uppercase tracking-widest">Please configure your environment variables.</p>
+          <p className="text-xs text-text-dark uppercase tracking-widest">{t.configureEnvVars}</p>
         </div>
       </div>
     );
@@ -1766,7 +1769,7 @@ const App: React.FC = () => {
   if (loadingData && words.length === 0 && sessions.length === 0) {
     return (
         <div className="min-h-screen flex items-center justify-center bg-dark-charcoal text-electric-blue font-headline text-2xl animate-pulse">
-            SYNCING NEURAL LINK...
+            {t.syncingNeuralLink}
         </div>
     );
   }
@@ -1780,7 +1783,7 @@ const App: React.FC = () => {
                 onClick={() => window.location.reload()}
                 className="px-6 py-2 bg-mid-charcoal text-electric-blue rounded-lg hover:bg-electric-blue hover:text-charcoal transition-colors"
             >
-                RETRY CONNECTION
+                {t.retryConnection}
             </button>
         </div>
       );
@@ -1827,7 +1830,7 @@ const App: React.FC = () => {
           <div className="bg-light-charcoal border-2 border-yellow-500 rounded-3xl p-8 max-w-2xl w-full shadow-[0_0_50px_rgba(234,179,8,0.3)] scale-in-center">
             <div className="flex items-center gap-3 mb-6">
               <span className="material-symbols-outlined text-5xl text-yellow-500">warning</span>
-              <h3 className="text-3xl font-headline text-white tracking-tight">SYNC CONFLICT</h3>
+              <h3 className="text-3xl font-headline text-white tracking-tight">{t.syncConflict}</h3>
             </div>
 
             <p className="text-text-light mb-8 text-sm leading-relaxed">
@@ -2052,7 +2055,7 @@ const App: React.FC = () => {
                     <div className="flex items-center gap-3 mb-4 text-red-500">
                         <span className="material-symbols-outlined text-4xl">{isDeleting ? 'delete_sweep' : 'warning'}</span>
                         <h3 className="text-2xl font-headline tracking-tight">
-                            {isDeleting ? 'DELETING...' : 'CONFIRM DELETION'}
+                            {isDeleting ? t.deleting : t.confirmDeletion}
                         </h3>
                     </div>
                     
@@ -2070,25 +2073,25 @@ const App: React.FC = () => {
                                     <span className="material-symbols-outlined text-sm">
                                         {deleteProgress?.step === 'fetching' ? 'pending' : deleteProgress?.step && ['deleting-words', 'deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
                                     </span>
-                                    Preparing...
+                                    {t.preparing}
                                 </div>
                                 <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'deleting-words' ? 'text-electric-blue' : deleteProgress?.step && ['deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'text-electric-green' : 'text-text-dark'}`}>
                                     <span className="material-symbols-outlined text-sm">
                                         {deleteProgress?.step === 'deleting-words' ? 'pending' : deleteProgress?.step && ['deleting-sessions', 'cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
                                     </span>
-                                    Deleting words...
+                                    {t.deletingWords}
                                 </div>
                                 <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'deleting-sessions' ? 'text-electric-blue' : deleteProgress?.step && ['cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'text-electric-green' : 'text-text-dark'}`}>
                                     <span className="material-symbols-outlined text-sm">
                                         {deleteProgress?.step === 'deleting-sessions' ? 'pending' : deleteProgress?.step && ['cleaning-tags', 'complete'].includes(deleteProgress.step) ? 'check_circle' : 'radio_button_unchecked'}
                                     </span>
-                                    Deleting sessions...
+                                    {t.deletingSessions}
                                 </div>
                                 <div className={`flex items-center gap-2 text-xs font-mono ${deleteProgress?.step === 'cleaning-tags' ? 'text-electric-blue' : deleteProgress?.step === 'complete' ? 'text-electric-green' : 'text-text-dark'}`}>
                                     <span className="material-symbols-outlined text-sm">
                                         {deleteProgress?.step === 'cleaning-tags' ? 'pending' : deleteProgress?.step === 'complete' ? 'check_circle' : 'radio_button_unchecked'}
                                     </span>
-                                    Cleaning up tags...
+                                    {t.cleaningTags}
                                 </div>
                             </div>
                         </div>
@@ -2096,10 +2099,10 @@ const App: React.FC = () => {
                         // Confirmation View
                         <>
                             <p className="text-white font-body mb-2">
-                                You are about to delete <span className="text-electric-blue font-bold">{idsToDelete.length}</span> session(s).
+                                {t.deleteConfirmText(idsToDelete.length)}
                             </p>
                             <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
-                                WARNING: This action will permanently remove all associated words from your library and the cloud database. This process is irreversible.
+                                {t.deleteWarning}
                             </p>
                             
                             <div className="grid grid-cols-2 gap-4">
@@ -2110,13 +2113,13 @@ const App: React.FC = () => {
                                     }}
                                     className="bg-mid-charcoal hover:bg-white hover:text-charcoal text-text-light transition-all p-4 rounded-xl font-headline tracking-wider text-sm"
                                 >
-                                    CANCEL
+                                    {t.cancel}
                                 </button>
                                 <button 
                                     onClick={handleExecuteDelete}
                                     className="bg-red-500 hover:bg-red-600 text-white transition-all p-4 rounded-xl font-headline tracking-wider text-sm shadow-lg shadow-red-900/20"
                                 >
-                                    DELETE FOREVER
+                                    {t.deleteForever}
                                 </button>
                             </div>
                         </>
@@ -2204,7 +2207,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="py-2 text-center text-text-dark text-[10px] border-t border-mid-charcoal bg-dark-charcoal/80 backdrop-blur-md fixed bottom-0 left-0 right-0 z-50">
-        <p>&copy; 2024 VOCAB MONSTER - CLOUD SYNCED</p>
+        <p>{t.footerText}</p>
       </footer>
 
       {showAccountPanel && session && (
@@ -2479,6 +2482,7 @@ const Dashboard: React.FC<{
   highlightRecentSessions?: boolean,
   onDismissRecentSessionsHighlight?: () => void,
 }> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
+  const t = useT();
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
@@ -2707,7 +2711,7 @@ const Dashboard: React.FC<{
             <h2 className="text-7xl sm:text-9xl font-headline text-electric-blue leading-tight mb-4 relative z-10">
               VOCAB<br/>MONSTER
             </h2>
-            <p className="text-xl text-text-dark max-w-xl md:ml-auto relative z-10">Master vocabulary with challenges and AI.</p>
+            <p className="text-xl text-text-dark max-w-xl md:ml-auto relative z-10">{t.dashboardDesc}</p>
           </div>
         </div>
 
@@ -2717,7 +2721,7 @@ const Dashboard: React.FC<{
             className="flex-1 bg-mid-charcoal border-2 border-electric-green text-electric-green font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-electric-green hover:text-charcoal transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
           >
             <span className="material-symbols-outlined text-4xl">add_circle</span>
-            ADD WORDS
+            {t.addWords}
           </button>
           
           {selectedSessionIds.size > 0 ? (
@@ -2726,7 +2730,7 @@ const Dashboard: React.FC<{
                 className="flex-1 bg-electric-blue text-charcoal font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-white transition-all transform hover:-translate-y-1 hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] flex items-center justify-center gap-4 animate-in fade-in"
              >
                 <span className="material-symbols-outlined text-4xl">checklist</span>
-                TEST SELECTED ({selectedSessionIds.size})
+                {t.testSelected(selectedSessionIds.size)}
              </button>
           ) : (
              <button 
@@ -2734,7 +2738,7 @@ const Dashboard: React.FC<{
                 onClick={() => (sessions && sessions.length > 0) ? onQuickTest() : onStartInput()}
              >
                 <span className="material-symbols-outlined text-4xl">play_arrow</span>
-                QUICK TEST
+                {t.quickTest}
              </button>
           )}
         </div>
@@ -2827,7 +2831,7 @@ const Dashboard: React.FC<{
                                 />
                       <div data-no-drag-select="true" onClick={() => onStartEdit(s.id)} className="cursor-pointer">
                                     <p className="text-xs font-mono text-text-dark mb-1">{new Date(s.timestamp).toLocaleDateString()}</p>
-                                    <p className="font-headline text-2xl text-white group-hover:text-electric-blue">{s.wordCount} WORDS</p>
+                                    <p className="font-headline text-2xl text-white group-hover:text-electric-blue">{t.wordsUnit(s.wordCount)}</p>
                                 </div>
                              </div>
                              <div className="flex gap-2">
@@ -2888,7 +2892,7 @@ const Dashboard: React.FC<{
           <div className="flex justify-between items-end border-b border-mid-charcoal pb-2">
             <h3 className="font-headline text-2xl text-text-light tracking-widest"><HoverTranslationText text="WORD LIBRARY" translation="单词库" /></h3>
             <div className="flex items-center gap-4">
-              <span className="text-xs font-mono text-text-dark opacity-50">{words.length} TOTAL</span>
+              <span className="text-xs font-mono text-text-dark opacity-50">{t.wordsUnit(words.length)}</span>
             </div>
           </div>
 
@@ -4541,6 +4545,7 @@ const TestMode: React.FC<{
   onComplete: (results: { id: string; correct: boolean }[]) => void;
   onCancel: () => void;
 }> = ({ allWords, initialSessionIds, initialWordIds, onComplete, onCancel }) => {
+  const t = useT();
   const [queue, setQueue] = useState<WordEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState('');
@@ -4658,13 +4663,13 @@ const TestMode: React.FC<{
                   {Math.round((correctCount / queue.length) * 100)}%
               </div>
               <p className="text-text-dark mb-8 text-xl">
-                  {correctCount} correct out of {queue.length}
+                  {t.correctOutOf(correctCount, queue.length)}
               </p>
               <button 
                   onClick={() => onComplete(results)}
                   className="px-10 py-4 bg-mid-charcoal hover:bg-electric-green hover:text-charcoal text-white rounded-xl font-headline text-2xl transition-all"
               >
-                  RETURN TO DASHBOARD
+                  {t.returnToDashboard}
               </button>
           </div>
       );

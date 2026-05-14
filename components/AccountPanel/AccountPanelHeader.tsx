@@ -1,5 +1,7 @@
 import React from 'react';
 import { HoverTranslationText } from '../HoverTranslationText';
+import { useLanguage } from '../../contexts/LanguageContext';
+import { ToggleSwitch } from '../ToggleSwitch';
 
 interface AccountPanelHeaderProps {
   email?: string | null;
@@ -7,6 +9,8 @@ interface AccountPanelHeaderProps {
 }
 
 export const AccountPanelHeader: React.FC<AccountPanelHeaderProps> = ({ email, onClose }) => {
+  const { isZh, toggleLanguage } = useLanguage();
+
   return (
     <div className="p-8 border-b border-mid-charcoal flex justify-between items-center bg-light-charcoal/30">
       <div className="flex items-center gap-4">
@@ -18,9 +22,25 @@ export const AccountPanelHeader: React.FC<AccountPanelHeaderProps> = ({ email, o
           <p className="text-text-dark font-mono text-sm">{email}</p>
         </div>
       </div>
-      <button onClick={onClose} className="text-text-dark hover:text-white transition-colors p-2">
-        <span className="material-symbols-outlined">close</span>
-      </button>
+      <div className="flex items-center gap-3">
+        {/* Language Toggle */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-text-dark uppercase tracking-widest select-none">
+            {isZh ? '中文' : 'EN'}
+          </span>
+          <ToggleSwitch
+            checked={isZh}
+            onChange={toggleLanguage}
+            ariaLabel="Toggle language"
+            sizeClassName="w-10 h-6"
+            trackOnClassName="bg-electric-purple"
+            thumbClassName="w-4 h-4 bg-white"
+          />
+        </div>
+        <button onClick={onClose} className="text-text-dark hover:text-white transition-colors p-2">
+          <span className="material-symbols-outlined">close</span>
+        </button>
+      </div>
     </div>
   );
 };

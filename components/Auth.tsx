@@ -3,13 +3,17 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { HoverTranslationText } from './HoverTranslationText';
 import { startWatchaOAuth } from '../services/watchaAuthService';
+import { useT } from '../hooks/useT';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface AuthProps {
   onForgotPassword?: () => void;
 }
 
 export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
-  const LOGIN_SWITCH_TEXT = 'Please switch to "Login" mode to sign in.';
+  const t = useT();
+  const { isZh } = useLanguage();
+  const LOGIN_SWITCH_TEXT = isZh ? '切换至"登录"模式' : 'Please switch to "Login" mode to sign in.';
 
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
@@ -63,13 +67,13 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           // Handle various error scenarios
           if (error.message.includes('User already registered') || error.message.includes('already been registered')) {
             setMsgType('info');
-            setMsg("This email is already registered. Please switch to \"Login\" mode to sign in. If you've forgotten your password, use \"Forgot Password\" option below.");
+            setMsg(t.msgAlreadyRegistered);
           } else if (error.message.includes('Email not confirmed') || error.message.includes('not confirmed')) {
             setMsgType('info');
-            setMsg("Your account exists but email hasn't been confirmed yet. Please check your inbox (including spam folder) or click \"Resend Email\" below.");
+            setMsg(t.msgEmailNotConfirmedSignup);
           } else {
             setMsgType('error');
-            setMsg(`Signup failed: ${error.message}`);
+            setMsg(isZh ? `注册失败：${error.message}` : `Signup failed: ${error.message}`);
           }
         } else {
           const identities = (data.user as any)?.identities;
@@ -77,7 +81,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
 
           if (isLikelyExistingUser) {
             setMsgType('info');
-            setMsg("This email is already registered. Please switch to \"Login\" mode to sign in. If you've forgotten your password, use \"Forgot Password\" option below.");
+            setMsg(t.msgAlreadyRegistered);
             setPassword('');
             return;
           }
@@ -85,11 +89,11 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           // Check if email confirmation is required
           if (data.user && !data.user.email_confirmed_at) {
             setMsgType('success');
-            setMsg('🎉 Account created! Please check your email to activate your account (including spam folder).');
+            setMsg(t.msgAccountCreatedConfirm);
             setPassword('');
           } else if (data.session) {
             setMsgType('success');
-            setMsg('✅ Account created and logged in successfully!');
+            setMsg(t.msgAccountCreatedLogin);
             setPassword('');
           }
         }
@@ -108,23 +112,23 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
 
             if (newAttempts >= 3) {
               setMsgType('error');
-              setMsg(`❌ Invalid password (3 attempts). Forgot your password? Click "Forgot Password" below to reset it.`);
+              setMsg(t.msgInvalidCredentials3);
             } else {
               setMsgType('error');
-              setMsg(`Invalid email or password (${newAttempts}/3 attempts). Please try again.`);
+              setMsg(t.msgInvalidCredentials(newAttempts));
             }
           } else if (error.message.includes('Email not confirmed')) {
             setMsgType('error');
-            setMsg('Please confirm your email address first. Check your inbox (including spam folder).');
+            setMsg(t.msgEmailNotConfirmedLogin);
           } else {
             setMsgType('error');
-            setMsg(`Login failed: ${error.message}`);
+            setMsg(isZh ? `登录失败：${error.message}` : `Login failed: ${error.message}`);
           }
         } else {
           // Reset failed attempts on successful login
           setFailedAttempts(0);
           setMsgType('success');
-          setMsg('Welcome back! 🎮 Loading your data...');
+          setMsg(t.msgLoginSuccess);
           setPassword('');
         }
       }
@@ -171,7 +175,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
         email: email,
       });
       setMsgType('success');
-      setMsg('📧 Activation email resent! Please check your inbox (including spam folder).');
+      setMsg(t.msgResendEmailSuccess);
     } catch (error: unknown) {
       setMsgType('error');
       const errorMessage = error instanceof Error ? error.message : 'Failed to resend activation email. Please try again later.';
@@ -191,10 +195,11 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
   };
 
   const getButtonLabel = () => {
+    if (loading) return t.authProcessing;
     if (mode === 'LOGIN') {
-      return 'START';
+      return t.authStart;
     } else {
-      return 'INITIATE ACCOUNT';
+      return t.authInitiate;
     }
   };
 
@@ -350,13 +355,13 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             disabled={loading}
             className="w-full py-4 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors disabled:opacity-50"
           >
-            {loading ? 'PROCESSING...' : getButtonLabel()}
+            {getButtonLabel()}
           </button>
         </form>
 
         <div className="mt-6 flex items-center gap-4">
           <div className="flex-1 h-[1px] bg-mid-charcoal" />
-          <span className="text-[10px] font-mono text-text-dark uppercase">or</span>
+          <span className="text-[10px] font-mono text-text-dark uppercase">{t.authOrDivider}</span>
           <div className="flex-1 h-[1px] bg-mid-charcoal" />
         </div>
 
@@ -382,7 +387,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
               fill="#EA4335"
             />
             </svg>
-          CONTINUE WITH GOOGLE
+          {t.continueWithGoogle}
         </button>
 
         <button
@@ -394,7 +399,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             alt="观猹"
             className="w-5 h-5 object-contain"
           />
-          CONTINUE WITH 观猹
+          {t.continueWithWatcha}
         </button>
 
         <div className="mt-6 text-center">
@@ -402,7 +407,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             onClick={() => { setMode(mode === 'LOGIN' ? 'SIGNUP' : 'LOGIN'); setMsg(''); setMsgType('info'); }}
             className="text-xs font-mono text-text-dark hover:text-electric-blue underline uppercase"
           >
-            {mode === 'LOGIN' ? "Need an account? Sign Up" : "Already have an account? Login"}
+            {mode === 'LOGIN' ? t.needAccount : t.haveAccount}
           </button>
         </div>
       </div>

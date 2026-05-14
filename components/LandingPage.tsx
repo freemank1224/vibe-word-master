@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
+import { useT } from '../hooks/useT';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface LandingPageProps {
   onStart: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
+  const t = useT();
+  const { setLanguage } = useLanguage();
   const [demoWord, setDemoWord] = useState('');
   const [demoStatus, setDemoStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
   const [showConfetti, setShowConfetti] = useState(false);
@@ -127,16 +131,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
             {/* Left Content */}
             <div className="space-y-8 text-center md:text-left">
                 <div className="inline-block px-4 py-1.5 rounded-full border border-electric-blue/30 bg-electric-blue/10 text-electric-blue font-mono text-sm tracking-wider mb-2 animate-pulse">
-                  VOCAB MONSTER V1.1
+                  {t.vocabMonsterTag}
                 </div>
                 
                 <h1 className="font-headline text-6xl md:text-8xl tracking-wide leading-none bg-gradient-to-br from-white via-gray-200 to-gray-500 bg-clip-text text-transparent drop-shadow-lg">
-                  BUILD UP <br/>
-                  <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">LEVEL UP</span>
+                  {t.buildUp} <br/>
+                  <span className="text-electric-blue drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">{t.levelUp}</span>
                 </h1>
                 
                 <p className="font-body text-gray-400 text-lg md:text-xl max-w-md mx-auto md:mx-0 leading-relaxed">
-                  Enhance your typing skills. Master your vocabulary. Earn badges and turn your daily learning into an addictive adventure.
+                  {t.landingDesc}
                 </p>
 
                 <div className="pt-4">
@@ -145,13 +149,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                         className="group relative px-8 py-4 bg-gradient-to-r from-electric-blue to-electric-purple rounded-xl font-headline text-2xl tracking-widest text-white shadow-[0_0_20px_rgba(0,240,255,0.3)] hover:shadow-[0_0_40px_rgba(187,0,255,0.5)] transition-all duration-300 transform hover:scale-105 active:scale-95"
                     >
                         <span className="relative z-10 flex items-center gap-3">
-                        START NOW
+                          {t.startNow}
                             <span className="material-symbols-outlined text-3xl group-hover:translate-x-1 transition-transform">arrow_forward</span>
                         </span>
                         <div className="absolute inset-0 bg-white/20 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                     </button>
                     <p className="mt-4 text-sm text-gray-500 font-mono">
-                      Create account or Login to sync progress
+                      {t.createAccountPrompt}
                     </p>
                 </div>
             </div>
@@ -171,14 +175,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 {/* Mock Phone/App Interface */}
                 <div className="relative bg-light-charcoal/80 backdrop-blur-xl border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl transform rotate-[-2deg] hover:rotate-0 transition-transform duration-500">
                     <div className="mb-6 flex justify-between items-center opacity-50">
-                        <div className="w-12 h-12 rounded-full bg-mid-charcoal animate-pulse" />
+                        <button
+                          onMouseEnter={() => setLanguage('zh')}
+                          onMouseLeave={() => setLanguage('en')}
+                          className="w-12 h-12 rounded-full bg-mid-charcoal hover:bg-electric-blue/30 hover:border hover:border-electric-blue/60 transition-all duration-300 font-headline text-xl text-electric-blue/0 hover:text-electric-blue flex items-center justify-center cursor-pointer select-none"
+                          title=""
+                        >
+                          中
+                        </button>
                         <div className="h-4 w-24 bg-mid-charcoal rounded animate-pulse" />
                     </div>
 
                     <div className="space-y-6">
                         <div className="text-center space-y-2">
-                          <div className="text-electric-blue font-mono text-sm">CHALLENGE MODE</div>
-                          <div className="font-headline text-3xl text-white">TYPE THE WORD</div>
+                          <div className="text-electric-blue font-mono text-sm">{t.challengeMode}</div>
+                          <div className="font-headline text-3xl text-white">{t.typeTheWord}</div>
                         </div>
 
                         <div className="pointer-events-none flex justify-center w-full overflow-hidden">

@@ -2,6 +2,7 @@ import React, { useMemo, useEffect, useState } from 'react';
 import { DayStats, WordEntry, InputSession } from '../types';
 import { calculateAchievements } from '../services/achievementService';
 import { HoverTranslationText } from './HoverTranslationText';
+import { useT } from '../hooks/useT';
 import { AccountPanelHeader } from './AccountPanel/AccountPanelHeader';
 import { LearningAnalyticsSection } from './AccountPanel/LearningAnalyticsSection';
 import { StatsOverviewSection } from './AccountPanel/StatsOverviewSection';
@@ -19,6 +20,7 @@ interface AccountPanelProps {
 }
 
 export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, dailyStats, onClose, onLogout }) => {
+  const t = useT();
   const [activeChartTab, setActiveChartTab] = useState<AccountChartTab>('progress');
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -110,7 +112,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
             className="w-full h-14 flex items-center justify-center gap-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-2xl transition-all font-bold uppercase tracking-widest text-sm"
           >
             <span className="material-symbols-outlined">logout</span>
-            <HoverTranslationText text="Terminate Session" translation="结束当前会话" />
+            {t.terminateSession}
           </button>
         </div>
       </div>

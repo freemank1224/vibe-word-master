@@ -10,6 +10,7 @@ import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { MeaningFlipCard } from './MeaningFlipCard';
 import { HoverTranslationText } from './HoverTranslationText';
+import { useT } from '../hooks/useT';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
 interface TestModeV2Props {
@@ -59,36 +60,40 @@ const getReviewReasonLabel = (reason: ReviewReason) => {
     }
 };
 
-const getReviewReasonBadge = (reason: ReviewReason) => {
+const getReviewReasonBadge = (reason: ReviewReason, t: { reviewReasonBoth: string; reviewReasonReveal: string; reviewReasonHint: string }) => {
     switch (reason) {
         case 'both':
-            return 'Reveal + Hint';
+            return t.reviewReasonBoth;
         case 'revealed':
-            return 'Reveal';
+            return t.reviewReasonReveal;
         case 'unmastered_hint':
         default:
-            return 'Hint Trials';
+            return t.reviewReasonHint;
     }
 };
 
-const SyncOverlay = ({ showForceExit, onForceExit }: { showForceExit: boolean, onForceExit: () => void }) => (
+const SyncOverlay = ({ showForceExit, onForceExit }: { showForceExit: boolean, onForceExit: () => void }) => {
+    const t = useT();
+    return (
     <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
         <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-6"></div>
-        <h3 className="text-2xl font-headline text-white mb-2 tracking-widest uppercase">Syncing Neural Database</h3>
-        <p className="text-gray-500 font-mono text-sm mb-8">Please wait while we secure your progress...</p>
+        <h3 className="text-2xl font-headline text-white mb-2 tracking-widest uppercase">{t.syncingNeuralDatabase}</h3>
+        <p className="text-gray-500 font-mono text-sm mb-8">{t.syncingPleaseWait}</p>
         
         {showForceExit && (
             <button 
                 onClick={onForceExit}
                 className="text-red-500 text-xs font-mono border-b border-red-500/30 pb-1 hover:text-red-400 hover:border-red-400 transition-colors cursor-pointer uppercase tracking-widest"
             >
-                Force Exit
+                {t.forceExit}
             </button>
         )}
     </div>
-);
+    );
+};
 
 const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry }) => {
+    const t = useT();
     let bgColor = 'bg-red-500/20 border-red-500/50 text-red-400';
     let statusIcon = 'close';
 
@@ -111,7 +116,7 @@ const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry
                     <span className="material-symbols-outlined text-sm">{statusIcon}</span>
                     <div className="flex flex-col min-w-0">
                         <span className="font-bold text-sm tracking-wide text-white truncate">{word.text}</span>
-                        <span className="text-[10px] font-mono opacity-80">{result.score.toFixed(1)} pts · 点击翻面</span>
+                        <span className="text-[10px] font-mono opacity-80">{result.score.toFixed(1)} pts · {t.clickToFlip}</span>
                     </div>
                 </div>
             }
@@ -991,22 +996,22 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
               {getEmoji(accuracy)}
           </div>
 
-          <h2 className="text-4xl font-headline mb-4 tracking-tighter uppercase">Test Complete!</h2>
+          <h2 className="text-4xl font-headline mb-4 tracking-tighter uppercase">{t.testComplete}</h2>
           <div className={`text-7xl font-black mb-4 ${accuracy >= 80 ? 'text-electric-green' : accuracy >= 60 ? 'text-electric-blue' : 'text-orange-500'}`}>
             {accuracy}%
           </div>
           <div className="flex flex-col items-center gap-2 mb-8 font-mono text-gray-400">
-             <p>Correct Words: <span className="text-white">{correctCount} / {queue.length}</span></p>
-             <p>Total Points: <span className="text-electric-blue">{totalPoints.toFixed(1)} / {maxPoints}</span> pts</p>
-             <p>Time: {elapsedTime}s</p>
-                 <p>Review Words Cleared: <span className="text-white">{reviewQueue.length}</span></p>
+             <p>{t.correctWords}: <span className="text-white">{correctCount} / {queue.length}</span></p>
+             <p>{t.totalPoints}: <span className="text-electric-blue">{totalPoints.toFixed(1)} / {maxPoints}</span> pts</p>
+             <p>{t.timeElapsed}: {elapsedTime}s</p>
+                 <p>{t.reviewWordsCleared}: <span className="text-white">{reviewQueue.length}</span></p>
           </div>
           
           <button 
             onClick={() => handleExit('COMPLETE')}
             className="px-12 py-4 bg-white text-black rounded-2xl font-headline text-xl hover:bg-electric-blue hover:text-white transition-all transform hover:scale-105 active:scale-95 shadow-xl"
           >
-            RESTORE SYSTEM
+            {t.restoreSystem}
           </button>
         </div>
       );
@@ -1390,7 +1395,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                         >
                                             <div className="font-headline tracking-wide text-white mb-1">{word.text}</div>
                                             <div className="text-[10px] uppercase tracking-[0.2em] opacity-80">
-                                                {getReviewReasonBadge(item.reviewReason)}
+                                                {getReviewReasonBadge(item.reviewReason, t)}
                                             </div>
                                         </div>
                                     );

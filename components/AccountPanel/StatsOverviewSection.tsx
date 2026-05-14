@@ -1,5 +1,6 @@
 import React from 'react';
 import { HoverTranslationText } from '../HoverTranslationText';
+import { useT } from '../../hooks/useT';
 import { AccountPanelStats } from './types';
 
 interface StatsOverviewSectionProps {
@@ -7,6 +8,7 @@ interface StatsOverviewSectionProps {
 }
 
 export const StatsOverviewSection: React.FC<StatsOverviewSectionProps> = ({ stats }) => {
+  const t = useT();
   return (
     <>
       <div className="grid grid-cols-2 gap-4">
@@ -33,7 +35,7 @@ export const StatsOverviewSection: React.FC<StatsOverviewSectionProps> = ({ stat
         <div className="bg-dark-charcoal p-5 rounded-3xl border border-mid-charcoal/30 divide-y divide-mid-charcoal/30">
           <div className="flex justify-between py-3">
             <span className="text-text-light text-sm"><HoverTranslationText text="Active Duration" translation="活跃时长" /></span>
-            <span className="text-white font-mono text-sm">{stats.daysSinceStart} Days</span>
+            <span className="text-white font-mono text-sm">{stats.daysSinceStart} {t.daysUnit}</span>
           </div>
           <div className="flex justify-between py-3">
             <span className="text-text-light text-sm"><HoverTranslationText text="Tested Items" translation="已测试项目" /></span>
