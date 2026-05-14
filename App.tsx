@@ -2216,6 +2216,7 @@ const App: React.FC = () => {
           words={visibleWords}
           sessions={visibleSessions}
           dailyStats={dailyStats}
+          persistedUnlocks={unlockedAchievements}
           onClose={() => setShowAccountPanel(false)}
           onLogout={() => {
               handleLogout();
@@ -2922,7 +2923,7 @@ const Dashboard: React.FC<{
 
         <LeaderboardPanel stats={stats} words={words} />
 
-        <AchievementsPanel words={words} sessions={sessions} dailyStats={stats} className="flex-1" />
+        <AchievementsPanel words={words} sessions={sessions} dailyStats={stats} persistedUnlocks={unlockedAchievements} className="flex-1" />
       </div>
     </div>
   );

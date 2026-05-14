@@ -15,11 +15,12 @@ interface AccountPanelProps {
   words: WordEntry[];
   sessions: InputSession[];
   dailyStats: Record<string, DayStats>;
+  persistedUnlocks?: Set<string>;
   onClose: () => void;
   onLogout: () => void;
 }
 
-export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, dailyStats, onClose, onLogout }) => {
+export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, sessions, dailyStats, persistedUnlocks, onClose, onLogout }) => {
   const t = useT();
   const [activeChartTab, setActiveChartTab] = useState<AccountChartTab>('progress');
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
@@ -54,7 +55,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     const accuracy = testedWords.length > 0 ? (correctWords.length / testedWords.length) * 100 : 0;
     
     // 获取成就统计（包含 streak 等信息）
-    const achievementStatuses = calculateAchievements(words, sessions, Object.values(dailyStats));
+    const achievementStatuses = calculateAchievements(words, sessions, Object.values(dailyStats), persistedUnlocks);
     
     // 计算使用时长（天）
     const firstSession = sessions.length > 0 
@@ -76,7 +77,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
       currentStreak,
       achievementStatuses
     };
-  }, [words, sessions, dailyStats]);
+  }, [words, sessions, dailyStats, persistedUnlocks]);
 
   const unlockedCount = stats.achievementStatuses.filter(s => s.unlocked).length;
 

@@ -8,13 +8,14 @@ interface AchievementsPanelProps {
   words: WordEntry[];
   sessions: InputSession[];
   dailyStats?: Record<string, DayStats>;
+  persistedUnlocks?: Set<string>;
   className?: string;
 }
 
-export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions, dailyStats, className = "" }) => {
+export const AchievementsPanel: React.FC<AchievementsPanelProps> = ({ words, sessions, dailyStats, persistedUnlocks, className = "" }) => {
   const [expanded, setExpanded] = useState(false);
 
-  const stats = useMemo(() => calculateAchievements(words, sessions, dailyStats ? Object.values(dailyStats) : undefined), [words, sessions, dailyStats]);
+  const stats = useMemo(() => calculateAchievements(words, sessions, dailyStats ? Object.values(dailyStats) : undefined, persistedUnlocks), [words, sessions, dailyStats, persistedUnlocks]);
 
   // Combine definition with status
   const badges = ACHIEVEMENTS.map(ach => ({

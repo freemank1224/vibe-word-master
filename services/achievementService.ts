@@ -169,7 +169,7 @@ const calculateLearningStreak = (sessions: InputSession[], dailyStats?: DayStats
   return streak;
 };
 
-export function calculateAchievements(words: WordEntry[], sessions: InputSession[], dailyStats?: DayStats[]): AchievementStatus[] {
+export function calculateAchievements(words: WordEntry[], sessions: InputSession[], dailyStats?: DayStats[], persistedUnlocks?: Set<string>): AchievementStatus[] {
     // 1. Calculate base metrics
     
     // Total Words - ONLY count manually added words (tags includes 'Custom')
@@ -257,6 +257,11 @@ export function calculateAchievements(words: WordEntry[], sessions: InputSession
              if (current >= ach.maxProgress) {
                  unlocked = true;
              }
+        }
+
+        // Persisted unlocks (from DB) are permanent — once earned, always earned
+        if (persistedUnlocks && persistedUnlocks.has(ach.id)) {
+            unlocked = true;
         }
 
         return {
