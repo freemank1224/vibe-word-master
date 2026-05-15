@@ -2002,6 +2002,7 @@ const App: React.FC = () => {
             syncingSessionId={syncingSessionId}
             highlightRecentSessions={highlightRecentSessions}
             onDismissRecentSessionsHighlight={() => setHighlightRecentSessions(false)}
+            persistedUnlocks={unlockedAchievements}
           />
         )}
         {mode === 'INPUT' && (
@@ -2482,7 +2483,8 @@ const Dashboard: React.FC<{
   syncingSessionId?: string | null,
   highlightRecentSessions?: boolean,
   onDismissRecentSessionsHighlight?: () => void,
-}> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight }) => {
+  persistedUnlocks?: Set<string>,
+}> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight, persistedUnlocks }) => {
   const t = useT();
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
@@ -2923,7 +2925,7 @@ const Dashboard: React.FC<{
 
         <LeaderboardPanel stats={stats} words={words} />
 
-        <AchievementsPanel words={words} sessions={sessions} dailyStats={stats} persistedUnlocks={unlockedAchievements} className="flex-1" />
+        <AchievementsPanel words={words} sessions={sessions} dailyStats={stats} persistedUnlocks={persistedUnlocks} className="flex-1" />
       </div>
     </div>
   );
