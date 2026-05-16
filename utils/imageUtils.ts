@@ -58,3 +58,46 @@ export const compressToWebP = async (
         img.src = base64Data;
     });
 };
+
+/**
+ * Center-crops an image to a square and resizes it to `size × size` pixels,
+ * returning a WebP Blob. Accepts base64 data-URLs as well as regular URLs.
+ */
+export const compressToSquare = (
+    src: string,
+    size: number = 512,
+    quality: number = 0.85
+): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                reject(new Error('Failed to get canvas context'));
+                return;
+            }
+
+            // Center-crop the source image to a square
+            const minDim = Math.min(img.width, img.height);
+            const sx = (img.width - minDim) / 2;
+            const sy = (img.height - minDim) / 2;
+            ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+
+            canvas.toBlob(
+                (blob) => {
+                    if (blob) resolve(blob);
+                    else reject(new Error('Canvas toBlob failed'));
+                },
+                'image/webp',
+                quality
+            );
+        };
+        img.onerror = (e) => reject(e);
+        img.src = src;
+    });
+};

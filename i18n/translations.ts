@@ -60,6 +60,20 @@ export const translations = {
     // Account panel
     terminateSession: 'Terminate Session',
 
+    // Profile edit
+    editProfile: 'Edit Profile',
+    displayName: 'Display Name',
+    displayNamePlaceholder: 'Enter a display name…',
+    chooseAvatar: 'Choose Avatar',
+    uploadPhoto: 'Upload Photo',
+    defaultAvatars: 'Default Monsters',
+    saveProfile: 'Save',
+    savingProfile: 'Saving…',
+    profileSaved: 'Profile saved!',
+    profileSaveError: 'Failed to save profile.',
+    avatarUploadError: 'Failed to upload avatar.',
+    usernameMaxLength: 'Display name must be 30 characters or fewer.',
+
     // Language toggle
     language: 'EN',
     languageLabel: 'Language',
@@ -165,6 +179,20 @@ export const translations = {
 
     // Account panel
     terminateSession: '退出登录',
+
+    // Profile edit
+    editProfile: '编辑资料',
+    displayName: '显示名称',
+    displayNamePlaceholder: '输入显示名称…',
+    chooseAvatar: '选择头像',
+    uploadPhoto: '上传图片',
+    defaultAvatars: '默认萌兽',
+    saveProfile: '保存',
+    savingProfile: '保存中…',
+    profileSaved: '资料已保存！',
+    profileSaveError: '保存资料失败。',
+    avatarUploadError: '头像上传失败。',
+    usernameMaxLength: '显示名称不能超过 30 个字符。',
 
     // Language toggle
     language: '中文',
