@@ -859,21 +859,25 @@ const App: React.FC = () => {
               console.error('[updateLocalStats] ❌ Failed to sync with database:', err);
 
               // ✅ NEW (Phase C): Enqueue to offline queue for retry
-              const currentStats = dailyStats[today];
-              const currentVersion = currentStats?.version || 0;
-              await enqueuePendingSync({
-                  date: today,
-                  testCount: results.length,
-                  correctCount: correctCount,
-                  points: currentTestPoints,
-                  expectedVersion: currentVersion,
-                  timestamp: Date.now()
-              });
+              try {
+                  const currentStats = dailyStats[today];
+                  const currentVersion = currentStats?.version || 0;
+                  await enqueuePendingSync({
+                      date: today,
+                      testCount: results.length,
+                      correctCount: correctCount,
+                      points: currentTestPoints,
+                      expectedVersion: currentVersion,
+                      timestamp: Date.now()
+                  });
 
-              showNotification(
-                  '⚠️ 同步失败，数据已保存到离线队列，将在下次连接时重试',
-                  'warning'
-              );
+                  showNotification(
+                      '⚠️ 同步失败，数据已保存到离线队列，将在下次连接时重试',
+                      'warning'
+                  );
+              } catch (queueErr) {
+                  console.error('[updateLocalStats] ❌ Failed to enqueue pending sync:', queueErr);
+              }
               // Keep local optimistic update on error
           }
       }
@@ -2031,8 +2035,13 @@ const App: React.FC = () => {
             }}
             onComplete={async (results: { id: string; correct: boolean; score: number }[]) => {
               // ✨ Now waits for database sync to complete before navigating
-              await updateLocalStats(results);
-              setMode('DASHBOARD');
+              try {
+                await updateLocalStats(results);
+              } catch (err) {
+                console.error('[onComplete] Stats sync failed, navigating anyway:', err);
+              } finally {
+                setMode('DASHBOARD');
+              }
             }}
             onCancel={() => setMode('DASHBOARD')}
           />

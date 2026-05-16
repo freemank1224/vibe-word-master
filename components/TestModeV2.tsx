@@ -133,6 +133,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   onCancel,
   onUpdateWord
 }) => {
+    const t = useT();
     const [phase, setPhase] = useState<TestPhase>('TESTING');
   const [coverage, setCoverage] = useState(100);
   const [tempCoverage, setTempCoverage] = useState(100);
