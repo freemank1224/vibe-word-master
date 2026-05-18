@@ -92,7 +92,8 @@ export interface LeaderboardEntry {
   new_words_added: number;
   accuracy_rate: number;
   avg_difficulty: number;
-  display_name?: string;  // Computed from email (masked for privacy)
+  display_name?: string;  // Custom username if set, otherwise masked email
+  email_masked?: string;  // Always the masked email (for hover tooltip)
   is_current_user?: boolean;
 }
 

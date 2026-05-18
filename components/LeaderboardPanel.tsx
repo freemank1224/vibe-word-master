@@ -430,7 +430,15 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
               </div>
               <div>
                 <div className={`font-bold text-sm ${entry.is_current_user ? 'text-electric-blue' : 'text-white'}`}>
-                  {entry.display_name}
+                  {/* Show custom username; on hover reveal masked email only when username differs */}
+                  <span className="relative group/name cursor-default">
+                    {entry.display_name}
+                    {entry.email_masked && entry.display_name !== entry.email_masked && (
+                      <span className="absolute left-0 top-full mt-1 hidden group-hover/name:block z-30 whitespace-nowrap px-2 py-1 rounded-lg bg-dark-charcoal border border-mid-charcoal text-xs text-text-light font-mono shadow-xl pointer-events-none">
+                        {entry.email_masked}
+                      </span>
+                    )}
+                  </span>
                   {entry.is_current_user && <span className="ml-2 text-xs text-electric-blue">(You)</span>}
                 </div>
                 <div className="font-mono text-xs text-text-dark">

@@ -10,7 +10,13 @@ import { SmartSelectionSection } from './AccountPanel/SmartSelectionSection';
 import { AchievementsSection } from './AccountPanel/AchievementsSection';
 import { AccountChartTab } from './AccountPanel/types';
 import { ProfileEditModal } from './ProfileEditModal';
-import { getProfile } from '../services/profileService';
+import {
+  getProfile,
+  getCachedProfile,
+  getCachedAvatarDataUrl,
+  saveProfileCache,
+  cacheAvatarFromUrl,
+} from '../services/profileService';
 import type { UserProfile } from '../services/profileService';
 
 interface AccountPanelProps {
@@ -32,7 +38,13 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     }
     return false;
   });
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  // Initialise immediately from localStorage so avatar shows without a network round-trip
+  const [profile, setProfile] = useState<UserProfile | null>(() =>
+    user?.id ? getCachedProfile(user.id) : null
+  );
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(() =>
+    user?.id ? getCachedAvatarDataUrl(user.id) : null
+  );
   const [showProfileEdit, setShowProfileEdit] = useState(false);
 
   const toggleAiSelection = () => {
@@ -52,11 +64,19 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
     };
   }, []);
 
-  // Load user profile
+  // Background-refresh profile from DB; update cache and avatar base64 if anything changed
   useEffect(() => {
-    if (user?.id) {
-      getProfile(user.id).then(setProfile);
-    }
+    if (!user?.id) return;
+    getProfile(user.id).then(async (p) => {
+      if (!p) return;
+      setProfile(p);
+      saveProfileCache(p);
+      if (p.avatar_url) {
+        await cacheAvatarFromUrl(user.id, p.avatar_url);
+        const b64 = getCachedAvatarDataUrl(user.id);
+        if (b64) setAvatarDataUrl(b64);
+      }
+    });
   }, [user?.id]);
 
   const stats = useMemo(() => {
@@ -104,7 +124,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
           <AccountPanelHeader
             email={user?.email}
             username={profile?.username}
-            avatarUrl={profile?.avatar_url}
+            avatarUrl={avatarDataUrl || profile?.avatar_url}
             onClose={onClose}
             onEditProfile={() => setShowProfileEdit(true)}
           />
@@ -143,8 +163,16 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
           userId={user.id}
           profile={profile}
           onClose={() => setShowProfileEdit(false)}
-          onSaved={(updated: UserProfile) => {
+          onSaved={async (updated: UserProfile) => {
             setProfile(updated);
+            saveProfileCache(updated);
+            if (updated.avatar_url) {
+              // Force re-cache even if URL didn't change (user just re-uploaded)
+              localStorage.removeItem(`vibe_avatar_url:${user.id}`);
+              await cacheAvatarFromUrl(user.id, updated.avatar_url);
+              const b64 = getCachedAvatarDataUrl(user.id);
+              if (b64) setAvatarDataUrl(b64);
+            }
             setShowProfileEdit(false);
           }}
         />

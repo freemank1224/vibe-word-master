@@ -10,6 +10,77 @@ export interface UserProfile {
   updated_at: string;
 }
 
+// ─── localStorage cache keys ──────────────────────────────────────────────────
+const profileKey = (uid: string) => `vibe_profile:${uid}`;
+const avatarB64Key = (uid: string) => `vibe_avatar_b64:${uid}`;
+const avatarUrlKey = (uid: string) => `vibe_avatar_url:${uid}`;  // tracks which URL was cached
+
+/** Synchronously read the last-known profile from localStorage. Returns null if absent. */
+export const getCachedProfile = (userId: string): UserProfile | null => {
+  try {
+    const raw = localStorage.getItem(profileKey(userId));
+    return raw ? (JSON.parse(raw) as UserProfile) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Synchronously read the cached avatar as a base64 data URL. Returns null if absent. */
+export const getCachedAvatarDataUrl = (userId: string): string | null =>
+  localStorage.getItem(avatarB64Key(userId));
+
+/** Persist a profile snapshot to localStorage. */
+export const saveProfileCache = (profile: UserProfile): void => {
+  try {
+    localStorage.setItem(profileKey(profile.user_id), JSON.stringify(profile));
+  } catch { /* quota exceeded – ignore */ }
+};
+
+/**
+ * Fetch the avatar from `avatarUrl`, compress it to 128 × 128 WebP, and store
+ * the result as a base64 data URL so future renders are instant.
+ * Only re-fetches when the URL has changed since the last cache write.
+ */
+export const cacheAvatarFromUrl = async (userId: string, avatarUrl: string): Promise<void> => {
+  if (!avatarUrl) return;
+  if (localStorage.getItem(avatarUrlKey(userId)) === avatarUrl) return; // already cached
+
+  try {
+    const res = await fetch(avatarUrl);
+    if (!res.ok) return;
+    const blob = await res.blob();
+
+    // Compress to 128 × 128 square
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const minDim = Math.min(bmp.width, bmp.height);
+    const sx = (bmp.width - minDim) / 2;
+    const sy = (bmp.height - minDim) / 2;
+    ctx.drawImage(bmp, sx, sy, minDim, minDim, 0, 0, 128, 128);
+
+    await new Promise<void>((resolve) => {
+      canvas.toBlob((compressed) => {
+        if (!compressed) { resolve(); return; }
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            localStorage.setItem(avatarB64Key(userId), reader.result as string);
+            localStorage.setItem(avatarUrlKey(userId), avatarUrl);
+          } catch { /* quota exceeded */ }
+          resolve();
+        };
+        reader.onerror = () => resolve();
+        reader.readAsDataURL(compressed);
+      }, 'image/webp', 0.75);
+    });
+  } catch { /* network or API failure – silently skip */ }
+};
+
 /** Fetch the profile for a given user. Returns null if not found. */
 export const getProfile = async (userId: string): Promise<UserProfile | null> => {
   const { data, error } = await supabase
