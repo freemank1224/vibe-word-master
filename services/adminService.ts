@@ -13,6 +13,9 @@ export interface AdminStats {
   wordsWithPronunciations: number;
   pronunciationCoverageRate: number;
   totalUsers: number;
+  imageStorageBytes: number;
+  imageObjectCount: number;
+  averageImageBytes: number;
 }
 
 export interface PronunciationReplacementStatus {
@@ -528,6 +531,9 @@ class AdminService {
         wordsWithPronunciations: Number(stats.wordsWithPronunciations || 0),
         pronunciationCoverageRate: Number(stats.pronunciationCoverageRate || 0),
         totalUsers: Number(stats.totalUsers || 0),
+        imageStorageBytes: Number(stats.imageStorageBytes || 0),
+        imageObjectCount: Number(stats.imageObjectCount || 0),
+        averageImageBytes: Number(stats.averageImageBytes || 0),
       };
     } catch (error) {
       console.warn('[adminService.getStats] global stats unavailable, using fallback:', error);
@@ -541,6 +547,9 @@ class AdminService {
           wordsWithPronunciations: fallback.wordsWithPronunciations,
           pronunciationCoverageRate: fallback.pronunciationCoverageRate,
           totalUsers: 0,
+          imageStorageBytes: 0,
+          imageObjectCount: 0,
+          averageImageBytes: 0,
         };
       } catch (fallbackError) {
         console.warn('[adminService.getStats] fallback stats failed:', fallbackError);
@@ -551,6 +560,9 @@ class AdminService {
           wordsWithPronunciations: 0,
           pronunciationCoverageRate: 0,
           totalUsers: 0,
+          imageStorageBytes: 0,
+          imageObjectCount: 0,
+          averageImageBytes: 0,
         };
       }
     }

@@ -17,6 +17,57 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 
 const normalizeWord = (text: string): string => text.toLowerCase().trim().replace(/\s+/g, ' ');
 
+const getImageStorageStats = async (): Promise<{
+  imageStorageBytes: number;
+  imageObjectCount: number;
+  averageImageBytes: number;
+}> => {
+  const pageSize = 1000;
+  let page = 0;
+  let hasMore = true;
+  let imageStorageBytes = 0;
+  let imageObjectCount = 0;
+
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .schema('storage')
+      .from('objects')
+      .select('metadata')
+      .eq('bucket_id', 'vocab-images')
+      .range(from, to);
+
+    if (error) {
+      throw new Error(`Failed loading storage objects page ${page}: ${error.message}`);
+    }
+
+    if (!data || data.length === 0) {
+      hasMore = false;
+      break;
+    }
+
+    for (const row of data as Array<{ metadata?: { size?: number | string | null } | null }>) {
+      const rawSize = row?.metadata?.size;
+      const size = typeof rawSize === 'number' ? rawSize : Number(rawSize || 0);
+      if (Number.isFinite(size) && size > 0) {
+        imageStorageBytes += size;
+      }
+      imageObjectCount += 1;
+    }
+
+    hasMore = data.length === pageSize;
+    page += 1;
+  }
+
+  return {
+    imageStorageBytes,
+    imageObjectCount,
+    averageImageBytes: imageObjectCount > 0 ? imageStorageBytes / imageObjectCount : 0,
+  };
+};
+
 const countActiveUsers = async (): Promise<number> => {
   const pageSize = 1000;
   const userIds = new Set<string>();
@@ -201,6 +252,7 @@ const getGlobalStats = async () => {
   }
 
   const totalUsers = await countUsers();
+  const imageStorage = await getImageStorageStats();
 
   return {
     totalWords,
@@ -209,6 +261,9 @@ const getGlobalStats = async () => {
     wordsWithPronunciations: readyPronunciations.size,
     pronunciationCoverageRate: totalWords > 0 ? (readyPronunciations.size / totalWords) * 100 : 0,
     totalUsers,
+    imageStorageBytes: imageStorage.imageStorageBytes,
+    imageObjectCount: imageStorage.imageObjectCount,
+    averageImageBytes: imageStorage.averageImageBytes,
   };
 };
 

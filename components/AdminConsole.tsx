@@ -79,6 +79,20 @@ const TAB_BUTTON_STYLE = (active: boolean): React.CSSProperties => ({
   flex: 1,
 });
 
+const formatBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+};
+
 export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => void }> = ({ onClose, onDataChange }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'image' | 'vision' | 'text'>('dashboard');
   const [logs, setLogs] = useState<string[]>([]);
@@ -196,12 +210,26 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
                 <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Registered Users" translation="注册总人数" /></div>
                 <div style={{ fontSize: '24px' }}>{stats?.totalUsers || 0}</div>
               </div>
+              <div style={{ background: '#252525', padding: '10px', borderRadius: '8px' }}>
+                <div style={{ fontSize: '12px', color: '#888' }}><HoverTranslationText text="Image Storage" translation="图片存储占用（vocab-images 存储桶实际占用）" /></div>
+                <div style={{ fontSize: '24px' }}>{formatBytes(stats?.imageStorageBytes || 0)}</div>
+                <div style={{ fontSize: '12px', color: '#9a9a9a', marginTop: '4px' }}>
+                  {stats?.imageObjectCount || 0} files · avg {formatBytes(stats?.averageImageBytes || 0)}
+                </div>
+              </div>
             </div>
 
             <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#bdbdbd', lineHeight: 1.6 }}>
               <HoverTranslationText
                 text="Dashboard metrics are calculated from the active deduplicated global word set. Words no longer referenced by any user are removed from the shared pronunciation and meaning libraries."
                 translation="以上统计均以活跃去重总词库为基准。只要某个单词不再被任何用户引用，它就会从共享语音库和中文释义库中自动移除。"
+              />
+            </div>
+
+            <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#bdbdbd', lineHeight: 1.6 }}>
+              <HoverTranslationText
+                text="Image Storage reflects the actual usage of the vocab-images bucket. This metric is not deduplicated by active words, so it can reveal leftover or orphaned files."
+                translation="图片存储占用统计的是 vocab-images 存储桶的实际文件体积，不按活跃词库去重，因此能反映残留文件或孤儿文件带来的真实占用。"
               />
             </div>
 
