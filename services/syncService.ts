@@ -46,6 +46,10 @@ export interface SyncResult {
 // ============================================================================
 
 const LOCAL_STORAGE_KEY = 'vocab_local_backup';
+const INDEXED_DB_NAME = 'vocab-monster-local';
+const INDEXED_DB_VERSION = 1;
+const INDEXED_DB_STORE = 'backup_store';
+const INDEXED_DB_BACKUP_KEY = 'session_backup';
 const SYNC_THRESHOLD_TOLERANCE = 1000; // 1秒内的差异视为同时更新
 const STORAGE_CLEANUP_KEYS = [
   'vibe_audio_cache',
@@ -59,6 +63,8 @@ const STORAGE_CLEANUP_PREFIXES = [
   'vibe_avatar_url:'
 ];
 
+let backupDbPromise: Promise<IDBDatabase | null> | null = null;
+
 // ============================================================================
 // 工具函数
 // ============================================================================
@@ -69,6 +75,189 @@ const STORAGE_CLEANUP_PREFIXES = [
 const getContentHash = (words: WordEntry[]): string => {
   const sorted = [...words].sort((a, b) => a.text.localeCompare(b.text));
   return sorted.map(w => `${w.text}:${w.correct ? '1' : '0'}`).join('|');
+};
+
+const isValidLocalBackup = (value: unknown): value is LocalBackup => {
+  if (!value || typeof value !== 'object') return false;
+  const backup = value as Partial<LocalBackup>;
+  return Array.isArray(backup.sessions) && Array.isArray(backup.words);
+};
+
+const canUseIndexedDB = (): boolean => (
+  typeof window !== 'undefined' && typeof indexedDB !== 'undefined'
+);
+
+const openBackupDatabase = async (): Promise<IDBDatabase | null> => {
+  if (!canUseIndexedDB()) return null;
+
+  if (!backupDbPromise) {
+    backupDbPromise = new Promise((resolve) => {
+      try {
+        const request = indexedDB.open(INDEXED_DB_NAME, INDEXED_DB_VERSION);
+
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(INDEXED_DB_STORE)) {
+            db.createObjectStore(INDEXED_DB_STORE);
+          }
+        };
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => {
+          console.error('[SyncService] Failed to open IndexedDB backup store:', request.error);
+          resolve(null);
+        };
+      } catch (error) {
+        console.error('[SyncService] IndexedDB unavailable:', error);
+        resolve(null);
+      }
+    });
+  }
+
+  return backupDbPromise;
+};
+
+const loadBackupFromIndexedDB = async (): Promise<LocalBackup | null> => {
+  const db = await openBackupDatabase();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      const transaction = db.transaction(INDEXED_DB_STORE, 'readonly');
+      const store = transaction.objectStore(INDEXED_DB_STORE);
+      const request = store.get(INDEXED_DB_BACKUP_KEY);
+
+      request.onsuccess = () => {
+        const result = request.result;
+        if (!result) {
+          resolve(null);
+          return;
+        }
+
+        if (!isValidLocalBackup(result)) {
+          console.warn('[SyncService] Invalid IndexedDB backup format, clearing...');
+          void clearBackupFromIndexedDB();
+          resolve(null);
+          return;
+        }
+
+        resolve(result);
+      };
+
+      request.onerror = () => {
+        console.error('[SyncService] Failed to read IndexedDB backup:', request.error);
+        resolve(null);
+      };
+    } catch (error) {
+      console.error('[SyncService] IndexedDB read failed:', error);
+      resolve(null);
+    }
+  });
+};
+
+const saveBackupToIndexedDB = async (backup: LocalBackup): Promise<boolean> => {
+  const db = await openBackupDatabase();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const transaction = db.transaction(INDEXED_DB_STORE, 'readwrite');
+      const store = transaction.objectStore(INDEXED_DB_STORE);
+
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => {
+        console.error('[SyncService] Failed to save IndexedDB backup:', transaction.error);
+        resolve(false);
+      };
+
+      store.put(backup, INDEXED_DB_BACKUP_KEY);
+    } catch (error) {
+      console.error('[SyncService] IndexedDB write failed:', error);
+      resolve(false);
+    }
+  });
+};
+
+const clearBackupFromIndexedDB = async (): Promise<void> => {
+  const db = await openBackupDatabase();
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    try {
+      const transaction = db.transaction(INDEXED_DB_STORE, 'readwrite');
+      const store = transaction.objectStore(INDEXED_DB_STORE);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => resolve();
+      store.delete(INDEXED_DB_BACKUP_KEY);
+    } catch {
+      resolve();
+    }
+  });
+};
+
+const loadBackupFromLocalStorage = (): LocalBackup | null => {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!data) return null;
+
+    const backup = JSON.parse(data);
+    if (!isValidLocalBackup(backup)) {
+      console.warn('[SyncService] Invalid legacy local backup format, clearing...');
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      return null;
+    }
+
+    return backup;
+  } catch (error) {
+    console.error('[SyncService] Failed to load localStorage backup:', error);
+    return null;
+  }
+};
+
+const saveBackupToLocalStorage = (backup: LocalBackup): boolean => {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
+    console.log(`[SyncService] Saved ${backup.sessions.length} sessions to localStorage backup`);
+    return true;
+  } catch (error) {
+    console.error('[SyncService] Failed to save localStorage backup:', error);
+
+    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+      console.warn('[SyncService] LocalStorage quota exceeded, need cleanup');
+      const reclaimedKeys: string[] = [];
+
+      STORAGE_CLEANUP_KEYS.forEach(key => {
+        if (localStorage.getItem(key) !== null) {
+          localStorage.removeItem(key);
+          reclaimedKeys.push(key);
+        }
+      });
+
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+
+        if (STORAGE_CLEANUP_PREFIXES.some(prefix => key.startsWith(prefix))) {
+          localStorage.removeItem(key);
+          reclaimedKeys.push(key);
+        }
+      }
+
+      if (reclaimedKeys.length > 0) {
+        console.warn('[SyncService] Cleared non-critical localStorage keys:', reclaimedKeys);
+
+        try {
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
+          console.log(`[SyncService] Saved ${backup.sessions.length} sessions to localStorage backup after cleanup`);
+          return true;
+        } catch (retryError) {
+          console.error('[SyncService] Retry save after cleanup failed:', retryError);
+        }
+      }
+    }
+
+    return false;
+  }
 };
 
 /**
@@ -126,82 +315,46 @@ const compareSessionPriority = (
 /**
  * 加载本地备份数据
  */
-export const loadLocalBackup = (): LocalBackup | null => {
-  try {
-    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!data) return null;
-
-    const backup: LocalBackup = JSON.parse(data);
-
-    // 验证数据格式
-    if (!backup.sessions || !Array.isArray(backup.sessions)) {
-      console.warn('[SyncService] Invalid backup format, clearing...');
-      clearLocalBackup();
-      return null;
-    }
-
-    console.log(`[SyncService] Loaded ${backup.sessions.length} sessions from local backup`);
-    return backup;
-  } catch (error) {
-    console.error('[SyncService] Failed to load local backup:', error);
-    return null;
+export const loadLocalBackup = async (): Promise<LocalBackup | null> => {
+  const indexedBackup = await loadBackupFromIndexedDB();
+  if (indexedBackup) {
+    console.log(`[SyncService] Loaded ${indexedBackup.sessions.length} sessions from IndexedDB backup`);
+    return indexedBackup;
   }
+
+  const legacyBackup = loadBackupFromLocalStorage();
+  if (!legacyBackup) return null;
+
+  console.log(`[SyncService] Loaded ${legacyBackup.sessions.length} sessions from legacy local backup`);
+
+  const migrated = await saveBackupToIndexedDB(legacyBackup);
+  if (migrated) {
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    console.log('[SyncService] Migrated legacy local backup to IndexedDB');
+  }
+
+  return legacyBackup;
 };
 
 /**
  * 保存本地备份数据
  */
-export const saveLocalBackup = (backup: LocalBackup): boolean => {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
-    console.log(`[SyncService] Saved ${backup.sessions.length} sessions to local backup`);
+export const saveLocalBackup = async (backup: LocalBackup): Promise<boolean> => {
+  const indexedSaved = await saveBackupToIndexedDB(backup);
+  if (indexedSaved) {
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    console.log(`[SyncService] Saved ${backup.sessions.length} sessions to IndexedDB backup`);
     return true;
-  } catch (error) {
-    console.error('[SyncService] Failed to save local backup:', error);
-
-    // 容量不足警告
-    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
-      console.warn('[SyncService] LocalStorage quota exceeded, need cleanup');
-      const reclaimedKeys: string[] = [];
-
-      STORAGE_CLEANUP_KEYS.forEach(key => {
-        if (localStorage.getItem(key) !== null) {
-          localStorage.removeItem(key);
-          reclaimedKeys.push(key);
-        }
-      });
-
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (!key) continue;
-
-        if (STORAGE_CLEANUP_PREFIXES.some(prefix => key.startsWith(prefix))) {
-          localStorage.removeItem(key);
-          reclaimedKeys.push(key);
-        }
-      }
-
-      if (reclaimedKeys.length > 0) {
-        console.warn('[SyncService] Cleared non-critical localStorage keys:', reclaimedKeys);
-
-        try {
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
-          console.log(`[SyncService] Saved ${backup.sessions.length} sessions to local backup after cleanup`);
-          return true;
-        } catch (retryError) {
-          console.error('[SyncService] Retry save after cleanup failed:', retryError);
-        }
-      }
-    }
-
-    return false;
   }
+
+  return saveBackupToLocalStorage(backup);
 };
 
 /**
  * 清除本地备份
  */
-export const clearLocalBackup = (): void => {
+export const clearLocalBackup = async (): Promise<void> => {
+  await clearBackupFromIndexedDB();
   localStorage.removeItem(LOCAL_STORAGE_KEY);
   console.log('[SyncService] Local backup cleared');
 };
@@ -209,12 +362,12 @@ export const clearLocalBackup = (): void => {
 /**
  * 保存 Session 到本地备份
  */
-export const saveSessionToLocal = (
+export const saveSessionToLocal = async (
   session: InputSession,
   words: WordEntry[],
   syncStatus: SyncStatus = 'pending'
-): boolean => {
-  const backup = loadLocalBackup() || { sessions: [], words: [], version: 1 };
+): Promise<boolean> => {
+  const backup = await loadLocalBackup() || { sessions: [], words: [], version: 1 };
 
   // 更新或添加 Session
   const existingIndex = backup.sessions.findIndex(s => s.id === session.id);
@@ -242,20 +395,20 @@ export const saveSessionToLocal = (
     }
   });
 
-  return saveLocalBackup(backup);
+  return await saveLocalBackup(backup);
 };
 
 /**
  * 从本地备份中删除 Session
  */
-export const deleteSessionFromLocal = (sessionId: string): void => {
-  const backup = loadLocalBackup();
+export const deleteSessionFromLocal = async (sessionId: string): Promise<void> => {
+  const backup = await loadLocalBackup();
   if (!backup) return;
 
   backup.sessions = backup.sessions.filter(s => s.id !== sessionId);
   backup.words = backup.words.filter(w => w.sessionId !== sessionId);
 
-  saveLocalBackup(backup);
+  await saveLocalBackup(backup);
 };
 
 // ============================================================================
@@ -658,7 +811,7 @@ export const syncAllPendingSessions = async (
   failed: number;
   conflicts: number;
 }> => {
-  const backup = loadLocalBackup();
+  const backup = await loadLocalBackup();
   if (!backup) {
     return { synced: 0, failed: 0, conflicts: 0 };
   }
@@ -705,7 +858,7 @@ export const syncAllPendingSessions = async (
         backup.words = backup.words.filter(w => !wordIds.has(w.id));
         backup.words.push(...result.cloudData!.words);
 
-        saveLocalBackup(backup);
+        await saveLocalBackup(backup);
         synced++;
       } else if (result.action === 'conflict') {
         session.syncStatus = 'conflict';
@@ -720,7 +873,7 @@ export const syncAllPendingSessions = async (
   }
 
   // 保存更新后的状态
-  saveLocalBackup(backup);
+  await saveLocalBackup(backup);
 
   console.log(`[SyncService] Sync complete: ${synced} synced, ${failed} failed, ${conflicts} conflicts`);
 

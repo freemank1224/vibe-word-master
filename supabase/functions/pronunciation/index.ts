@@ -11,7 +11,11 @@ const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
 const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const minimaxApiKey = Deno.env.get('MINIMAX_API_KEY') || '';
 
-const minimaxEndpoint = Deno.env.get('MINIMAX_TTS_ENDPOINT') || 'https://api.minimaxi.com/v1/t2a_v2';
+const configuredMinimaxEndpoint = Deno.env.get('MINIMAX_TTS_ENDPOINT') || 'https://api.minimaxi.com/v1/t2a_v2';
+const configuredMinimaxFallbacks = (Deno.env.get('MINIMAX_TTS_FALLBACK_ENDPOINTS') || '')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
 const minimaxModel = Deno.env.get('MINIMAX_TTS_MODEL') || 'speech-2.8-turbo';
 const minimaxVoiceId = Deno.env.get('MINIMAX_TTS_VOICE_ID') || 'English_CalmWoman';
 const minimaxSpeed = Number(Deno.env.get('MINIMAX_TTS_SPEED') || '0.8');
@@ -43,6 +47,47 @@ const isRetryableStatus = (status?: number): boolean => {
   if (!status) return false;
   return status === 429 || status >= 500;
 };
+
+const isRetryableNetworkError = (error: Error): boolean => {
+  const code = String((error as any)?.code || '').toUpperCase();
+  const name = String(error.name || '').toUpperCase();
+  const message = String(error.message || '').toLowerCase();
+
+  return (
+    code === 'ETIMEDOUT'
+    || code === 'ECONNRESET'
+    || code === 'ECONNREFUSED'
+    || code === 'ENETUNREACH'
+    || code === 'EHOSTUNREACH'
+    || name === 'ABORTERROR'
+    || message.includes('connection timed out')
+    || message.includes('tcp connect error')
+    || message.includes('network is unreachable')
+    || message.includes('connection refused')
+    || message.includes('connection reset')
+  );
+};
+
+const uniqueEndpoints = (items: string[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const item of items) {
+    const normalized = item.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result;
+};
+
+const minimaxEndpoints = uniqueEndpoints([
+  configuredMinimaxEndpoint,
+  ...configuredMinimaxFallbacks,
+  'https://api.minimaxi.com/v1/t2a_v2',
+  'https://api-bj.minimaxi.com/v1/t2a_v2'
+]);
 
 const contentTypeFromFormat = (format: string): string => {
   if (format === 'mp3') return 'audio/mpeg';
@@ -148,49 +193,62 @@ const requestMinimaxWithRetry = async (payload: Record<string, unknown>) => {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= minimaxRetryTimes; attempt++) {
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), minimaxTimeoutMs);
+    for (const endpoint of minimaxEndpoints) {
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), minimaxTimeoutMs);
 
-    try {
-      const ttsResp = await fetch(minimaxEndpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${minimaxApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      try {
+        const ttsResp = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${minimaxApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
 
-      if (!ttsResp.ok) {
-        const errText = await ttsResp.text();
-        const err = new Error(`Minimax request failed (${ttsResp.status}): ${errText}`);
-        (err as any).status = ttsResp.status;
-        throw err;
+        if (!ttsResp.ok) {
+          const errText = await ttsResp.text();
+          const err = new Error(`Minimax request failed via ${endpoint} (${ttsResp.status}): ${errText}`);
+          (err as any).status = ttsResp.status;
+          throw err;
+        }
+
+        const ttsJson = await ttsResp.json();
+        const statusCode = ttsJson?.base_resp?.status_code;
+        const statusMsg = ttsJson?.base_resp?.status_msg;
+
+        if (statusCode !== 0 || !ttsJson?.data?.audio) {
+          const err = new Error(`Minimax synth failed via ${endpoint}: ${statusCode} ${statusMsg || ''}`);
+          (err as any).status = statusCode;
+          throw err;
+        }
+
+        return ttsJson;
+      } catch (error) {
+        const err = error as Error;
+        lastError = err;
+        const status = Number((err as any)?.status || 0);
+        const retryable = isRetryableNetworkError(err) || isRetryableStatus(status);
+
+        console.warn(`[pronunciation] Minimax attempt failed via ${endpoint}:`, err.message || err);
+
+        const isLastEndpoint = endpoint === minimaxEndpoints[minimaxEndpoints.length - 1];
+        if (!retryable) {
+          throw err;
+        }
+
+        if (isLastEndpoint && attempt >= minimaxRetryTimes) {
+          throw err;
+        }
+
+        if (isLastEndpoint) {
+          await sleep(toBackoffMs(attempt));
+        }
+      } finally {
+        clearTimeout(timeoutHandle);
       }
-
-      const ttsJson = await ttsResp.json();
-      const statusCode = ttsJson?.base_resp?.status_code;
-      const statusMsg = ttsJson?.base_resp?.status_msg;
-
-      if (statusCode !== 0 || !ttsJson?.data?.audio) {
-        const err = new Error(`Minimax synth failed: ${statusCode} ${statusMsg || ''}`);
-        (err as any).status = statusCode;
-        throw err;
-      }
-
-      return ttsJson;
-    } catch (error) {
-      const err = error as Error;
-      lastError = err;
-      const status = Number((err as any)?.status || 0);
-      const retryable = err.name === 'AbortError' || isRetryableStatus(status);
-      if (!retryable || attempt >= minimaxRetryTimes) {
-        throw err;
-      }
-      await sleep(toBackoffMs(attempt));
-    } finally {
-      clearTimeout(timeoutHandle);
     }
   }
 

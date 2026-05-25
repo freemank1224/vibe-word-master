@@ -13,7 +13,25 @@ const triggerPronunciationGeneration = async (word: string, lang: string = 'en')
     if (!supabaseUrl) return;
     const uniquenessMode = WORD_LEARNING_CONFIG.pronunciation.uniquenessMode;
     const endpoint = `${supabaseUrl}/functions/v1/pronunciation?word=${encodeURIComponent(word)}&lang=${encodeURIComponent(lang)}&uniqueness_mode=${encodeURIComponent(uniquenessMode)}`;
-    await fetch(endpoint, { method: 'GET' });
+    const response = await fetch(endpoint, { method: 'GET' });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.warn(
+        `[pronunciation-trigger] ${word} (${lang}) failed with ${response.status} ${response.statusText}`,
+        {
+          endpoint,
+          uniquenessMode,
+          error: errorText.slice(0, 500) || '(empty response body)'
+        }
+      );
+      return;
+    }
+
+    const source = response.headers.get('X-Pronunciation-Source');
+    if (source) {
+      console.log(`[pronunciation-trigger] ${word} (${lang}) succeeded via ${source}`);
+    }
   } catch (error) {
     console.warn(`[pronunciation-trigger] failed for ${word}:`, error);
   }

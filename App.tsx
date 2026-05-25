@@ -893,33 +893,37 @@ const App: React.FC = () => {
 
     console.log('[SyncStatusChecker] Checking sync status for loaded sessions...');
 
-    // Load local backup from localStorage
-    const localBackup = loadLocalBackup();
+    let cancelled = false;
 
-    // Create a map of sessions in local backup for quick lookup
-    const localBackupMap = new Map<string, SyncStatus>();
+    void (async () => {
+      const localBackup = await loadLocalBackup();
 
-    if (localBackup && localBackup.sessions.length > 0) {
-      // Mark sessions that exist in local backup
-      localBackup.sessions.forEach(s => {
-        localBackupMap.set(s.id, s.syncStatus);
-        console.log(`[SyncStatusChecker] Found in local backup: ${s.id} -> ${s.syncStatus}`);
-      });
-    }
+      if (cancelled) return;
 
-    // Update sessions with sync status
-    setSessions(prev => prev.map(s => {
-      const syncStatus = localBackupMap.get(s.id);
-      if (syncStatus) {
-        // Session exists in local backup, use its status
-        console.log(`[SyncStatusChecker] Session ${s.id}: ${syncStatus}`);
-        return { ...s, syncStatus };
-      } else {
-        // Session not in local backup, assume it's synced
+      const localBackupMap = new Map<string, SyncStatus>();
+
+      if (localBackup && localBackup.sessions.length > 0) {
+        localBackup.sessions.forEach(s => {
+          localBackupMap.set(s.id, s.syncStatus);
+          console.log(`[SyncStatusChecker] Found in local backup: ${s.id} -> ${s.syncStatus}`);
+        });
+      }
+
+      setSessions(prev => prev.map(s => {
+        const syncStatus = localBackupMap.get(s.id);
+        if (syncStatus) {
+          console.log(`[SyncStatusChecker] Session ${s.id}: ${syncStatus}`);
+          return { ...s, syncStatus };
+        }
+
         console.log(`[SyncStatusChecker] Session ${s.id}: synced (not in backup)`);
         return { ...s, syncStatus: 'synced' as const };
-      }
-    }));
+      }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [loadingData, sessions.length]); // Depend on loading completion and sessions array
 
   // Background Process
@@ -1165,13 +1169,13 @@ const App: React.FC = () => {
 
       // ✅ 成功保存到云端，清除本地备份
       if (editingSessionId) {
-        const localBackup = loadLocalBackup();
+        const localBackup = await loadLocalBackup();
         if (localBackup) {
           const updatedBackup = {
             ...localBackup,
             sessions: localBackup.sessions.filter(s => s.id !== editingSessionId)
           };
-          saveLocalBackup(updatedBackup);
+          await saveLocalBackup(updatedBackup);
         }
       }
 
@@ -1214,7 +1218,7 @@ const App: React.FC = () => {
       });
 
       // 保存到本地
-      const savedLocally = saveSessionToLocal(sessionData, wordsData, 'pending');
+  const savedLocally = await saveSessionToLocal(sessionData, wordsData, 'pending');
 
       if (!savedLocally) {
         showNotification(
@@ -1477,7 +1481,7 @@ const App: React.FC = () => {
 
     try {
       // 从本地备份获取数据
-      const localBackup = loadLocalBackup();
+      const localBackup = await loadLocalBackup();
       const localSession = localBackup?.sessions.find(s => s.id === sessionId);
       const localWords = localBackup?.words.filter(w => w.sessionId === sessionId);
 
@@ -1507,7 +1511,7 @@ const App: React.FC = () => {
             ...localBackup!,
             sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
           };
-          saveLocalBackup(updatedBackup);
+          await saveLocalBackup(updatedBackup);
 
           // 刷新数据
           const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
@@ -1536,7 +1540,7 @@ const App: React.FC = () => {
               ...localBackup!,
               sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
             };
-            saveLocalBackup(updatedBackup);
+            await saveLocalBackup(updatedBackup);
           }
           showNotification('📥 已应用云端最新数据', 'success');
         } else if (result.action === 'skipped') {
@@ -1557,7 +1561,7 @@ const App: React.FC = () => {
             s.id === sessionId ? { ...s, syncStatus: 'failed' as const } : s
           )
         };
-        saveLocalBackup(updatedBackup);
+        await saveLocalBackup(updatedBackup);
 
         // 更新当前 session 的 syncStatus
         setSessions(prev => prev.map(s =>
@@ -1612,13 +1616,13 @@ const App: React.FC = () => {
         setWords(cloudWords);
 
         // 清除本地备份
-        const localBackup = loadLocalBackup();
+        const localBackup = await loadLocalBackup();
         if (localBackup) {
           const updatedBackup = {
             ...localBackup,
             sessions: localBackup.sessions.filter(s => s.id !== conflictModal.sessionId)
           };
-          saveLocalBackup(updatedBackup);
+          await saveLocalBackup(updatedBackup);
         }
 
         showNotification('✅ 冲突已解决！', 'success');
@@ -1636,7 +1640,7 @@ const App: React.FC = () => {
     if (!session?.user) return;
 
     const interval = setInterval(async () => {
-      const backup = loadLocalBackup();
+      const backup = await loadLocalBackup();
       if (!backup) return;
 
       const pendingSessions = backup.sessions.filter(
@@ -1686,7 +1690,7 @@ const App: React.FC = () => {
       showNotification('🌐 网络已恢复，正在同步...', 'success');
 
       // 立即尝试同步所有待同步的Session
-      const backup = loadLocalBackup();
+      const backup = await loadLocalBackup();
       if (backup && session?.user) {
         const pendingSessions = backup.sessions.filter(
           s => s.syncStatus === 'pending' || s.syncStatus === 'failed'
