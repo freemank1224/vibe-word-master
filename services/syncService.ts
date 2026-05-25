@@ -47,6 +47,17 @@ export interface SyncResult {
 
 const LOCAL_STORAGE_KEY = 'vocab_local_backup';
 const SYNC_THRESHOLD_TOLERANCE = 1000; // 1秒内的差异视为同时更新
+const STORAGE_CLEANUP_KEYS = [
+  'vibe_audio_cache',
+  'vibe_audio_cache_lru',
+  'vibe_audio_cache_meta',
+  'vibe_word_image_gen_debug_logs_v1',
+  'vibe_word_image_cache_meta_v1'
+];
+const STORAGE_CLEANUP_PREFIXES = [
+  'vibe_avatar_b64:',
+  'vibe_avatar_url:'
+];
 
 // ============================================================================
 // 工具函数
@@ -140,18 +151,50 @@ export const loadLocalBackup = (): LocalBackup | null => {
 /**
  * 保存本地备份数据
  */
-export const saveLocalBackup = (backup: LocalBackup): void => {
+export const saveLocalBackup = (backup: LocalBackup): boolean => {
   try {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
     console.log(`[SyncService] Saved ${backup.sessions.length} sessions to local backup`);
+    return true;
   } catch (error) {
     console.error('[SyncService] Failed to save local backup:', error);
 
     // 容量不足警告
     if (error instanceof DOMException && error.name === 'QuotaExceededError') {
       console.warn('[SyncService] LocalStorage quota exceeded, need cleanup');
-      // TODO: 实现清理策略（删除最旧的数据）
+      const reclaimedKeys: string[] = [];
+
+      STORAGE_CLEANUP_KEYS.forEach(key => {
+        if (localStorage.getItem(key) !== null) {
+          localStorage.removeItem(key);
+          reclaimedKeys.push(key);
+        }
+      });
+
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+
+        if (STORAGE_CLEANUP_PREFIXES.some(prefix => key.startsWith(prefix))) {
+          localStorage.removeItem(key);
+          reclaimedKeys.push(key);
+        }
+      }
+
+      if (reclaimedKeys.length > 0) {
+        console.warn('[SyncService] Cleared non-critical localStorage keys:', reclaimedKeys);
+
+        try {
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
+          console.log(`[SyncService] Saved ${backup.sessions.length} sessions to local backup after cleanup`);
+          return true;
+        } catch (retryError) {
+          console.error('[SyncService] Retry save after cleanup failed:', retryError);
+        }
+      }
     }
+
+    return false;
   }
 };
 
@@ -170,7 +213,7 @@ export const saveSessionToLocal = (
   session: InputSession,
   words: WordEntry[],
   syncStatus: SyncStatus = 'pending'
-): void => {
+): boolean => {
   const backup = loadLocalBackup() || { sessions: [], words: [], version: 1 };
 
   // 更新或添加 Session
@@ -199,7 +242,7 @@ export const saveSessionToLocal = (
     }
   });
 
-  saveLocalBackup(backup);
+  return saveLocalBackup(backup);
 };
 
 /**
@@ -650,7 +693,11 @@ export const syncAllPendingSessions = async (
         // 应用云端数据到本地
         const idx = backup.sessions.findIndex(s => s.id === session.id);
         if (idx >= 0) {
-          backup.sessions[idx] = result.cloudData!.session;
+          backup.sessions[idx] = {
+            ...result.cloudData!.session,
+            syncStatus: 'synced',
+            lastSyncAttempt: Date.now()
+          };
         }
 
         // 更新 words

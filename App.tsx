@@ -1214,7 +1214,15 @@ const App: React.FC = () => {
       });
 
       // 保存到本地
-      saveSessionToLocal(sessionData, wordsData, 'pending');
+      const savedLocally = saveSessionToLocal(sessionData, wordsData, 'pending');
+
+      if (!savedLocally) {
+        showNotification(
+          '❌ 当前设备本地存储已满，离线备份失败。请先不要离开此页面，清理设备存储后重试保存。',
+          'error'
+        );
+        return;
+      }
 
       // 更新本地状态
       setSessions(prev => {
