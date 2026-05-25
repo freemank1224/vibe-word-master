@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { WordEntry, InputSession } from '../types';
+import { WordEntry, InputSession, CompletedTestSummary } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
 import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
@@ -18,7 +18,7 @@ interface TestModeV2Props {
   sessions: InputSession[]; // Added sessions prop
   initialSessionIds: string[];
   initialWordIds?: string[];
-  onComplete: (results: { id: string; correct: boolean; score: number }[]) => void;
+    onComplete: (summary: CompletedTestSummary) => void;
   onCancel: () => void;
   onUpdateWord?: (id: string, updates: Partial<WordEntry>) => void;
 }
@@ -31,6 +31,8 @@ interface TestWordResult {
         id: string;
         correct: boolean;
         score: number;
+    timeSpentMs: number;
+    averageCharsPerMinute: number;
         hasUsedHint: boolean;
         hintWrongAttempts: number;
     hintLetterTrialCount: number;
@@ -47,6 +49,54 @@ interface ReviewItem {
 
 const HINT_UNMASTERED_THRESHOLD = 3;
 const REVIEW_REQUIRED_REPETITIONS = 2;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const formatDurationCompact = (durationMs: number) => {
+    if (durationMs <= 0) return '0.0s';
+    if (durationMs < 10000) return `${(durationMs / 1000).toFixed(1)}s`;
+
+    const totalSeconds = Math.round(durationMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    if (minutes === 0) return `${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+};
+
+const calculateAverageCharsPerMinute = (wordText: string, durationMs: number) => {
+    if (durationMs <= 0) return 0;
+    return Math.round((wordText.length * 60000) / durationMs);
+};
+
+const getTypingFlowMetrics = (liveCharsPerMinute: number) => {
+    const normalizedSpeed = clamp(
+        liveCharsPerMinute / (WORD_LEARNING_CONFIG.scoring.timing.idealCharsPerSecond * 60),
+        0,
+        1
+    );
+
+    return {
+        normalizedSpeed,
+        glowStrength: 0.35 + (normalizedSpeed * 0.55),
+        litLedCount: Math.min(10, Math.max(0, Math.ceil(normalizedSpeed * 10))),
+    };
+};
+
+const calculateTimeEfficiencyRatio = (totalChars: number, totalWords: number, totalTimeMs: number) => {
+    const timingConfig = WORD_LEARNING_CONFIG.scoring.timing;
+    const totalSeconds = totalTimeMs / 1000;
+
+    if (totalChars <= 0 || totalWords <= 0 || totalSeconds <= 0) return 0;
+
+    const idealSeconds = (totalChars / timingConfig.idealCharsPerSecond) + (totalWords * timingConfig.perWordOverheadSeconds);
+    const minimumSeconds = (totalChars / timingConfig.minimumCharsPerSecond) + (totalWords * timingConfig.perWordOverheadSeconds);
+
+    if (totalSeconds <= idealSeconds) return 1;
+    if (totalSeconds >= minimumSeconds) return 0;
+
+    return clamp((minimumSeconds - totalSeconds) / Math.max(minimumSeconds - idealSeconds, 1), 0, 1);
+};
 
 const getReviewReasonLabel = (reason: ReviewReason) => {
     switch (reason) {
@@ -116,7 +166,9 @@ const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry
                     <span className="material-symbols-outlined text-sm">{statusIcon}</span>
                     <div className="flex flex-col min-w-0">
                         <span className="font-bold text-sm tracking-wide text-white truncate">{word.text}</span>
-                        <span className="text-[10px] font-mono opacity-80">{result.score.toFixed(1)} pts · {t.clickToFlip}</span>
+                        <span className="text-[10px] font-mono opacity-80">
+                            {result.score.toFixed(1)} pts · {formatDurationCompact(result.timeSpentMs)} · {Math.round(result.averageCharsPerMinute / 5) || 0} WPM
+                        </span>
                     </div>
                 </div>
             }
@@ -146,7 +198,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [hintLevel, setHintLevel] = useState(0); // 0: Audio, 1: Letter Blocks, 2: Image + Meaning
     const [showChineseHint, setShowChineseHint] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
-  const [startTime, setStartTime] = useState<number>(0);
+    const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+    const [currentWordStartTime, setCurrentWordStartTime] = useState<number>(0);
+    const [completedSessionTimeMs, setCompletedSessionTimeMs] = useState<number>(0);
+    const [currentWordElapsedMs, setCurrentWordElapsedMs] = useState<number>(0);
+    const [lastCompletedWordDurationMs, setLastCompletedWordDurationMs] = useState<number | null>(null);
+    const [liveCharsPerMinute, setLiveCharsPerMinute] = useState(0);
   
   // Updated Results State
     const [results, setResults] = useState<TestWordResult[]>([]);
@@ -198,6 +255,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   // Time tracking
   const [elapsedTime, setElapsedTime] = useState(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+    const typingEventsRef = useRef<number[]>([]);
+    const resolvedWordDurationRef = useRef<number | null>(null);
 
   // Audio References
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -400,16 +459,97 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     };
   }, [queue]);
 
-  useEffect(() => {
-    if (queue.length > 0 && !isFinished && isStarted) {
-        timerRef.current = setInterval(() => {
-            setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
-        }, 1000);
-    }
-    return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [queue.length, isFinished, startTime, isStarted]);
+    useEffect(() => {
+        if (!isStarted || isFinished || sessionStartTime === 0) return;
+
+        const updateTimingState = () => {
+                const now = Date.now();
+                setElapsedTime(Math.floor((now - sessionStartTime) / 1000));
+
+                if (phase === 'TESTING' && currentWordStartTime > 0 && feedback === 'NONE' && !isRevealed) {
+                        setCurrentWordElapsedMs(now - currentWordStartTime);
+                }
+
+                const cutoff = now - WORD_LEARNING_CONFIG.scoring.timing.speedWindowMs;
+                typingEventsRef.current = typingEventsRef.current.filter(timestamp => timestamp >= cutoff);
+
+                const nextCharsPerMinute = typingEventsRef.current.length > 0
+                        ? Math.round((typingEventsRef.current.length * 60000) / WORD_LEARNING_CONFIG.scoring.timing.speedWindowMs)
+                        : 0;
+
+                setLiveCharsPerMinute(nextCharsPerMinute);
+        };
+
+        updateTimingState();
+        timerRef.current = setInterval(updateTimingState, 120);
+
+        return () => {
+                if (timerRef.current) clearInterval(timerRef.current);
+        };
+    }, [currentWordStartTime, feedback, isFinished, isRevealed, isStarted, phase, sessionStartTime]);
+
+    const resetWordTimingState = useCallback((nextStartTime?: number) => {
+        setCurrentWordStartTime(nextStartTime ?? 0);
+        setCurrentWordElapsedMs(0);
+        setLastCompletedWordDurationMs(null);
+        setLiveCharsPerMinute(0);
+        typingEventsRef.current = [];
+        resolvedWordDurationRef.current = null;
+    }, []);
+
+    const beginWordTiming = useCallback(() => {
+        const wordStart = Date.now();
+        setCurrentWordStartTime(wordStart);
+        setCurrentWordElapsedMs(0);
+        setLastCompletedWordDurationMs(null);
+        setLiveCharsPerMinute(0);
+        typingEventsRef.current = [];
+        resolvedWordDurationRef.current = null;
+    }, []);
+
+    const finalizeSession = useCallback(() => {
+        const totalTimeMs = sessionStartTime > 0 ? Math.max(0, Date.now() - sessionStartTime) : 0;
+        setCompletedSessionTimeMs(totalTimeMs);
+        setElapsedTime(Math.floor(totalTimeMs / 1000));
+        setPhase('FINAL_RESULT');
+        setIsFinished(true);
+    }, [sessionStartTime]);
+
+    const buildCompletionSummary = useCallback((resultList: TestWordResult[]): CompletedTestSummary => {
+        const rawPoints = resultList.reduce((sum, result) => sum + result.score, 0);
+        const maxPoints = queue.length * WORD_LEARNING_CONFIG.scoring.fullScore;
+        const totalTimeMs = completedSessionTimeMs > 0
+                ? completedSessionTimeMs
+                : sessionStartTime > 0
+                        ? Math.max(0, Date.now() - sessionStartTime)
+                        : 0;
+        const totalChars = queue.reduce((sum, word) => sum + word.text.length, 0);
+        const timeEfficiencyRatio = calculateTimeEfficiencyRatio(totalChars, queue.length, totalTimeMs);
+        const timeBonusPoints = maxPoints * WORD_LEARNING_CONFIG.scoring.timeBonusWeight * timeEfficiencyRatio;
+        const totalScore = (rawPoints * (1 - WORD_LEARNING_CONFIG.scoring.timeBonusWeight)) + timeBonusPoints;
+        const durations = resultList.map(result => result.timeSpentMs).filter(duration => duration > 0);
+        const averageWordTimeMs = durations.length > 0
+                ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+                : 0;
+
+        return {
+                results: resultList.map(({ id, correct, score, timeSpentMs, averageCharsPerMinute }) => ({
+                        id,
+                        correct,
+                        score,
+                        timeSpentMs,
+                        averageCharsPerMinute,
+                })),
+                totalTimeMs,
+                rawPoints: Number(rawPoints.toFixed(2)),
+                timeBonusPoints: Number(timeBonusPoints.toFixed(2)),
+                totalScore: Number(totalScore.toFixed(2)),
+                timeEfficiencyRatio: Number(timeEfficiencyRatio.toFixed(4)),
+                averageWordTimeMs,
+                fastestWordTimeMs: durations.length > 0 ? Math.min(...durations) : null,
+                slowestWordTimeMs: durations.length > 0 ? Math.max(...durations) : null,
+        };
+    }, [completedSessionTimeMs, queue, sessionStartTime]);
 
   const currentWord = queue[currentIndex];
     const currentReviewItem = reviewQueue[reviewIndex] || null;
@@ -452,15 +592,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
     const finishReviewItem = useCallback(() => {
         if (reviewIndex >= reviewQueue.length - 1) {
-            setPhase('FINAL_RESULT');
-            setIsFinished(true);
+            finalizeSession();
             return;
         }
 
         setReviewIndex(prev => prev + 1);
         resetReviewState();
         setPhase('REVIEW_DRILL');
-    }, [reviewIndex, reviewQueue.length, resetReviewState]);
+    }, [finalizeSession, reviewIndex, reviewQueue.length, resetReviewState]);
 
   const stopAudio = useCallback(() => {
     // 1. Stop all cached audio elements to prevent overlaps during transitions
@@ -534,7 +673,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }
   }, [isStarted, stopAudio]);
 
-  const playAudio = useCallback(async (word: WordEntry) => {
+    const playAudio = useCallback(async (word: WordEntry, options?: { startTimingAfterPlayback?: boolean }) => {
     if (!isMountedRef.current) return;
     
     // 1. Mark this word as the intended target for audio
@@ -561,13 +700,17 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         // Only reset if we are still the active word
         if (activeWordIdRef.current === word.id && isMountedRef.current) {
             setIsPlayingAudio(false);
+
+            if (options?.startTimingAfterPlayback && phase === 'TESTING' && currentWord?.id === word.id && !isRevealed) {
+                beginWordTiming();
+            }
         }
     }
-  }, [stopAudio]);
+  }, [beginWordTiming, currentWord?.id, isRevealed, phase, stopAudio]);
 
     useEffect(() => {
         if (phase === 'REVIEW_INSTANT_TEST' && currentReviewWord) {
-            playAudio(currentReviewWord);
+                playAudio(currentReviewWord);
         }
     }, [phase, currentReviewWord, playAudio]);
 
@@ -584,7 +727,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         // Small delay to ensure UI transition is smooth
         const t = setTimeout(() => {
             if (activeWordIdRef.current === currentWord.id && isMountedRef.current) {
-                playAudio(currentWord);
+                playAudio(currentWord, { startTimingAfterPlayback: true });
             }
         }, 300);
         return () => clearTimeout(t);
@@ -609,7 +752,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       if (error) console.error("Failed to tag word as Mistake:", error.message);
   };
 
-  const handleNext = useCallback(async (score: number) => {
+    const handleNext = useCallback(async (score: number, resolvedDurationMs?: number) => {
       // Clear any pending timeouts
       if (nextTimeoutRef.current) {
           clearTimeout(nextTimeoutRef.current);
@@ -626,7 +769,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       const errorCountBefore = (currentWordSnapshot?.error_count || 0);
 
       const success = score > 0;
-      const wordStartTime = startTime;
+      const wordDurationMs = resolvedDurationMs
+          ?? resolvedWordDurationRef.current
+          ?? (currentWordStartTime > 0 ? Math.max(0, Date.now() - currentWordStartTime) : 0);
+
+      setLastCompletedWordDurationMs(wordDurationMs);
 
       // 计算error_count增量（严格追踪策略，使用小数）
       let errorCountDelta = 0;
@@ -667,7 +814,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           correct: success,
           score: score,
           error_count_increment: errorCountDelta,  // 传给 dataService 的增量，内部会加到 error_count 上
-          best_time_ms: success ? (Date.now() - wordStartTime) : undefined,
+          best_time_ms: success ? wordDurationMs : undefined,
           hasUsedHint: hasUsedHintSnapshot,  // Error decay: whether user used hints
           consecutiveCorrect: currentWordSnapshot?.consecutive_correct || 0  // Error decay: current consecutive correct count
       };
@@ -739,6 +886,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             id: currentWordSnapshot.id,
             correct: success,
             score,
+            timeSpentMs: wordDurationMs,
+            averageCharsPerMinute: calculateAverageCharsPerMinute(currentWordSnapshot.text, wordDurationMs),
             hasUsedHint: hasUsedHintSnapshot,
             hintWrongAttempts: currentHintAttemptsSnapshot,
             hintLetterTrialCount: currentHintLetterTrialSnapshot,
@@ -802,8 +951,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
               if (reviewItems.length > 0) {
                   startReviewFlow(reviewItems);
               } else {
-                  setPhase('FINAL_RESULT');
-                  setIsFinished(true);
+                  finalizeSession();
               }
           }, 1500);
       } else {
@@ -814,27 +962,50 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           setShowChineseHint(false);
           setIsRevealed(false);
           setIsProcessing(false); // Reset lock
-          setStartTime(Date.now());
           setCurrentAttempts(0);
           setHintAttempts(0);  // Reset for next word
                     setHintLetterTrialCount(0);
           setHasUsedHint(false);  // Reset for next word
                     hintWrongLettersByPositionRef.current = new Map();
+          resetWordTimingState();
       }
-                }, [currentIndex, queue, results, startTime, onUpdateWord, streak, currentWord, hintAttempts, hasUsedHint, currentAttempts, buildReviewQueue, startReviewFlow, hintLetterTrialCount, isRevealed]);
+                }, [buildReviewQueue, currentAttempts, currentIndex, currentWord, currentWordStartTime, finalizeSession, hasUsedHint, hintAttempts, hintLetterTrialCount, isRevealed, onUpdateWord, queue, resetWordTimingState, results, startReviewFlow, streak]);
 
   const handleReveal = () => {
+      const resolvedDurationMs = currentWordStartTime > 0 ? Math.max(0, Date.now() - currentWordStartTime) : 0;
+      resolvedWordDurationRef.current = resolvedDurationMs;
+      setLastCompletedWordDurationMs(resolvedDurationMs);
+      setCurrentWordElapsedMs(resolvedDurationMs);
       setIsRevealed(true);
       setFeedback('WRONG');
       playBuzzer();
   };
+
+  const handleTypingChange = useCallback((nextValue: string) => {
+      if (!currentWord || isRevealed) return;
+
+      if (hasUsedHint) {
+          registerHintLetterTrials(inputValue, nextValue, currentWord.text);
+      }
+
+      if (nextValue !== inputValue) {
+          const now = Date.now();
+          const changeCount = Math.max(Math.abs(nextValue.length - inputValue.length), 1);
+          for (let index = 0; index < changeCount; index++) {
+              typingEventsRef.current.push(now);
+          }
+      }
+
+      setInputValue(nextValue);
+      if (feedback === 'WRONG') setFeedback('NONE');
+  }, [currentWord, feedback, hasUsedHint, inputValue, isRevealed, registerHintLetterTrials]);
 
   const checkAnswer = () => {
       if (isProcessing || !currentWord) return;
       
       // If revealed, assume user wants to move on (Next with 'WRONG')
       if (isRevealed) {
-          handleNext(0);
+          handleNext(0, resolvedWordDurationRef.current ?? (currentWordStartTime > 0 ? Math.max(0, Date.now() - currentWordStartTime) : 0));
           return;
       }
       
@@ -847,6 +1018,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       const normalizedTarget = currentWord.text.trim().toLowerCase();
 
       if (normalizedInput === normalizedTarget) {
+          const resolvedDurationMs = currentWordStartTime > 0 ? Math.max(0, Date.now() - currentWordStartTime) : 0;
+          resolvedWordDurationRef.current = resolvedDurationMs;
+          setLastCompletedWordDurationMs(resolvedDurationMs);
+          setCurrentWordElapsedMs(resolvedDurationMs);
           setIsProcessing(true); // Lock
           setFeedback('CORRECT');
           playDing();
@@ -865,7 +1040,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           }
 
           // Auto-advance
-          nextTimeoutRef.current = setTimeout(() => handleNext(score), 1200);
+          nextTimeoutRef.current = setTimeout(() => handleNext(score, resolvedDurationMs), 1200);
       } else {
           // --- WRONG ANSWER LOGIC ---
           setIsProcessing(false); // Ensure unlocked
@@ -895,12 +1070,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           const nextAttemptCount = currentAttempts + 1;
           
           if (nextAttemptCount >= 3) {
+              const resolvedDurationMs = currentWordStartTime > 0 ? Math.max(0, Date.now() - currentWordStartTime) : 0;
+              resolvedWordDurationRef.current = resolvedDurationMs;
+              setLastCompletedWordDurationMs(resolvedDurationMs);
+              setCurrentWordElapsedMs(resolvedDurationMs);
               // Trigger Failure
               setFeedback('WRONG');
               setIsProcessing(true); // Lock input
               // Wait 1s then move next with 0 score
               setTimeout(() => {
-                  handleNext(0);
+                  handleNext(0, resolvedDurationMs);
               }, 1000);
           } else {
              setFeedback('WRONG');
@@ -918,7 +1097,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       
       setTimeout(() => {
           if (action === 'COMPLETE') {
-              onComplete(results.map(({ id, correct, score }) => ({ id, correct, score })));
+              onComplete(buildCompletionSummary(results));
           } else {
               onCancel();
           }
@@ -972,9 +1151,13 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       }
   };
 
-  if (phase === 'FINAL_RESULT') {
+    // Reversed history is used by both the active session and final result views.
+    const historyItems = [...results].reverse();
+
+    if (phase === 'FINAL_RESULT') {
+      const completionSummary = buildCompletionSummary(results);
       const correctCount = results.filter(r => r.correct).length;
-      const totalPoints = results.reduce((sum, r) => sum + r.score, 0);
+      const totalPoints = completionSummary.rawPoints;
       const maxPoints = queue.length * 3;
       // Simplified: Use correct/total directly for accuracy (removed points-based calculation)
       // CRITICAL: Clamp accuracy to valid range [0, 100] to prevent >100% display
@@ -989,31 +1172,76 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       };
 
       return (
-        <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 z-50 text-white animate-in fade-in duration-700">
+        <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] overflow-y-auto p-8 z-50 text-white animate-in fade-in duration-700">
           {isSyncing && <SyncOverlay showForceExit={showForceExit} onForceExit={onCancel} />}
           <Confetti showParticles={true} variant={accuracy >= 80 ? 'purple' : 'blue'} />
-          
-          <div className="text-8xl mb-6 animate-bounce">
-              {getEmoji(accuracy)}
-          </div>
+          <div className="mx-auto flex w-full max-w-5xl flex-col items-center py-8">
+              <div className="text-8xl mb-6 animate-bounce">
+                  {getEmoji(accuracy)}
+              </div>
 
-          <h2 className="text-4xl font-headline mb-4 tracking-tighter uppercase">{t.testComplete}</h2>
-          <div className={`text-7xl font-black mb-4 ${accuracy >= 80 ? 'text-electric-green' : accuracy >= 60 ? 'text-electric-blue' : 'text-orange-500'}`}>
-            {accuracy}%
+              <h2 className="text-4xl font-headline mb-4 tracking-tighter uppercase">{t.testComplete}</h2>
+              <div className={`text-7xl font-black mb-3 ${accuracy >= 80 ? 'text-electric-green' : accuracy >= 60 ? 'text-electric-blue' : 'text-orange-500'}`}>
+                {accuracy}%
+              </div>
+              <div className="mb-8 text-center">
+                  <p className="text-[11px] font-mono uppercase tracking-[0.3em] text-gray-500 mb-2">Session Score</p>
+                  <div className="text-4xl font-black text-white">
+                      {completionSummary.totalScore.toFixed(1)}
+                      <span className="ml-2 text-lg font-mono text-gray-500">/ {maxPoints.toFixed(1)}</span>
+                  </div>
+              </div>
+
+              <div className="grid w-full grid-cols-2 gap-4 md:grid-cols-3 mb-8">
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Correct Words</p>
+                      <p className="text-2xl font-black text-white">{correctCount} / {queue.length}</p>
+                  </div>
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Raw Points</p>
+                      <p className="text-2xl font-black text-electric-blue">{totalPoints.toFixed(1)}</p>
+                  </div>
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Time Bonus</p>
+                      <p className="text-2xl font-black text-cyan-300">{completionSummary.timeBonusPoints.toFixed(1)}</p>
+                  </div>
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Total Time</p>
+                      <p className="text-2xl font-black text-white">{formatDurationCompact(completionSummary.totalTimeMs)}</p>
+                  </div>
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Avg Word Time</p>
+                      <p className="text-2xl font-black text-white">{formatDurationCompact(completionSummary.averageWordTimeMs)}</p>
+                  </div>
+                  <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Review Cleared</p>
+                      <p className="text-2xl font-black text-white">{reviewQueue.length}</p>
+                  </div>
+              </div>
+
+              <button 
+                onClick={() => handleExit('COMPLETE')}
+                className="px-12 py-4 bg-white text-black rounded-2xl font-headline text-xl hover:bg-electric-blue hover:text-white transition-all transform hover:scale-105 active:scale-95 shadow-xl"
+              >
+                {t.restoreSystem}
+              </button>
+
+              {results.length > 0 && (
+                  <div className="w-full mt-12 rounded-[2rem] border border-white/[0.04] bg-white/[0.02] p-6">
+                      <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-5 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-sm">monitoring</span>
+                          Word Timing Stats
+                      </p>
+                      <div className="flex flex-wrap gap-3">
+                          {historyItems.map((result) => {
+                              const word = allWords.find(w => w.id === result.id);
+                              if (!word) return null;
+                              return <HistoryCard key={result.id} result={result} word={word} />;
+                          })}
+                      </div>
+                  </div>
+              )}
           </div>
-          <div className="flex flex-col items-center gap-2 mb-8 font-mono text-gray-400">
-             <p>{t.correctWords}: <span className="text-white">{correctCount} / {queue.length}</span></p>
-             <p>{t.totalPoints}: <span className="text-electric-blue">{totalPoints.toFixed(1)} / {maxPoints}</span> pts</p>
-             <p>{t.timeElapsed}: {elapsedTime}s</p>
-                 <p>{t.reviewWordsCleared}: <span className="text-white">{reviewQueue.length}</span></p>
-          </div>
-          
-          <button 
-            onClick={() => handleExit('COMPLETE')}
-            className="px-12 py-4 bg-white text-black rounded-2xl font-headline text-xl hover:bg-electric-blue hover:text-white transition-all transform hover:scale-105 active:scale-95 shadow-xl"
-          >
-            {t.restoreSystem}
-          </button>
         </div>
       );
   }
@@ -1115,8 +1343,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 setCoverage(tempCoverage);
                                 setIsSelectionConfirmed(true);
                             } else {
+                                const now = Date.now();
                                 setIsStarted(true);
-                                setStartTime(Date.now());
+                                setSessionStartTime(now);
+                                setCompletedSessionTimeMs(0);
+                                resetWordTimingState();
                             }
                         }}
                         disabled={isSelectionConfirmed && (!isResourcesLoaded || isOptimizing)}
@@ -1411,9 +1642,20 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   if (!currentWord) return null;
 
-  // New: Get Reversed History for Display
-  const historyItems = [...results].reverse(); 
     const currentChineseMeaning = currentWord.definition_cn?.trim() || '暂无中文释义';
+    const typingFlowMetrics = getTypingFlowMetrics(liveCharsPerMinute);
+    const typingFlowLedColors = [
+        '#ff3b30',
+        '#ff453a',
+        '#ff8c1a',
+        '#ff9f0a',
+        '#ffd60a',
+        '#ffe45c',
+        '#d4ff3b',
+        '#9ef01a',
+        '#52ff78',
+        '#2ee67c',
+    ];
 
   return (
     <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
@@ -1446,6 +1688,35 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             <div className="flex flex-col">
                 <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1">Progress</span>
                 <span className="text-sm font-bold font-mono text-blue-500">{currentIndex + 1} / {queue.length}</span>
+            </div>
+        </div>
+        <div className="absolute left-1/2 top-1/2 flex w-[460px] max-w-[48vw] -translate-x-1/2 -translate-y-1/2 items-center gap-4 px-4">
+            <span className="shrink-0 text-[10px] font-mono text-gray-600 uppercase tracking-[0.24em] leading-none">Typing Flow</span>
+            <div className="flex flex-1 items-center gap-1.5 rounded-full bg-[#030303]/55 px-2.5 py-1.5 shadow-[inset_0_0_18px_rgba(255,255,255,0.03)]">
+                {typingFlowLedColors.map((color, index) => {
+                    const isLit = index < typingFlowMetrics.litLedCount;
+
+                    return (
+                        <span
+                            key={color}
+                            className="h-3.5 flex-1 rounded-[999px] border transition-all duration-150 ease-out"
+                            style={{
+                                background: isLit ? color : 'rgba(255,255,255,0.05)',
+                                borderColor: isLit ? `${color}99` : 'rgba(255,255,255,0.08)',
+                                boxShadow: isLit
+                                    ? `0 0 8px ${color}aa, 0 0 16px ${color}${Math.round(typingFlowMetrics.glowStrength * 255).toString(16).padStart(2, '0')}`
+                                    : 'inset 0 0 6px rgba(255,255,255,0.03)',
+                                opacity: isLit ? 1 : 0.28,
+                                transform: isLit ? 'scaleY(1)' : 'scaleY(0.88)',
+                            }}
+                        />
+                    );
+                })}
+            </div>
+            <div className="flex shrink-0 items-center gap-3 text-[11px] font-mono leading-none whitespace-nowrap">
+                <span className="text-emerald-300">{Math.round(liveCharsPerMinute / 5) || 0} WPM</span>
+                <span className="text-gray-500">•</span>
+                <span className="text-white">Word {formatDurationCompact(currentWordElapsedMs)}</span>
             </div>
         </div>
         <div className="flex items-center gap-8">
@@ -1531,15 +1802,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <div className={`w-full transition-all duration-500 ${feedback === 'CORRECT' ? 'scale-105' : ''}`}>
                     <LargeWordInput
                       value={isRevealed ? currentWord.text : inputValue}
-                      onChange={(val) => {
-                          if (!isRevealed) {
-                              if (hasUsedHint && currentWord) {
-                                  registerHintLetterTrials(inputValue, val, currentWord.text);
-                              }
-                              setInputValue(val);
-                              if (feedback === 'WRONG') setFeedback('NONE');
-                          }
-                      }}
+                      onChange={handleTypingChange}
                       onEnter={checkAnswer}
                       disabled={feedback === 'CORRECT' || isRevealed}
                       status={feedback === 'CORRECT' ? 'correct' : feedback === 'WRONG' ? 'wrong' : 'idle'}

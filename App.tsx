@@ -18,7 +18,7 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, WordEntry, InputSession, DayStats } from './types';
+import { AppMode, WordEntry, InputSession, DayStats, CompletedTestSummary } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
@@ -739,16 +739,22 @@ const App: React.FC = () => {
   
   // ✨ NEW: Helper to update stats with incremental recording
   // This uses the new daily_test_records table for accurate incremental statistics
-  const updateLocalStats = async (results: { correct: boolean; score: number }[]) => {
+  const updateLocalStats = async (summary: CompletedTestSummary) => {
       // ✅ CRITICAL: Use unified Shanghai timezone for consistency with database
       // This ensures data is recorded to the correct date regardless of device timezone settings
       const today = getShanghaiDateString();  // Uses Asia/Shanghai timezone (UTC+8)
 
+      const results = summary.results;
+
       // Calculate test results
       const correctCount = results.filter(r => r.correct).length;
-      const currentTestPoints = results.reduce((sum, r) => sum + (r.score || 0), 0);
+      const currentTestPoints = summary.totalScore;
 
-      console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} points (Shanghai date: ${today})`);
+      console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} weighted points (Shanghai date: ${today})`, {
+        rawPoints: summary.rawPoints,
+        timeBonusPoints: summary.timeBonusPoints,
+        totalTimeMs: summary.totalTimeMs,
+      });
 
       // ✅ NEW (Phase D): Read-only protection - today must remain writable; if today is frozen, block writes
       if (dailyStats[today]?.is_frozen) {
@@ -2045,10 +2051,10 @@ const App: React.FC = () => {
             onUpdateWord={(id, updates) => {
                 setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
             }}
-            onComplete={async (results: { id: string; correct: boolean; score: number }[]) => {
+            onComplete={async (summary: CompletedTestSummary) => {
               // ✨ Now waits for database sync to complete before navigating
               try {
-                await updateLocalStats(results);
+                await updateLocalStats(summary);
               } catch (err) {
                 console.error('[onComplete] Stats sync failed, navigating anyway:', err);
               } finally {

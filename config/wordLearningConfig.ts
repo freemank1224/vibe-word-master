@@ -225,6 +225,25 @@ export const WORD_LEARNING_CONFIG = {
      * Default: 0
      */
     zeroScore: 0,
+
+    /**
+     * Weight reserved for time efficiency in the final test score
+     * 最终测试总分中分配给时间效率的权重
+     * Must stay <= 0.15
+     */
+    timeBonusWeight: 0.12,
+
+    /**
+     * Timing calibration for live typing speed and time-based scoring
+     * 用于实时打字速度和时间加权评分的计时校准参数
+     */
+    timing: {
+      speedWindowMs: 3200,
+      spectrumBarCount: 16,
+      idealCharsPerSecond: 4.5,
+      minimumCharsPerSecond: 1.6,
+      perWordOverheadSeconds: 1.8,
+    },
   },
 
   // ============================================

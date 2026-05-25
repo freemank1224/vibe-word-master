@@ -34,6 +34,26 @@ export interface InputSession {
   syncStatus?: 'synced' | 'syncing' | 'pending' | 'failed' | 'conflict'; // ☁️ Cloud sync status for UI
 }
 
+export interface CompletedTestWordResult {
+  id: string;
+  correct: boolean;
+  score: number;
+  timeSpentMs: number;
+  averageCharsPerMinute: number;
+}
+
+export interface CompletedTestSummary {
+  results: CompletedTestWordResult[];
+  totalTimeMs: number;
+  rawPoints: number;
+  timeBonusPoints: number;
+  totalScore: number;
+  timeEfficiencyRatio: number;
+  averageWordTimeMs: number;
+  fastestWordTimeMs: number | null;
+  slowestWordTimeMs: number | null;
+}
+
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';
 
 export interface DayStats {
