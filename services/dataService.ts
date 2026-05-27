@@ -1,10 +1,48 @@
 
 import { supabase } from '../lib/supabaseClient';
-import { WordEntry, InputSession } from '../types';
+import { WordEntry, InputSession, WordMeaningOption } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
 import { getShanghaiDateString } from '../utils/timezone';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+
+let wordsMeaningFieldsSupported: boolean | null = null;
+
+const isMissingMeaningFieldError = (error: any): boolean => {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  return message.includes('meaning_options') || message.includes('selected_meaning_key');
+};
+
+const stripMeaningFields = <T extends Record<string, any>>(payload: T): Omit<T, 'meaning_options' | 'selected_meaning_key'> => {
+  const { meaning_options, selected_meaning_key, ...rest } = payload;
+  void meaning_options;
+  void selected_meaning_key;
+  return rest;
+};
+
+const executeWordsMutationWithCompatibility = async <T>(
+  primary: () => Promise<{ data?: T; error?: any }>,
+  fallback: () => Promise<{ data?: T; error?: any }>,
+  context: string,
+): Promise<{ data?: T; error?: any }> => {
+  if (wordsMeaningFieldsSupported === false) {
+    return fallback();
+  }
+
+  const result = await primary();
+  if (!result.error) {
+    wordsMeaningFieldsSupported = true;
+    return result;
+  }
+
+  if (!isMissingMeaningFieldError(result.error)) {
+    return result;
+  }
+
+  console.warn(`[dataService] ${context}: words table missing meaning columns, retrying without new fields.`);
+  wordsMeaningFieldsSupported = false;
+  return fallback();
+};
 
 const triggerPronunciationGeneration = async (word: string, lang: string = 'en'): Promise<void> => {
   try {
@@ -213,6 +251,8 @@ export const fetchUserData = async (userId: string) => {
     lexeme_id: w.lexeme_id || null,
     definition_cn: w.definition_cn || null,
     definition_en: w.definition_en || null,
+    meaning_options: Array.isArray(w.meaning_options) ? w.meaning_options : [],
+    selected_meaning_key: w.selected_meaning_key || null,
     deleted: w.deleted || false,
     tags: w.tags || ['Custom'],
     consecutive_correct: w.consecutive_correct || 0
@@ -224,7 +264,7 @@ export const fetchUserData = async (userId: string) => {
 export const saveSessionData = async (
   userId: string, 
   targetCount: number, 
-  wordList: { text: string, imageBase64?: string, language?: string, definition_cn?: string, definition_en?: string }[],
+  wordList: { text: string, imageBase64?: string, language?: string, definition_cn?: string, definition_en?: string, meaning_options?: WordMeaningOption[] | null, selected_meaning_key?: string | null }[],
   libraryTag: string = 'Custom'
 ) => {
   // 0. Global Deduplication Check
@@ -280,6 +320,8 @@ export const saveSessionData = async (
       language: w.language || 'en',
       definition_cn: w.definition_cn || null,
       definition_en: w.definition_en || null,
+      meaning_options: w.meaning_options || [],
+      selected_meaning_key: w.selected_meaning_key || null,
       tags: [libraryTag]
     });
   }
@@ -287,10 +329,17 @@ export const saveSessionData = async (
   // 3. Bulk Insert Words
   let wordsData = [];
   if (wordsPayload.length > 0) {
-    const { data, error: wordsError } = await supabase
+    const { data, error: wordsError } = await executeWordsMutationWithCompatibility(
+      () => supabase
         .from('words')
         .insert(wordsPayload)
-        .select();
+        .select(),
+      () => supabase
+        .from('words')
+        .insert(wordsPayload.map(stripMeaningFields))
+        .select(),
+      'saveSessionData.insert'
+    );
 
     if (wordsError) {
         console.error("Error inserting words:", wordsError.message);
@@ -325,9 +374,9 @@ export const saveSessionData = async (
 export const modifySession = async (
   userId: string,
   sessionId: string,
-  addedWords: { text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string }[],
+  addedWords: { text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string, meaning_options?: WordMeaningOption[] | null, selected_meaning_key?: string | null }[],
   removedWordIds: string[],
-  updatedWords: { id: string, text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string }[] = []
+  updatedWords: { id: string, text: string, imageBase64?: string, definition_cn?: string, definition_en?: string, language?: string, meaning_options?: WordMeaningOption[] | null, selected_meaning_key?: string | null }[] = []
 ) => {
     // Get session's library_tag - words added to this session belong to its library
     const { data: sessionInfo } = await supabase
@@ -389,15 +438,24 @@ export const modifySession = async (
               language: w.language || 'en',
               definition_cn: w.definition_cn || null,
               definition_en: w.definition_en || null,
+              meaning_options: w.meaning_options || [],
+              selected_meaning_key: w.selected_meaning_key || null,
                 tags: [libraryTag]
             });
         }
         
         if (wordsPayload.length > 0) {
-            const { data, error: insError } = await supabase
-                .from('words')
-                .insert(wordsPayload)
-                .select();
+          const { data, error: insError } = await executeWordsMutationWithCompatibility(
+            () => supabase
+              .from('words')
+              .insert(wordsPayload)
+              .select(),
+            () => supabase
+              .from('words')
+              .insert(wordsPayload.map(stripMeaningFields))
+              .select(),
+            'modifySession.insert'
+          );
                 
             if (insError) {
                 console.error("Error adding words to session:", insError.message);
@@ -419,6 +477,8 @@ export const modifySession = async (
           if (w.language) updates.language = w.language;
           if (w.definition_cn) updates.definition_cn = w.definition_cn;
           if (w.definition_en) updates.definition_en = w.definition_en;
+          if (w.meaning_options) updates.meaning_options = w.meaning_options;
+          if (w.selected_meaning_key !== undefined) updates.selected_meaning_key = w.selected_meaning_key;
             
             // Only update image if a new one is provided (base64)
             if (w.imageBase64) {
@@ -428,11 +488,19 @@ export const modifySession = async (
                 }
             }
 
-            const { error: upError } = await supabase
+            const { error: upError } = await executeWordsMutationWithCompatibility(
+              () => supabase
                 .from('words')
                 .update(updates)
                 .eq('id', w.id)
-                .eq('user_id', userId);
+                .eq('user_id', userId),
+              () => supabase
+                .from('words')
+                .update(stripMeaningFields(updates))
+                .eq('id', w.id)
+                .eq('user_id', userId),
+              'modifySession.update'
+            );
 
             if (upError) {
                 console.error(`Error updating word ${w.id}:`, upError.message);
@@ -800,12 +868,21 @@ export const updateWordMetadata = async (wordId: string, updates: {
   phonetic?: string,
   definition_cn?: string,
   definition_en?: string,
-  language?: string
+  language?: string,
+  meaning_options?: WordMeaningOption[] | null,
+  selected_meaning_key?: string | null,
 }) => {
-  const { error } = await supabase
-    .from('words')
-    .update(updates)
-    .eq('id', wordId);
+  const { error } = await executeWordsMutationWithCompatibility(
+    () => supabase
+      .from('words')
+      .update(updates)
+      .eq('id', wordId),
+    () => supabase
+      .from('words')
+      .update(stripMeaningFields(updates))
+      .eq('id', wordId),
+    'updateWordMetadata'
+  );
     
   if (error) console.error("Error updating word metadata:", error.message);
 };

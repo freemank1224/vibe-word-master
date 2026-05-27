@@ -18,7 +18,7 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, WordEntry, InputSession, DayStats, CompletedTestSummary } from './types';
+import { AppMode, WordEntry, InputSession, DayStats, CompletedTestSummary, WordMeaningOption } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
@@ -27,7 +27,7 @@ import TestModeV2 from './components/TestModeV2';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
-import { fetchDictionaryData, playWordAudio as playWordAudioService } from './services/dictionaryService';
+import { fetchDictionaryData, fetchWordMeaningOptions, playWordAudio as playWordAudioService } from './services/dictionaryService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordIds } from './services/imageCache';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
@@ -115,7 +115,16 @@ type EditableWord = {
   imageGenerating?: boolean;
   definition_cn?: string;
   definition_en?: string;
+  meaning_options?: WordMeaningOption[];
+  selected_meaning_key?: string;
   language?: string;
+};
+
+type ResolvedDictionaryDetails = {
+  definition_cn?: string;
+  definition_en?: string;
+  meaning_options: WordMeaningOption[];
+  selected_meaning_key?: string;
 };
 
 type InputValidationStage =
@@ -136,6 +145,8 @@ const createEditableWord = (word: Omit<EditableWord, 'tempId'> & { tempId?: stri
   imageGenerating: word.imageGenerating,
   definition_cn: word.definition_cn,
   definition_en: word.definition_en,
+  meaning_options: word.meaning_options,
+  selected_meaning_key: word.selected_meaning_key,
   language: word.language || 'en',
 });
 
@@ -1117,14 +1128,18 @@ const App: React.FC = () => {
              // Note: client side 'imageBase64' presence indicates a new image upload intention
              const textChanged = w.text.trim() !== original.text.trim();
              const hasNewImage = !!w.imageBase64;
+             const selectedMeaningChanged = (w.selected_meaning_key || null) !== (original.selected_meaning_key || null);
+             const meaningListChanged = JSON.stringify(w.meaning_options || []) !== JSON.stringify(original.meaning_options || []);
              
-             return textChanged || hasNewImage;
+             return textChanged || hasNewImage || selectedMeaningChanged || meaningListChanged;
         }).map(w => ({
             id: w.id!,
             text: w.text,
           imageBase64: w.imageBase64,
           definition_cn: w.definition_cn,
           definition_en: w.definition_en,
+          meaning_options: w.meaning_options,
+          selected_meaning_key: w.selected_meaning_key,
           language: w.language
         }));
 
@@ -1216,8 +1231,10 @@ const App: React.FC = () => {
           last_tested: existingWord?.last_tested || null,
           phonetic: existingWord?.phonetic || null,
           audio_url: existingWord?.audio_url || null,
-          definition_cn: existingWord?.definition_cn || null,
-          definition_en: existingWord?.definition_en || null,
+          definition_cn: w.definition_cn || existingWord?.definition_cn || null,
+          definition_en: w.definition_en || existingWord?.definition_en || null,
+          meaning_options: w.meaning_options || existingWord?.meaning_options || [],
+          selected_meaning_key: w.selected_meaning_key || existingWord?.selected_meaning_key || null,
           deleted: false,
           tags: ['Custom']
         };
@@ -3700,6 +3717,8 @@ const InputMode: React.FC<{
       hasImage: !!w.image_url || !!w.image_path,
       definition_cn: w.definition_cn || undefined,
       definition_en: w.definition_en || undefined,
+      meaning_options: w.meaning_options || undefined,
+      selected_meaning_key: w.selected_meaning_key || undefined,
       language: w.language || 'en'
     }))
   );
@@ -3724,9 +3743,16 @@ const InputMode: React.FC<{
   const [targetWord, setTargetWord] = useState<string | null>(null);
   const [targetDefinitionCn, setTargetDefinitionCn] = useState<string | null>(null);
   const [targetDefinitionEn, setTargetDefinitionEn] = useState<string | null>(null);
+  const [targetMeaningOptions, setTargetMeaningOptions] = useState<WordMeaningOption[]>([]);
+  const [targetSelectedMeaningKey, setTargetSelectedMeaningKey] = useState<string | null>(null);
   const [repeatCount, setRepeatCount] = useState<number>(3);
   const [drillProgress, setDrillProgress] = useState<number>(0);
   const [inputStatus, setInputStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
+  const [pendingMeaningSelection, setPendingMeaningSelection] = useState<{
+    text: string;
+    details: ResolvedDictionaryDetails;
+    selectedKey: string;
+  } | null>(null);
 
   // Feature 2: Audio
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
@@ -3769,26 +3795,76 @@ const InputMode: React.FC<{
     return trimmedSuggestion.toLowerCase() === trimmedRaw.toLowerCase() ? trimmedSuggestion : trimmedRaw;
   };
 
+  const buildFallbackMeaningOption = (text: string, details?: Partial<ResolvedDictionaryDetails>): WordMeaningOption => {
+    const meaningZh = details?.definition_cn?.trim() || fallbackMeaning;
+    return {
+      key: `na::${meaningZh.trim().toLowerCase()}`,
+      meaningZh,
+      partOfSpeech: null,
+      definitionEn: details?.definition_en?.trim() || text,
+      sourceProvider: 'input-fallback',
+    };
+  };
+
+  const normalizeMeaningOptions = (text: string, details?: Partial<ResolvedDictionaryDetails>): WordMeaningOption[] => {
+    const options = (details?.meaning_options || []).filter(option => option?.meaningZh?.trim()).map(option => ({
+      ...option,
+      key: option.key || `na::${option.meaningZh.trim().toLowerCase()}`,
+      meaningZh: option.meaningZh.trim(),
+    }));
+
+    if (options.length > 0) {
+      return options;
+    }
+
+    return [buildFallbackMeaningOption(text, details)];
+  };
+
   const resolveDictionaryDetails = async (text: string) => {
     try {
       const details = await fetchDictionaryData(text, 'en');
-      return {
+      const meaningOptions = details?.meaningOptions?.length
+        ? details.meaningOptions
+        : await fetchWordMeaningOptions(text, 'en', details?.definition_en?.trim());
+      const normalizedMeaningOptions = normalizeMeaningOptions(text, {
         definition_cn: details?.definition_cn?.trim() || fallbackMeaning,
         definition_en: details?.definition_en?.trim() || undefined,
+        meaning_options: meaningOptions,
+      });
+      const selectedMeaningKey = normalizedMeaningOptions.find(option => option.meaningZh === details?.definition_cn?.trim())?.key || normalizedMeaningOptions[0]?.key;
+
+      return {
+        definition_cn: details?.definition_cn?.trim() || normalizedMeaningOptions[0]?.meaningZh || fallbackMeaning,
+        definition_en: details?.definition_en?.trim() || undefined,
+        meaning_options: normalizedMeaningOptions,
+        selected_meaning_key: selectedMeaningKey,
       };
     } catch (error) {
       console.warn('Failed to resolve dictionary details:', error);
+      const normalizedMeaningOptions = normalizeMeaningOptions(text, {
+        definition_cn: fallbackMeaning,
+        definition_en: undefined,
+      });
       return {
         definition_cn: fallbackMeaning,
         definition_en: undefined,
+        meaning_options: normalizedMeaningOptions,
+        selected_meaning_key: normalizedMeaningOptions[0]?.key,
       };
     }
   };
 
-  const startWordDrill = (text: string, details?: { definition_cn?: string; definition_en?: string }) => {
+  const startWordDrill = (text: string, details?: ResolvedDictionaryDetails) => {
+    const normalizedMeaningOptions = normalizeMeaningOptions(text, details);
+    const selectedMeaningKey = details?.selected_meaning_key && normalizedMeaningOptions.some(option => option.key === details.selected_meaning_key)
+      ? details.selected_meaning_key
+      : normalizedMeaningOptions[0]?.key || null;
+
     setTargetWord(text);
-    setTargetDefinitionCn(details?.definition_cn || fallbackMeaning);
+    setTargetDefinitionCn(details?.definition_cn || normalizedMeaningOptions[0]?.meaningZh || fallbackMeaning);
     setTargetDefinitionEn(details?.definition_en || null);
+    setTargetMeaningOptions(normalizedMeaningOptions);
+    setTargetSelectedMeaningKey(selectedMeaningKey);
     setDrillProgress(1);
     setInputValue('');
     setInputStatus('correct');
@@ -3807,6 +3883,39 @@ const InputMode: React.FC<{
     // Words deleted from initial set (via deletedIds or onDeleteWord immediate sync)
     const deletedCount = initialWords.length - currentWords.filter(w => w.id).length;
     return newWordsCount > 0 || deletedCount > 0;
+  };
+
+  const confirmMeaningSelection = () => {
+    if (!pendingMeaningSelection) return;
+
+    const selectedOption = pendingMeaningSelection.details.meaning_options.find(option => option.key === pendingMeaningSelection.selectedKey)
+      || pendingMeaningSelection.details.meaning_options[0]
+      || buildFallbackMeaningOption(pendingMeaningSelection.text, pendingMeaningSelection.details);
+
+    const newEntry = createEditableWord({
+      text: pendingMeaningSelection.text,
+      imageBase64: undefined,
+      hasImage: false,
+      imageGenerating: true,
+      definition_cn: selectedOption.meaningZh,
+      definition_en: pendingMeaningSelection.details.definition_en || selectedOption.definitionEn || undefined,
+      meaning_options: pendingMeaningSelection.details.meaning_options,
+      selected_meaning_key: selectedOption.key,
+      language: 'en',
+    });
+
+    setCurrentWords(prev => [...prev, newEntry]);
+    triggerDraftImageGeneration(newEntry.tempId, pendingMeaningSelection.text, 'en');
+    setPendingMeaningSelection(null);
+    setTargetWord(null);
+    setTargetDefinitionCn(null);
+    setTargetDefinitionEn(null);
+    setTargetMeaningOptions([]);
+    setTargetSelectedMeaningKey(null);
+    setDrillProgress(0);
+    setInputValue('');
+    setTimeout(() => setInputStatus('idle'), 1000);
+    playDing();
   };
 
   const handleCancelClick = () => {
@@ -3954,6 +4063,8 @@ const InputMode: React.FC<{
                 finishAddingWord(targetWord, {
                   definition_cn: targetDefinitionCn || fallbackMeaning,
                   definition_en: targetDefinitionEn || undefined,
+                  meaning_options: targetMeaningOptions,
+                  selected_meaning_key: targetSelectedMeaningKey || undefined,
                 });
             }
         } else {
@@ -3966,25 +4077,37 @@ const InputMode: React.FC<{
     }
   };
 
-  const finishAddingWord = (text: string, details?: { definition_cn?: string; definition_en?: string }) => {
-      const newEntry = createEditableWord({
-        text,
-        imageBase64: undefined,
-        hasImage: false,
-        imageGenerating: true,
-        definition_cn: details?.definition_cn || targetDefinitionCn || fallbackMeaning,
-        definition_en: details?.definition_en || targetDefinitionEn || undefined,
-        language: 'en',
+  const finishAddingWord = (text: string, details?: ResolvedDictionaryDetails) => {
+      const meaningOptions = normalizeMeaningOptions(text, details || {
+        definition_cn: targetDefinitionCn || fallbackMeaning,
+        definition_en: targetDefinitionEn || undefined,
+        meaning_options: targetMeaningOptions,
+        selected_meaning_key: targetSelectedMeaningKey || undefined,
       });
-      setCurrentWords(prev => [...prev, newEntry]);
-      triggerDraftImageGeneration(newEntry.tempId, text, 'en');
+      const selectedKey = details?.selected_meaning_key && meaningOptions.some(option => option.key === details.selected_meaning_key)
+        ? details.selected_meaning_key
+        : targetSelectedMeaningKey && meaningOptions.some(option => option.key === targetSelectedMeaningKey)
+          ? targetSelectedMeaningKey
+          : meaningOptions[0]?.key;
+
+      setPendingMeaningSelection({
+        text,
+        details: {
+          definition_cn: details?.definition_cn || targetDefinitionCn || meaningOptions[0]?.meaningZh || fallbackMeaning,
+          definition_en: details?.definition_en || targetDefinitionEn || undefined,
+          meaning_options: meaningOptions,
+          selected_meaning_key: selectedKey || undefined,
+        },
+        selectedKey: selectedKey || meaningOptions[0]?.key || buildFallbackMeaningOption(text, details).key,
+      });
       setTargetWord(null);
       setTargetDefinitionCn(null);
       setTargetDefinitionEn(null);
+      setTargetMeaningOptions([]);
+      setTargetSelectedMeaningKey(null);
       setDrillProgress(0);
       setInputValue('');
       setTimeout(() => setInputStatus('idle'), 1000);
-      playDing(); // Double ding for completion?
   };
 
   const handleManualAdd = async () => {
@@ -4397,6 +4520,8 @@ const InputMode: React.FC<{
               <MeaningFlipCard
                 key={w.tempId}
                 meaning={w.definition_cn}
+                meaningOptions={w.meaning_options}
+                selectedMeaningKey={w.selected_meaning_key}
                 className="h-24"
                 frontClassName="rounded-xl"
                 backClassName="rounded-xl border border-electric-blue/30 bg-light-charcoal p-3"
@@ -4452,13 +4577,68 @@ const InputMode: React.FC<{
       <div className="flex flex-col items-center gap-4 pt-4 pb-8">
         <button 
             onClick={handleSubmitSession}
-            disabled={currentWords.length === 0 || !!targetWord}
+            disabled={currentWords.length === 0 || !!targetWord || !!pendingMeaningSelection}
             className={`w-full max-w-md py-6 rounded-2xl font-headline text-3xl transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:transform-none bg-mid-charcoal text-text-light hover:bg-electric-green hover:text-charcoal border-2 border-transparent hover:border-white`}
         >
             <span className="material-symbols-outlined text-4xl">check_circle</span>
-            {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : (initialWords.length > 0 ? <HoverTranslationText text="UPDATE SESSION" translation="更新本次批次" /> : <HoverTranslationText text="FINISH & SAVE" translation="完成并保存" />)}
+            {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : pendingMeaningSelection ? <HoverTranslationText text="SELECT MEANING FIRST" translation="请先选择释义" /> : (initialWords.length > 0 ? <HoverTranslationText text="UPDATE SESSION" translation="更新本次批次" /> : <HoverTranslationText text="FINISH & SAVE" translation="完成并保存" />)}
         </button>
       </div>
+
+      {pendingMeaningSelection && (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/80 px-6 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="w-full max-w-2xl rounded-[28px] border border-amber-300/25 bg-[#121419]/95 p-6 shadow-[0_0_50px_rgba(251,191,36,0.12)]">
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-4">
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.35em] text-amber-300/80">Meaning Selector</p>
+                <h3 className="mt-2 font-headline text-2xl text-white">为 {pendingMeaningSelection.text} 选择本次最贴切的中文释义</h3>
+                <p className="mt-2 text-sm text-text-light">系统会把你勾选的义项写入卡片背面；悬浮到卡片释义时，还会重新展开全部常见释义。</p>
+              </div>
+              <div className="rounded-full border border-white/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.25em] text-electric-blue">
+                {pendingMeaningSelection.details.meaning_options.length} options
+              </div>
+            </div>
+
+            <div className="mt-5 max-h-[52vh] space-y-3 overflow-y-auto pr-1">
+              {pendingMeaningSelection.details.meaning_options.map((option) => {
+                const checked = pendingMeaningSelection.selectedKey === option.key;
+                return (
+                  <button
+                    key={option.key}
+                    onClick={() => setPendingMeaningSelection(prev => prev ? { ...prev, selectedKey: option.key } : prev)}
+                    className={`flex w-full items-start gap-4 rounded-2xl border px-4 py-4 text-left transition-all ${checked ? 'border-amber-300/60 bg-amber-300/10 shadow-[0_0_25px_rgba(251,191,36,0.12)]' : 'border-white/8 bg-white/3 hover:border-electric-blue/35 hover:bg-white/5'}`}
+                  >
+                    <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${checked ? 'border-amber-300 bg-amber-300 text-[#111318]' : 'border-white/20 text-transparent'}`}>
+                      <span className="material-symbols-outlined text-base">check</span>
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-electric-blue/30 bg-electric-blue/10 px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-electric-blue">{option.partOfSpeech || '未标注词性'}</span>
+                        {option.sourceProvider && (
+                          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-dark">{option.sourceProvider}</span>
+                        )}
+                      </div>
+                      <p className="mt-3 text-base font-semibold leading-relaxed text-white">{option.meaningZh}</p>
+                      {option.definitionEn && (
+                        <p className="mt-2 text-sm leading-relaxed text-text-dark">{option.definitionEn}</p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3 border-t border-white/10 pt-4">
+              <button
+                onClick={confirmMeaningSelection}
+                className="rounded-xl bg-amber-300 px-5 py-3 font-mono text-sm font-bold uppercase tracking-[0.2em] text-[#111318] transition-all hover:bg-amber-200"
+              >
+                确认当前释义
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Word Delete Confirmation Modal */}
       {wordToDelete && (

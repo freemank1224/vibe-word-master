@@ -1,4 +1,12 @@
 
+export interface WordMeaningOption {
+  key: string;
+  meaningZh: string;
+  partOfSpeech?: string | null;
+  definitionEn?: string | null;
+  sourceProvider?: string | null;
+}
+
 export interface WordEntry {
   id: string;
   text: string;
@@ -18,6 +26,8 @@ export interface WordEntry {
   lexeme_id?: string | null;
   definition_cn: string | null;
   definition_en: string | null;
+  meaning_options?: WordMeaningOption[] | null;
+  selected_meaning_key?: string | null;
   deleted?: boolean;
   tags?: string[];
   score?: number; // Added for point system (3 for direct, 2.4 for hint)
