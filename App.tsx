@@ -2067,6 +2067,11 @@ const App: React.FC = () => {
               allWords={visibleWords}
               sessions={sessions}
               onComplete={async (summary: PuzzleGameSummary) => {
+                if (!summary.rankingEligible) {
+                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
+                  return;
+                }
+
                 try {
                   await recordPuzzleGameRound(summary);
                   showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');

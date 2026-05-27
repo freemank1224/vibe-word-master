@@ -106,6 +106,9 @@ export interface PuzzleGameSummary {
   timeUsedSeconds: number;
   secondsRemaining: number;
   selectionMode: PuzzleGameSelectionMode;
+  overlapRate: number;
+  rankingEligible: boolean;
+  rankingIneligibleReason?: string | null;
   results: PuzzleCardResult[];
 }
 

@@ -50,6 +50,9 @@ const formatClock = (seconds: number) => {
 const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onComplete, onCancel }) => {
   const [phase, setPhase] = useState<PuzzleGamePhase>('INTRO');
   const [selectionMode, setSelectionMode] = useState<PuzzleGameSelectionMode>('random');
+  const [selectionOverlapRate, setSelectionOverlapRate] = useState(0);
+  const [rankingEligible, setRankingEligible] = useState(true);
+  const [rankingIneligibleReason, setRankingIneligibleReason] = useState<string | null>(null);
   const [selectedWords, setSelectedWords] = useState<WordEntry[]>([]);
   const [cards, setCards] = useState<PuzzleGameCardState[]>([]);
   const [audioProgress, setAudioProgress] = useState({ current: 0, total: 0 });
@@ -131,6 +134,9 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
 
     const selection = selectPuzzleWords(allWords, sessions, smartSelectionEnabled, 9);
     setSelectionMode(selection.selectionMode);
+    setSelectionOverlapRate(selection.overlapRate);
+    setRankingEligible(selection.rankingEligible);
+    setRankingIneligibleReason(selection.rankingIneligibleReason || null);
 
     if (selection.words.length < 9) {
       setPreparationError('Not enough image-backed words in your library yet.');
@@ -272,7 +278,14 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
       activatedAtMs: card.activatedAtMs,
     }));
 
-    const summary = calculatePuzzleGameSummary(results, elapsedMs, selectionMode);
+    const summary = calculatePuzzleGameSummary(
+      results,
+      elapsedMs,
+      selectionMode,
+      selectionOverlapRate,
+      rankingEligible,
+      rankingIneligibleReason,
+    );
     setResult(summary);
     setPhase('RESULT');
 
@@ -474,19 +487,6 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                       translation="倒计时结束后，90 秒主计时会立刻开始。点击喇叭听发音，输入正确单词，把提示留给最难的图片。"
                     />
                   </p>
-                  <div className="mt-6 grid grid-cols-3 gap-3">
-                    {Array.from({ length: selectedWords.length }).map((_, index) => (
-                      <div
-                        key={`slot-${index}`}
-                        className="rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-4 text-center"
-                      >
-                        <div className="text-[10px] font-mono uppercase tracking-[0.25em] text-text-dark">
-                          Card {index + 1}
-                        </div>
-                        <div className="mt-2 font-headline text-lg text-white">READY</div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
 
                 <button
@@ -698,6 +698,12 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                         translation={`本局选词模式：${result.selectionMode === 'smart' ? '智能' : '随机'} · 剩余时间 ${result.secondsRemaining} 秒 · 无提示答对 ${result.solvedWithoutHint}/${result.wordsTotal}。`}
                       />
                     </div>
+                    <div className="mt-2">
+                      <HoverTranslationText
+                        text={`Highest overlap with today's earlier puzzle runs: ${Math.round(result.overlapRate * 100)}%.${result.rankingEligible ? '' : ' This round is not eligible for ranking.'}`}
+                        translation={`与今天更早字谜局的最高重复率：${Math.round(result.overlapRate * 100)}%。${result.rankingEligible ? '' : ' 本局不计入排行榜成绩。'}`}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -708,8 +714,20 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                     </div>
                     <div className="mt-4 text-sm leading-7 text-text-light">
                       <HoverTranslationText
-                        text={isSubmitting ? 'Writing round data to the independent puzzle leaderboard...' : 'Round data has been sent to the independent puzzle leaderboard pipeline.'}
-                        translation={isSubmitting ? '正在将本局成绩写入独立的字谜排行榜...' : '本局成绩已提交到独立的字谜排行榜链路。'}
+                        text={
+                          !result.rankingEligible
+                            ? 'Overlap is above 80%, so this round stays visible locally but will not be submitted to the puzzle leaderboard.'
+                            : isSubmitting
+                              ? 'Writing round data to the independent puzzle leaderboard...'
+                              : 'Round data has been sent to the independent puzzle leaderboard pipeline.'
+                        }
+                        translation={
+                          !result.rankingEligible
+                            ? '由于重复率超过 80%，本局结果只保留在当前页面中，不提交到字谜排行榜。'
+                            : isSubmitting
+                              ? '正在将本局成绩写入独立的字谜排行榜...'
+                              : '本局成绩已提交到独立的字谜排行榜链路。'
+                        }
                       />
                     </div>
                   </div>
