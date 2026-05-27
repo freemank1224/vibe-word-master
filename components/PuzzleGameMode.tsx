@@ -64,7 +64,6 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const [bannerMessage, setBannerMessage] = useState<string | null>(null);
   const [result, setResult] = useState<PuzzleGameSummary | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [boardHeight, setBoardHeight] = useState(() => Math.max(420, window.innerHeight - 210));
 
   const gameStartTimeRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
@@ -74,15 +73,6 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
 
   const candidateCount = useMemo(() => getPuzzleCandidateWords(allWords).length, [allWords]);
   const canPrepare = candidateCount >= 9;
-
-  useEffect(() => {
-    const handleResize = () => {
-      setBoardHeight(Math.max(420, window.innerHeight - 210));
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   useEffect(() => {
     if (phase !== 'PLAYING') {
@@ -578,7 +568,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
         )}
 
         {phase === 'PLAYING' && (
-          <div className="flex flex-1 flex-col gap-4 overflow-hidden">
+          <div className="grid flex-1 min-h-0 gap-4 overflow-hidden" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}>
             <div className="grid shrink-0 gap-3 rounded-[30px] border border-mid-charcoal bg-dark-charcoal/70 p-4 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
               <div>
                 <div className="text-xs font-mono uppercase tracking-[0.3em] text-text-dark">
@@ -614,7 +604,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
               </div>
             </div>
 
-            <div className="grid flex-1 grid-cols-3 gap-3" style={{ height: boardHeight }}>
+            <div className="grid min-h-0 grid-cols-3 gap-3">
               {cards.map((card) => {
                 const inputDisabled = phase !== 'PLAYING' || card.isLocked || card.isSolved || timeLeft <= 0;
                 const isActiveCard = activeCardId === card.word.id && !card.isSolved && !card.isLocked;
@@ -628,11 +618,15 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                         : card.isLocked
                           ? 'border-red-500/40 bg-red-500/10'
                           : isActiveCard
-                            ? 'border-electric-blue bg-electric-blue/8 shadow-[0_0_0_1px_rgba(96,165,250,0.35),0_0_22px_rgba(96,165,250,0.18)]'
+                            ? 'border-electric-blue bg-electric-blue/8 shadow-[0_0_0_1px_rgba(96,165,250,0.42),0_0_24px_rgba(96,165,250,0.24)]'
                           : 'border-mid-charcoal bg-dark-charcoal/70'
                     }`}
                     style={{ gridTemplateRows: '1fr auto' }}
                   >
+                    {isActiveCard && (
+                      <div className="pointer-events-none absolute inset-0 z-10 rounded-[28px] border border-electric-blue/70 animate-pulse shadow-[0_0_0_1px_rgba(96,165,250,0.55),0_0_22px_rgba(96,165,250,0.4),0_0_42px_rgba(96,165,250,0.22)]" />
+                    )}
+
                     <button
                       onClick={() => useHint(card)}
                       disabled={card.hintUsed || card.isSolved || card.isLocked}
