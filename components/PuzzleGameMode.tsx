@@ -53,6 +53,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const [selectionOverlapRate, setSelectionOverlapRate] = useState(0);
   const [rankingEligible, setRankingEligible] = useState(true);
   const [rankingIneligibleReason, setRankingIneligibleReason] = useState<string | null>(null);
+  const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [selectedWords, setSelectedWords] = useState<WordEntry[]>([]);
   const [cards, setCards] = useState<PuzzleGameCardState[]>([]);
   const [audioProgress, setAudioProgress] = useState({ current: 0, total: 0 });
@@ -122,6 +123,48 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
       void stopCurrentAudio();
     };
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'PLAYING') {
+      return;
+    }
+
+    if (activeCardId && cards.some((card) => card.word.id === activeCardId && !card.isSolved && !card.isLocked)) {
+      return;
+    }
+
+    const nextPlayableCard = cards.find((card) => !card.isSolved && !card.isLocked);
+    setActiveCardId(nextPlayableCard?.word.id || null);
+  }, [activeCardId, cards, phase]);
+
+  useEffect(() => {
+    if (phase !== 'PLAYING' || !activeCardId) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTextInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
+      if (isTextInput) {
+        return;
+      }
+
+      if (event.key !== ' ' && event.key !== 'Enter') {
+        return;
+      }
+
+      event.preventDefault();
+      const nextCard = cards.find((card) => card.word.id === activeCardId);
+      if (!nextCard || nextCard.isSolved || nextCard.isLocked) {
+        return;
+      }
+
+      void activateCard(nextCard);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeCardId, cards, phase]);
 
   const prepareGame = async () => {
     if (!canPrepare) return;
@@ -212,6 +255,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const activateCard = async (card: PuzzleGameCardState) => {
     if (phase !== 'PLAYING' || card.isSolved || card.isLocked) return;
 
+    setActiveCardId(card.word.id);
     const activatedAtMs = card.activatedAtMs ?? (gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0);
     updateCard(card.word.id, (current) => ({
       ...current,
@@ -225,7 +269,21 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
 
   const useHint = (card: PuzzleGameCardState) => {
     if (phase !== 'PLAYING' || card.hintUsed || card.isSolved || card.isLocked) return;
+    setActiveCardId(card.word.id);
     updateCard(card.word.id, (current) => ({ ...current, hintUsed: true }));
+  };
+
+  const findNextPlayableCard = (currentWordId: string) => {
+    if (cards.length === 0) {
+      return null;
+    }
+
+    const currentIndex = cards.findIndex((card) => card.word.id === currentWordId);
+    const orderedCards = currentIndex >= 0
+      ? [...cards.slice(currentIndex + 1), ...cards.slice(0, currentIndex)]
+      : cards;
+
+    return orderedCards.find((nextCard) => !nextCard.isSolved && !nextCard.isLocked && nextCard.word.id !== currentWordId) || null;
   };
 
   const submitAnswer = (card: PuzzleGameCardState) => {
@@ -234,6 +292,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
     const normalizedInput = normalizePuzzleAnswer(card.inputValue);
     const normalizedAnswer = normalizePuzzleAnswer(card.word.text);
     const nextAttempts = card.attemptsUsed + 1;
+    const nextPlayableCard = findNextPlayableCard(card.word.id);
 
     if (normalizedInput === normalizedAnswer) {
       const solvedAtMs = gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0;
@@ -246,6 +305,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
         solvedAtMs,
         inputValue: current.word.text,
       }));
+      setActiveCardId(nextPlayableCard?.word.id || null);
       playDing();
       return;
     }
@@ -255,9 +315,10 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
       ...current,
       attemptsUsed: nextAttempts,
       isLocked: nextAttempts >= 3,
-      isInputOpen: nextAttempts >= 3 ? false : current.isInputOpen,
-      inputValue: nextAttempts >= 3 ? '' : current.inputValue,
+      isInputOpen: false,
+      inputValue: '',
     }));
+    setActiveCardId(nextPlayableCard?.word.id || (nextAttempts >= 3 ? null : card.word.id));
   };
 
   const finishGame = async (timedOut: boolean = false) => {
@@ -555,8 +616,8 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
 
             <div className="grid flex-1 grid-cols-3 gap-3" style={{ height: boardHeight }}>
               {cards.map((card) => {
-                const attemptsLeft = Math.max(3 - card.attemptsUsed, 0);
                 const inputDisabled = phase !== 'PLAYING' || card.isLocked || card.isSolved || timeLeft <= 0;
+                const isActiveCard = activeCardId === card.word.id && !card.isSolved && !card.isLocked;
 
                 return (
                   <div
@@ -566,6 +627,8 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                         ? 'border-green-400 bg-green-500/10'
                         : card.isLocked
                           ? 'border-red-500/40 bg-red-500/10'
+                          : isActiveCard
+                            ? 'border-electric-blue bg-electric-blue/8 shadow-[0_0_0_1px_rgba(96,165,250,0.35),0_0_22px_rgba(96,165,250,0.18)]'
                           : 'border-mid-charcoal bg-dark-charcoal/70'
                     }`}
                     style={{ gridTemplateRows: '1fr auto' }}
@@ -615,9 +678,29 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                     </div>
 
                     <div className="mt-3 space-y-2">
-                      <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.25em] text-text-dark">
-                        <span>{card.word.text.length} letters</span>
-                        <span>{attemptsLeft} tries left</span>
+                      <div className="flex items-center gap-1.5">
+                        {Array.from({ length: 3 }).map((_, index) => {
+                          const successfulAttemptIndex = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : null;
+                          const isSuccessfulAttempt = successfulAttemptIndex !== null && index === successfulAttemptIndex;
+                          const failedAttemptsCount = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : card.attemptsUsed;
+                          const isFailedAttempt = index < failedAttemptsCount;
+                          const isRemainingAttempt = !isSuccessfulAttempt && !isFailedAttempt;
+
+                          return (
+                            <span
+                              key={`${card.word.id}-attempt-${index}`}
+                              className={`h-1.5 flex-1 rounded-full transition-colors ${
+                                isSuccessfulAttempt
+                                  ? 'bg-electric-green shadow-[0_0_10px_rgba(34,197,94,0.55)]'
+                                  : isFailedAttempt
+                                  ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.55)]'
+                                  : isRemainingAttempt
+                                    ? 'bg-electric-blue/55 shadow-[0_0_8px_rgba(96,165,250,0.35)]'
+                                    : 'bg-mid-charcoal'
+                              }`}
+                            />
+                          );
+                        })}
                       </div>
                       {card.isInputOpen && !card.isSolved && !card.isLocked ? (
                         <div className="rounded-2xl border border-electric-blue/30 bg-dark-charcoal/80 p-2 shadow-[0_0_20px_rgba(96,165,250,0.15)]">
@@ -636,13 +719,9 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                             className="w-full bg-transparent px-3 py-2 text-center font-serif text-lg tracking-[0.04em] text-white outline-none placeholder:text-text-dark"
                             placeholder="type here"
                           />
-                          <button
-                            onClick={() => submitAnswer(card)}
-                            disabled={inputDisabled}
-                            className="mt-2 w-full rounded-xl bg-electric-blue px-3 py-2 text-xs font-mono uppercase tracking-[0.3em] text-white transition-colors hover:bg-electric-blue/80 disabled:cursor-not-allowed disabled:bg-mid-charcoal"
-                          >
-                            <HoverTranslationText text="Submit" translation="提交" />
-                          </button>
+                          <div className="mt-2 text-center text-[10px] font-mono uppercase tracking-[0.24em] text-text-dark">
+                            <HoverTranslationText text="Press Enter To Submit" translation="按回车键提交" />
+                          </div>
                         </div>
                       ) : (
                         <div className="rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-3 text-center text-[11px] font-mono text-text-dark">
