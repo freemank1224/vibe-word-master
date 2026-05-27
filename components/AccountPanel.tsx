@@ -10,6 +10,7 @@ import { SmartSelectionSection } from './AccountPanel/SmartSelectionSection';
 import { AchievementsSection } from './AccountPanel/AchievementsSection';
 import { AccountChartTab } from './AccountPanel/types';
 import { ProfileEditModal } from './ProfileEditModal';
+import { PuzzleLeaderboardPanel } from './PuzzleLeaderboardPanel';
 import {
   getProfile,
   getCachedProfile,
@@ -137,6 +138,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
               onTabChange={setActiveChartTab}
             />
             <StatsOverviewSection stats={stats} />
+            <PuzzleLeaderboardPanel />
             <SmartSelectionSection enabled={aiSelectionEnabled} onToggle={toggleAiSelection} />
             <AchievementsSection
               unlockedCount={unlockedCount}

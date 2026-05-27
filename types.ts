@@ -64,6 +64,64 @@ export interface CompletedTestSummary {
   slowestWordTimeMs: number | null;
 }
 
+export type TestModeKind = 'CLASSIC' | 'PUZZLE';
+
+export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'RESULT';
+
+export type PuzzleGameSelectionMode = 'smart' | 'random';
+
+export type PuzzleLeaderboardScope = 'daily' | 'all_time';
+
+export type PuzzleLeaderboardMetric = 'total_score' | 'accuracy_rate' | 'speed_score' | 'no_hint_score';
+
+export interface PuzzleGameConfig {
+  kind: 'PUZZLE';
+}
+
+export interface ClassicTestConfig {
+  kind?: 'CLASSIC';
+  sessionIds?: string[];
+  wordIds?: string[];
+}
+
+export interface PuzzleCardResult {
+  wordId: string;
+  wordText: string;
+  correct: boolean;
+  attemptsUsed: number;
+  hintUsed: boolean;
+  solvedAtMs: number | null;
+  activatedAtMs: number | null;
+}
+
+export interface PuzzleGameSummary {
+  totalScore: number;
+  accuracyRate: number;
+  speedScore: number;
+  noHintScore: number;
+  wordsCorrect: number;
+  wordsTotal: number;
+  hintsUsed: number;
+  solvedWithoutHint: number;
+  timeUsedSeconds: number;
+  secondsRemaining: number;
+  selectionMode: PuzzleGameSelectionMode;
+  results: PuzzleCardResult[];
+}
+
+export interface PuzzleGameCardState {
+  word: WordEntry;
+  imageUrl: string | null;
+  attemptsUsed: number;
+  hintUsed: boolean;
+  inputValue: string;
+  isInputOpen: boolean;
+  isSolved: boolean;
+  isLocked: boolean;
+  activatedAtMs: number | null;
+  solvedAtMs: number | null;
+}
+
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';
 
 export interface DayStats {
@@ -124,6 +182,24 @@ export interface LeaderboardEntry {
   avg_difficulty: number;
   display_name?: string;  // Custom username if set, otherwise masked email
   email_masked?: string;  // Always the masked email (for hover tooltip)
+  is_current_user?: boolean;
+}
+
+export interface PuzzleLeaderboardEntry {
+  user_id: string;
+  rank_position: number;
+  metric_value: number;
+  total_score: number;
+  accuracy_rate: number;
+  speed_score: number;
+  no_hint_score: number;
+  hints_used: number;
+  words_total: number;
+  words_correct: number;
+  time_used_seconds: number;
+  played_date: string;
+  display_name?: string;
+  email_masked?: string;
   is_current_user?: boolean;
 }
 

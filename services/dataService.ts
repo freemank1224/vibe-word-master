@@ -1,6 +1,14 @@
 
 import { supabase } from '../lib/supabaseClient';
-import { WordEntry, InputSession, WordMeaningOption } from '../types';
+import {
+  InputSession,
+  PuzzleGameSummary,
+  PuzzleLeaderboardEntry,
+  PuzzleLeaderboardMetric,
+  PuzzleLeaderboardScope,
+  WordEntry,
+  WordMeaningOption,
+} from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
 import { getShanghaiDateString } from '../utils/timezone';
@@ -665,6 +673,59 @@ export const getTodaysStats = async () => {
     }
 
     return Array.isArray(data) && data.length > 0 ? data[0] : data;
+};
+
+export const recordPuzzleGameRound = async (summary: PuzzleGameSummary) => {
+  const clientDate = getShanghaiDateString();
+
+  const { data, error } = await supabase.rpc('record_puzzle_game_round', {
+    p_total_score: summary.totalScore,
+    p_accuracy_rate: summary.accuracyRate,
+    p_speed_score: summary.speedScore,
+    p_no_hint_score: summary.noHintScore,
+    p_time_used_seconds: summary.timeUsedSeconds,
+    p_seconds_remaining: summary.secondsRemaining,
+    p_hints_used: summary.hintsUsed,
+    p_words_total: summary.wordsTotal,
+    p_words_correct: summary.wordsCorrect,
+    p_solved_without_hint: summary.solvedWithoutHint,
+    p_selection_mode: summary.selectionMode,
+    p_client_date: clientDate,
+  });
+
+  if (error) {
+    console.error('[recordPuzzleGameRound] Failed to record puzzle round:', error.message);
+    throw error;
+  }
+
+  return Array.isArray(data) && data.length > 0 ? data[0] : data;
+};
+
+export const fetchPuzzleGameLeaderboard = async (
+  scope: PuzzleLeaderboardScope,
+  metric: PuzzleLeaderboardMetric,
+  date?: Date,
+  limit: number = 3,
+): Promise<PuzzleLeaderboardEntry[]> => {
+  const targetDate = date || new Date();
+  const year = targetDate.getFullYear();
+  const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const day = String(targetDate.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  const { data, error } = await supabase.rpc('get_puzzle_game_leaderboard', {
+    p_scope: scope,
+    p_metric: metric,
+    p_date: dateStr,
+    p_limit: limit,
+  });
+
+  if (error) {
+    console.error('[fetchPuzzleGameLeaderboard] Failed to fetch puzzle leaderboard:', error.message);
+    throw error;
+  }
+
+  return (data || []) as PuzzleLeaderboardEntry[];
 };
 
 export const updateWordStatus = async (wordId: string, correct: boolean) => {

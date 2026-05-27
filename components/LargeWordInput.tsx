@@ -119,7 +119,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
       {/* Hidden element to measure text width for adaptive resizing */}
       <span 
         ref={spanRef}
-        className="invisible absolute font-serif text-6xl md:text-9xl tracking-widest whitespace-pre pointer-events-none"
+        className="invisible absolute font-serif text-6xl md:text-9xl tracking-[0.04em] whitespace-pre pointer-events-none"
         aria-hidden="true"
       >
         {value || placeholder || ''}
@@ -145,7 +145,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
             readOnly={disabled}
             spellCheck="false"
             style={{ width: inputWidth, maxWidth }}
-            className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-widest transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
+            className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-[0.04em] transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
               status === 'correct' 
                 ? 'status-correct scale-105' 
                 : status === 'wrong' 
@@ -189,7 +189,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
 
         {hintOverlay && (
           <div 
-            className="absolute inset-0 flex items-center justify-center pointer-events-none font-serif text-6xl md:text-9xl text-electric-blue/20 tracking-widest whitespace-pre"
+            className="absolute inset-0 flex items-center justify-center pointer-events-none font-serif text-6xl md:text-9xl text-electric-blue/20 tracking-[0.04em] whitespace-pre"
             aria-hidden="true"
           >
             {hintOverlay}

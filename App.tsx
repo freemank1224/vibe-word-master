@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -18,12 +18,13 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, WordEntry, InputSession, DayStats, CompletedTestSummary, WordMeaningOption } from './types';
+import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, WordEntry, WordMeaningOption } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
+import PuzzleGameMode from './components/PuzzleGameMode';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
@@ -100,11 +101,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) 
                                     );
                                 };
 
-// Define Test Configuration State
-interface TestConfig {
-  sessionIds?: string[];
-  wordIds?: string[];
-}
+type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' };
 
 type EditableWord = {
   tempId: string;
@@ -1754,12 +1751,17 @@ const App: React.FC = () => {
   };
 
   const handleStartTest = (sessionIds: string[]) => {
-    setTestConfig({ sessionIds });
+    setTestConfig({ kind: 'CLASSIC', sessionIds });
     setMode('TEST');
   };
 
   const handleStartTestFromLibrary = (wordIds: string[]) => {
-    setTestConfig({ wordIds });
+    setTestConfig({ kind: 'CLASSIC', wordIds });
+    setMode('TEST');
+  };
+
+  const handleStartPuzzleGame = () => {
+    setTestConfig({ kind: 'PUZZLE' });
     setMode('TEST');
   };
 
@@ -2060,26 +2062,43 @@ const App: React.FC = () => {
           />
         )}
         {mode === 'TEST' && (
-          <TestModeV2 
-            allWords={visibleWords}
-            sessions={sessions}
-            initialSessionIds={testConfig?.sessionIds || []}
-            initialWordIds={testConfig?.wordIds}
-            onUpdateWord={(id, updates) => {
-                setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
-            }}
-            onComplete={async (summary: CompletedTestSummary) => {
-              // ✨ Now waits for database sync to complete before navigating
-              try {
-                await updateLocalStats(summary);
-              } catch (err) {
-                console.error('[onComplete] Stats sync failed, navigating anyway:', err);
-              } finally {
-                setMode('DASHBOARD');
-              }
-            }}
-            onCancel={() => setMode('DASHBOARD')}
-          />
+          testConfig?.kind === 'PUZZLE' ? (
+            <PuzzleGameMode
+              allWords={visibleWords}
+              sessions={sessions}
+              onComplete={async (summary: PuzzleGameSummary) => {
+                try {
+                  await recordPuzzleGameRound(summary);
+                  showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                } catch (error) {
+                  console.error('[PuzzleGameMode] Failed to record puzzle game round:', error);
+                  showNotification('⚠️ 字谜成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
+                }
+              }}
+              onCancel={() => setMode('DASHBOARD')}
+            />
+          ) : (
+            <TestModeV2 
+              allWords={visibleWords}
+              sessions={sessions}
+              initialSessionIds={testConfig?.sessionIds || []}
+              initialWordIds={testConfig?.wordIds}
+              onUpdateWord={(id, updates) => {
+                  setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
+              }}
+              onComplete={async (summary: CompletedTestSummary) => {
+                // ✨ Now waits for database sync to complete before navigating
+                try {
+                  await updateLocalStats(summary);
+                } catch (err) {
+                  console.error('[onComplete] Stats sync failed, navigating anyway:', err);
+                } finally {
+                  setMode('DASHBOARD');
+                }
+              }}
+              onCancel={() => setMode('DASHBOARD')}
+            />
+          )
         )}
         {mode === 'LIBRARY' && (
             <LibraryMode 
@@ -2230,6 +2249,32 @@ const App: React.FC = () => {
                             <span className="text-xl font-headline group-hover:text-charcoal"><HoverTranslationText text="ALL WORD LIBRARY" translation="全部词库" /></span>
                             <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70"><HoverTranslationText text={`A comprehensive test of all ${visibleWords.length} words in your vault.`} translation={`对你词库中的全部 ${visibleWords.length} 个单词进行综合测试。`} /></span>
                         </button>
+
+                          <button
+                            onClick={() => {
+                              handleStartPuzzleGame();
+                              setShowQuickTestModal(false);
+                            }}
+                            disabled={visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length < 9}
+                            className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
+                              visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length >= 9
+                                ? 'bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal'
+                                : 'bg-mid-charcoal/50 border border-dashed border-mid-charcoal text-text-dark cursor-not-allowed'
+                            }`}
+                          >
+                            <span className={`text-sm font-mono uppercase tracking-widest ${
+                              visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length >= 9
+                                ? 'text-electric-blue group-hover:text-charcoal'
+                                : 'text-text-dark'
+                            }`}><HoverTranslationText text="Option 3" translation="选项 3" /></span>
+                            <span className="text-xl font-headline"><HoverTranslationText text="PUZZLE GAME" translation="字谜游戏" /></span>
+                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">
+                              <HoverTranslationText
+                                text={`A 90-second 3x3 audio puzzle using 9 image words. Ready words: ${visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length}.`}
+                                translation={`用 9 个带图单词进行 90 秒九宫格听音字谜。当前可用带图词：${visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length}。`}
+                              />
+                            </span>
+                          </button>
 
                         <button 
                             onClick={() => setShowQuickTestModal(false)}
