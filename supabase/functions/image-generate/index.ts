@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-type ProviderId = 'newapi' | 'tokendance';
+type ProviderId = 'letsmakesail' | 'newapi' | 'tokendance';
 
 type ProviderConfig = {
   id: ProviderId;
@@ -24,6 +24,14 @@ type ProviderAttemptFailure = {
 };
 
 const normalizeUrl = (url: string): string => url.trim().replace(/\/$/, '');
+
+const resolveProviderId = (baseUrl: string, fallback: ProviderId): ProviderId => {
+  const normalized = baseUrl.trim().toLowerCase();
+  if (normalized.includes('letsmakesail')) return 'letsmakesail';
+  if (normalized.includes('omgteam') || normalized.includes('newapi')) return 'newapi';
+  if (normalized.includes('tokendance')) return 'tokendance';
+  return fallback;
+};
 
 const getImageGenerationUrls = (baseUrl: string): string[] => {
   const sanitized = normalizeUrl(baseUrl);
@@ -57,6 +65,10 @@ const getProviderConfigs = (): ProviderConfig[] => {
     || Deno.env.get('IMAGE_GEN_MODEL')
     || 'gpt-image-2';
 
+  const secondaryBaseUrl = Deno.env.get('SECONDARY_IMAGE_GEN_BASE_URL') || '';
+  const secondaryApiKey = Deno.env.get('SECONDARY_IMAGE_GEN_API_KEY') || '';
+  const secondaryModel = Deno.env.get('SECONDARY_IMAGE_GEN_MODEL') || 'gpt-image-2';
+
   const backupBaseUrl = Deno.env.get('BACKUP_IMAGE_GEN_BASE_URL')
     || 'https://tokendance.space/gateway/v1/images/generations';
   const backupApiKey = Deno.env.get('BACKUP_IMAGE_GEN_API_KEY') || '';
@@ -66,16 +78,25 @@ const getProviderConfigs = (): ProviderConfig[] => {
 
   if (primaryBaseUrl && primaryApiKey) {
     providers.push({
-      id: 'newapi',
+      id: resolveProviderId(primaryBaseUrl, 'letsmakesail'),
       baseUrl: primaryBaseUrl,
       apiKey: primaryApiKey,
       model: primaryModel,
     });
   }
 
+  if (secondaryBaseUrl && secondaryApiKey) {
+    providers.push({
+      id: resolveProviderId(secondaryBaseUrl, 'newapi'),
+      baseUrl: secondaryBaseUrl,
+      apiKey: secondaryApiKey,
+      model: secondaryModel,
+    });
+  }
+
   if (backupBaseUrl && backupApiKey) {
     providers.push({
-      id: 'tokendance',
+      id: resolveProviderId(backupBaseUrl, 'tokendance'),
       baseUrl: backupBaseUrl,
       apiKey: backupApiKey,
       model: backupModel,
@@ -253,7 +274,22 @@ serve(async (req) => {
       testResults.push({ name: 'httpbin', error: String(e), success: false });
     }
 
-    // Test 2: Test newapi connectivity (without auth)
+    // Test 2: Test letsmakesail connectivity (without auth)
+    try {
+      const start = Date.now();
+      const resp = await fetch('https://newapi.letsmakesail.xyz/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'test', prompt: 'test' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      const elapsed = Date.now() - start;
+      testResults.push({ name: 'letsmakesail', status: resp.status, elapsed: `${elapsed}ms`, success: resp.status < 500 });
+    } catch (e) {
+      testResults.push({ name: 'letsmakesail', error: String(e), success: false });
+    }
+
+    // Test 3: Test newapi (legacy) connectivity (without auth)
     try {
       const start = Date.now();
       const resp = await fetch('https://newapi.omgteam.me/v1/images/generations', {
@@ -268,7 +304,7 @@ serve(async (req) => {
       testResults.push({ name: 'newapi', error: String(e), success: false });
     }
 
-    // Test 3: Test tokendance connectivity (without auth)
+    // Test 4: Test tokendance connectivity (without auth)
     try {
       const start = Date.now();
       const resp = await fetch('https://tokendance.space/gateway/v1/images/generations', {

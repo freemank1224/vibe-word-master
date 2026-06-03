@@ -1,6 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 
-export type ImageGenerationProviderId = 'newapi' | 'tokendance' | 'edge';
+export type ImageGenerationProviderId = 'letsmakesail' | 'newapi' | 'tokendance' | 'edge';
 
 export type ImageGenerationEdgeRequest = {
   word: string;
