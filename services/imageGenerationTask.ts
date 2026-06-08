@@ -1,5 +1,5 @@
-import { getWordsMissingImage, updateWordImage, uploadImage } from './dataService';
-import { aiService } from './ai';
+import { getWordsMissingImage } from './dataService';
+import { supabase } from '../lib/supabaseClient';
 
 let shouldStop = false;
 
@@ -8,15 +8,15 @@ export const cancelGeneration = () => {
 };
 
 export const generateImagesForMissingWords = async (
-    userId: string, 
+    userId: string,
     logger: (message: string) => void = console.log,
-    onImageUpdated?: (wordId: string, imagePath: string) => void
+    onImageUpdated?: (wordId: string, publicUrl: string) => void
 ) => {
     shouldStop = false;
     logger("Checking for missing images...");
     try {
         const missingWords = await getWordsMissingImage(userId);
-        
+
         if (missingWords.length === 0) {
             logger("No missing images found.");
             return;
@@ -24,7 +24,7 @@ export const generateImagesForMissingWords = async (
 
         logger(`Found ${missingWords.length} words missing images. Starting generation...`);
 
-        // Process one by one
+        // Process one by one via edge function (shared storage)
         for (const word of missingWords) {
             if (shouldStop) {
                 logger("Generation task stopped by user.");
@@ -33,25 +33,27 @@ export const generateImagesForMissingWords = async (
 
             let retries = 0;
             let success = false;
-            
+
             while (!success && !shouldStop && retries < 3) {
                  try {
                     logger(`Generating image for: ${word.text}...`);
-                    const base64Image = await aiService.generateImageHint(word.text);
-                    
-                    if (base64Image) {
-                        const imagePath = await uploadImage(base64Image, userId);
-                        if (imagePath) {
-                            await updateWordImage(word.id, imagePath);
-                            logger(`✓ Image updated for: ${word.text}`);
-                            if (onImageUpdated) {
-                                onImageUpdated(word.id, imagePath);
-                            }
-                            success = true;
-                        } else {
-                            logger(`Failed to upload image for: ${word.text}`);
-                            success = true; // Move on
+
+                    // Edge function handles cache check, generation, upload, and word linking
+                    const { data, error } = await supabase.functions.invoke('image-generate', {
+                        body: { word: word.text, language: word.language || 'en' },
+                    });
+
+                    if (error) {
+                        throw error;
+                    }
+
+                    if (data?.ok) {
+                        const source = data.source === 'cache-hit' ? 'cache' : 'generated';
+                        logger(`✓ Image ${source} for: ${word.text}`);
+                        if (onImageUpdated && data.publicUrl) {
+                            onImageUpdated(word.id, data.publicUrl);
                         }
+                        success = true;
                     } else {
                         logger(`Failed to generate image for: ${word.text}`);
                         success = true; // Move on

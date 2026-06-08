@@ -1,11 +1,15 @@
 // @ts-nocheck
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
 type ProviderId = 'letsmakesail' | 'newapi' | 'tokendance';
 
@@ -22,6 +26,16 @@ type ProviderAttemptFailure = {
   message: string;
   status?: number;
 };
+
+const NEW_BUCKET = 'word-images';
+
+const normalizeWord = (text: string): string =>
+  text.toLowerCase().trim().replace(/\s+/g, ' ');
+
+const getSupabaseClient = () =>
+  createClient(supabaseUrl, supabaseServiceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
 const normalizeUrl = (url: string): string => url.trim().replace(/\/$/, '');
 
@@ -165,8 +179,6 @@ const tryGenerateByProvider = async (
 
   for (const url of urls) {
     try {
-      // Primary: longer timeout (90s), only backup on explicit errors
-      // Backup: shorter timeout (60s) since it's the fallback
       const timeoutMs = isPrimary ? 90000 : 60000;
       const requestBody = JSON.stringify({
         model: provider.model,
@@ -255,16 +267,118 @@ const tryGenerateByProvider = async (
   };
 };
 
+// -------------------------------------------------------
+// New: Persist image to shared storage + link words
+// -------------------------------------------------------
+const persistAndLink = async (
+  normalizedWord: string,
+  displayWord: string,
+  language: string,
+  dataUrl: string,
+  providerId: ProviderId,
+  model: string,
+): Promise<{ assetId: string; publicUrl: string } | null> => {
+  const sb = getSupabaseClient();
+
+  try {
+    // Convert data URL to blob
+    const base64Match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!base64Match) {
+      console.error('[image-generate] Invalid dataUrl format');
+      return null;
+    }
+    const contentType = base64Match[1] || 'image/png';
+    const base64Data = base64Match[2];
+
+    // Decode base64
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: contentType });
+
+    // Determine extension from content type
+    const ext = contentType.includes('png') ? 'png' : contentType.includes('jpeg') ? 'jpeg' : 'webp';
+    const storagePath = `images/${language}/${encodeURIComponent(normalizedWord)}.${ext}`;
+
+    // Upload to shared storage
+    const { error: ulErr } = await sb.storage
+      .from(NEW_BUCKET)
+      .upload(storagePath, blob, {
+        contentType,
+        cacheControl: '31536000',
+        upsert: true,
+      });
+
+    if (ulErr) {
+      console.error(`[image-generate] Storage upload failed: ${ulErr.message}`);
+      return null;
+    }
+
+    // Get public URL
+    const { data: urlData } = sb.storage.from(NEW_BUCKET).getPublicUrl(storagePath);
+    const publicUrl = urlData.publicUrl;
+
+    // Upsert image_assets row
+    const { data: asset, error: iaErr } = await sb
+      .from('image_assets')
+      .upsert(
+        {
+          normalized_word: normalizedWord,
+          display_word: displayWord,
+          language,
+          model,
+          storage_bucket: NEW_BUCKET,
+          storage_path: storagePath,
+          public_url: publicUrl,
+          file_size_bytes: blob.size,
+          status: 'ready',
+          error_message: null,
+        },
+        { onConflict: 'normalized_word,language' }
+      )
+      .select('id')
+      .single();
+
+    if (iaErr) {
+      console.error(`[image-generate] image_assets upsert failed: ${iaErr.message}`);
+      return null;
+    }
+
+    // Link all matching words
+    // Use RPC or direct query - match by normalize_word_key(text) = normalizedWord
+    // Since we can't use custom SQL functions easily from the client, use a broader match
+    const { data: matchingWords } = await sb
+      .from('words')
+      .select('id')
+      .or('deleted.is.false,deleted.is.null')
+      .ilike('text', displayWord)
+      .eq('language', language);
+
+    if (matchingWords && matchingWords.length > 0) {
+      await sb
+        .from('words')
+        .update({ image_asset_id: asset.id })
+        .in('id', matchingWords.map((w: any) => w.id));
+    }
+
+    return { assetId: asset.id, publicUrl };
+  } catch (err) {
+    console.error(`[image-generate] persistAndLink error: ${err}`);
+    return null;
+  }
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
-  // Network test endpoint
+  // Network test endpoint (kept for backward compatibility)
   if (req.method === 'GET' && new URL(req.url).searchParams.get('test') === 'network') {
     const testResults = [];
 
-    // Test 1: Simple HTTP request
     try {
       const start = Date.now();
       const resp = await fetch('https://httpbin.org/get', { signal: AbortSignal.timeout(5000) });
@@ -274,7 +388,6 @@ serve(async (req) => {
       testResults.push({ name: 'httpbin', error: String(e), success: false });
     }
 
-    // Test 2: Test letsmakesail connectivity (without auth)
     try {
       const start = Date.now();
       const resp = await fetch('https://newapi.letsmakesail.xyz/v1/images/generations', {
@@ -289,7 +402,6 @@ serve(async (req) => {
       testResults.push({ name: 'letsmakesail', error: String(e), success: false });
     }
 
-    // Test 3: Test newapi (legacy) connectivity (without auth)
     try {
       const start = Date.now();
       const resp = await fetch('https://newapi.omgteam.me/v1/images/generations', {
@@ -304,7 +416,6 @@ serve(async (req) => {
       testResults.push({ name: 'newapi', error: String(e), success: false });
     }
 
-    // Test 4: Test tokendance connectivity (without auth)
     try {
       const start = Date.now();
       const resp = await fetch('https://tokendance.space/gateway/v1/images/generations', {
@@ -337,6 +448,7 @@ serve(async (req) => {
     const word = typeof body?.word === 'string' ? body.word.trim() : '';
     const promptOverride = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
     const language = typeof body?.language === 'string' ? body.language.trim() : 'en';
+    const force = body?.force === true || body?.force === '1';
 
     if (!word) {
       return new Response(JSON.stringify({ error: 'Missing word' }), {
@@ -345,6 +457,39 @@ serve(async (req) => {
       });
     }
 
+    const normalizedWord = normalizeWord(word);
+
+    // ---- NEW: Check cache in image_assets ----
+    if (!force) {
+      const sb = getSupabaseClient();
+      const { data: cached } = await sb
+        .from('image_assets')
+        .select('id, public_url')
+        .eq('normalized_word', normalizedWord)
+        .eq('language', language)
+        .eq('status', 'ready')
+        .maybeSingle();
+
+      if (cached && cached.public_url) {
+        console.log(`[image-generate] Cache hit for "${normalizedWord}" (${language})`);
+        return new Response(JSON.stringify({
+          ok: true,
+          word,
+          language,
+          providerId: 'cache',
+          model: 'cached',
+          source: 'cache-hit',
+          publicUrl: cached.public_url,
+          assetId: cached.id,
+          dataUrl: null, // No dataUrl needed for cache hits - client uses publicUrl directly
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // ---- Cache miss: Generate image ----
     const providers = getProviderConfigs();
     if (providers.length === 0) {
       return new Response(JSON.stringify({ error: 'No image generation providers configured in Edge Function env' }), {
@@ -366,6 +511,16 @@ serve(async (req) => {
         continue;
       }
 
+      // ---- NEW: Persist to shared storage and link words ----
+      const persisted = await persistAndLink(
+        normalizedWord,
+        word,
+        language,
+        result.dataUrl,
+        result.providerId,
+        result.model,
+      );
+
       return new Response(JSON.stringify({
         ok: true,
         word,
@@ -374,6 +529,11 @@ serve(async (req) => {
         model: result.model,
         attemptedUrl: result.attemptedUrl,
         dataUrl: result.dataUrl,
+        // New fields for shared storage
+        publicUrl: persisted?.publicUrl || null,
+        assetId: persisted?.assetId || null,
+        source: 'generated',
+        persistError: persisted ? null : 'Failed to persist to shared storage',
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

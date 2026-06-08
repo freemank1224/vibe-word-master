@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, uploadImage, updateWordImage, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -964,38 +964,38 @@ const App: React.FC = () => {
     }
 
     for (const w of wordsToProcess) {
-        appendImageGenDebug('word_process_begin', { id: w.id, text: w.text, hasImagePath: !!w.image_path, language: w.language || 'en' });
+        appendImageGenDebug('word_process_begin', { id: w.id, text: w.text, hasImagePath: !!w.image_path, hasAssetId: !!w.image_asset_id, language: w.language || 'en' });
 
-      if (!w.image_path) {
+      if (!w.image_path && !w.image_asset_id) {
         try {
                 appendImageGenDebug('image_gen_request_start', { id: w.id, text: w.text });
           const generated = await requestQueuedWordImage(w.text, { language: w.language || 'en' });
-          const base64 = generated.dataUrl;
-          if (base64) {
-            appendImageGenDebug('image_gen_request_success', { id: w.id, text: w.text, base64Length: base64.length, provider: generated.providerId });
-            const path = await uploadImage(base64, userId);
-            if (path) {
-                        appendImageGenDebug('image_upload_success', { id: w.id, text: w.text, imagePath: path });
-              await updateWordImage(w.id, path);
-              await cacheGeneratedImageForWord({ id: w.id, text: w.text, language: w.language || 'en' }, base64);
-              setCachedImageWordIds(prev => {
-                const next = new Set(prev);
-                next.add(w.id);
-                return next;
-              });
-              setCachedImageDataUrls(prev => ({ ...prev, [w.id]: base64 }));
-              showNotification(`🖼️ 已生成图片：${w.text}`, 'success');
-              setWords(prev => prev.map(word =>
-                word.id === w.id
-                ? { ...word, image_path: path, image_url: getImageUrl(path) }
-                : word
-              ));
-            } else {
-              appendImageGenDebug('image_upload_failed', { id: w.id, text: w.text, reason: 'uploadImage returned null' });
-              showNotification(`⚠️ 图片生成成功但上传失败：${w.text}`, 'warning');
+
+          // Edge function now handles upload and word linking
+          const publicUrl = generated.publicUrl;
+          const assetId = generated.assetId;
+
+          if (publicUrl || generated.dataUrl) {
+            appendImageGenDebug('image_gen_request_success', {
+              id: w.id, text: w.text, provider: generated.providerId,
+              source: generated.source, hasPublicUrl: !!publicUrl, hasAssetId: !!assetId,
+            });
+
+            // Cache in browser if dataUrl is available
+            if (generated.dataUrl) {
+              await cacheGeneratedImageForWord({ id: w.id, text: w.text, language: w.language || 'en' }, generated.dataUrl);
+              setCachedImageWordIds(prev => { const next = new Set(prev); next.add(w.id); return next; });
+              setCachedImageDataUrls(prev => ({ ...prev, [w.id]: generated.dataUrl! }));
             }
+
+            showNotification(`🖼️ 已生成图片：${w.text}`, 'success');
+            setWords(prev => prev.map(word =>
+              word.id === w.id
+              ? { ...word, image_url: publicUrl || word.image_url, image_asset_id: assetId || word.image_asset_id }
+              : word
+            ));
           } else {
-            appendImageGenDebug('image_gen_request_failed', { id: w.id, text: w.text, reason: 'aiService returned null' });
+            appendImageGenDebug('image_gen_request_failed', { id: w.id, text: w.text, reason: 'no publicUrl or dataUrl' });
             showNotification(`⚠️ 图片生成失败：${w.text}（已自动尝试备用服务）`, 'warning');
           }
         } catch (e) {
@@ -1004,7 +1004,7 @@ const App: React.FC = () => {
           showNotification(`⚠️ 图片生成异常：${w.text}`, 'warning');
         }
       } else {
-        appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path });
+        appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path, assetId: w.image_asset_id });
       }
 
         // 2. Process Dictionary Info (Phonetic, Audio, Definition)
@@ -1059,35 +1059,40 @@ const App: React.FC = () => {
     showNotification(`🕒 已加入生图队列：${word.text}`, 'success');
 
     try {
-      const generated = await requestQueuedWordImage(word.text, { language: word.language || 'en' });
-      const base64 = generated.dataUrl;
-      if (!base64) {
-        appendImageGenDebug('manual_image_gen_failed', { id: word.id, text: word.text, reason: 'aiService returned null' });
+      const generated = await requestQueuedWordImage(word.text, {
+        language: word.language || 'en',
+        force: !!word.hasExistingImage, // Force regeneration if replacing
+      });
+
+      const publicUrl = generated.publicUrl;
+      const assetId = generated.assetId;
+
+      if (!publicUrl && !generated.dataUrl) {
+        appendImageGenDebug('manual_image_gen_failed', { id: word.id, text: word.text, reason: 'no publicUrl or dataUrl' });
         showNotification(`⚠️ 图片生成失败：${word.text}`, 'warning');
         return false;
       }
 
-      const path = await uploadImage(base64, session.user.id);
-      if (!path) {
-        appendImageGenDebug('manual_image_upload_failed', { id: word.id, text: word.text });
-        showNotification(`⚠️ 图片上传失败：${word.text}`, 'warning');
-        return false;
+      // Cache in browser if dataUrl is available
+      if (generated.dataUrl) {
+        await cacheGeneratedImageForWord({ id: word.id, text: word.text, language: word.language || 'en' }, generated.dataUrl);
       }
 
-      await updateWordImage(word.id, path);
-      await cacheGeneratedImageForWord({ id: word.id, text: word.text, language: word.language || 'en' }, base64);
-
-      setCachedImageWordIds(prev => {
-        const next = new Set(prev);
-        next.add(word.id);
-        return next;
-      });
-      setCachedImageDataUrls(prev => ({ ...prev, [word.id]: base64 }));
+      setCachedImageWordIds(prev => { const next = new Set(prev); next.add(word.id); return next; });
+      if (generated.dataUrl) {
+        setCachedImageDataUrls(prev => ({ ...prev, [word.id]: generated.dataUrl! }));
+      }
       setWords(prev => prev.map(item =>
-        item.id === word.id ? { ...item, image_path: path, image_url: getImageUrl(path) } : item
+        item.id === word.id ? {
+          ...item,
+          image_url: publicUrl || item.image_url,
+          image_asset_id: assetId || item.image_asset_id,
+        } : item
       ));
 
-      appendImageGenDebug('manual_image_gen_success', { id: word.id, text: word.text, imagePath: path, provider: generated.providerId });
+      appendImageGenDebug('manual_image_gen_success', {
+        id: word.id, text: word.text, publicUrl, assetId, provider: generated.providerId, source: generated.source,
+      });
       showNotification(`🖼️ 已${word.hasExistingImage ? '重新生成' : '生成'}图片：${word.text}`, 'success');
       return true;
     } catch (error: any) {

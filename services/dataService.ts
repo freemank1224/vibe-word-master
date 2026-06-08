@@ -117,6 +117,45 @@ const triggerPronunciationBatch = (items: { text: string; language?: string | nu
   });
 };
 
+/**
+ * Fire-and-forget: trigger image generation for a batch of words.
+ * The edge function handles cache check, generation, upload, and word linking.
+ */
+const triggerImageGenerationBatch = (items: { text: string; language?: string | null }[]) => {
+  if (!items || items.length === 0) return;
+
+  const supabaseUrl = process.env.SUPABASE_URL || '';
+  if (!supabaseUrl) return;
+
+  // Deduplicate by normalized word + language
+  const uniqueMap = new Map<string, { text: string; language?: string | null }>();
+  for (const item of items) {
+    const key = `${item.text.toLowerCase().trim()}::${(item.language || 'en').trim()}`;
+    if (!uniqueMap.has(key)) uniqueMap.set(key, item);
+  }
+
+  const queue = Array.from(uniqueMap.values());
+  const concurrency = 2;
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next) break;
+      try {
+        await supabase.functions.invoke('image-generate', {
+          body: { word: next.text, language: next.language || 'en' },
+        });
+      } catch (e) {
+        console.warn(`[image-trigger] failed for ${next.text}:`, e);
+      }
+    }
+  };
+
+  for (let i = 0; i < concurrency; i++) {
+    void worker();
+  }
+};
+
 // Helper to get current user ID
 export const getCurrentUserId = async (): Promise<string | null> => {
   const { data: { user } } = await supabase.auth.getUser();
@@ -250,7 +289,8 @@ export const fetchUserData = async (userId: string) => {
     correct: w.correct,
     tested: w.tested,
     image_path: w.image_path,
-    image_url: getImageUrl(w.image_path),
+    image_url: getImageUrl(w.image_path), // Will be updated below if asset exists
+    image_asset_id: w.image_asset_id || null,
     error_count: w.error_count || 0,
     best_time_ms: w.best_time_ms || null,
     last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
@@ -265,6 +305,28 @@ export const fetchUserData = async (userId: string) => {
     tags: w.tags || ['Custom'],
     consecutive_correct: w.consecutive_correct || 0
   }));
+
+  // Batch-resolve image URLs from shared image_assets
+  const assetIds = [...new Set(words.filter(w => w.image_asset_id).map(w => w.image_asset_id!))];
+  if (assetIds.length > 0) {
+    const { data: assets } = await supabase
+      .from('image_assets')
+      .select('id, public_url')
+      .in('id', assetIds)
+      .eq('status', 'ready');
+
+    if (assets && assets.length > 0) {
+      const assetUrlMap = new Map(assets.map((a: any) => [a.id, a.public_url]));
+      for (const word of words) {
+        if (word.image_asset_id) {
+          const assetUrl = assetUrlMap.get(word.image_asset_id);
+          if (assetUrl) {
+            word.image_url = assetUrl;
+          }
+        }
+      }
+    }
+  }
 
   return { sessions, words };
 };
@@ -311,20 +373,14 @@ export const saveSessionData = async (
       throw sessionError;
   }
 
-  // 2. Process Words & Images
+  // 2. Process Words (no client-side image upload - edge function handles it)
   const wordsPayload = [];
-  
+
   for (const w of uniqueWordList) {
-    let imagePath = null;
-    if (w.imageBase64) {
-      imagePath = await uploadImage(w.imageBase64, userId);
-    }
-    
     wordsPayload.push({
       user_id: userId,
       session_id: sessionData.id,
       text: w.text,
-      image_path: imagePath,
       language: w.language || 'en',
       definition_cn: w.definition_cn || null,
       definition_en: w.definition_en || null,
@@ -357,6 +413,7 @@ export const saveSessionData = async (
 
     if (wordsData?.length) {
       triggerPronunciationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
+      triggerImageGenerationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
     }
   }
 
@@ -434,15 +491,10 @@ export const modifySession = async (
 
         const wordsPayload = [];
         for (const w of uniqueAddedWords) {
-            let imagePath = null;
-            if (w.imageBase64) {
-                imagePath = await uploadImage(w.imageBase64, userId);
-            }
             wordsPayload.push({
                 user_id: userId,
                 session_id: sessionId,
                 text: w.text,
-                image_path: imagePath,
               language: w.language || 'en',
               definition_cn: w.definition_cn || null,
               definition_en: w.definition_en || null,
@@ -451,7 +503,7 @@ export const modifySession = async (
                 tags: [libraryTag]
             });
         }
-        
+
         if (wordsPayload.length > 0) {
           const { data, error: insError } = await executeWordsMutationWithCompatibility(
             () => supabase
@@ -472,6 +524,7 @@ export const modifySession = async (
             if (data) newWordsData.push(...data);
             if (data?.length) {
               triggerPronunciationBatch(data.map((w: any) => ({ text: w.text, language: w.language })));
+              triggerImageGenerationBatch(data.map((w: any) => ({ text: w.text, language: w.language })));
             }
         }
     }
@@ -488,12 +541,10 @@ export const modifySession = async (
           if (w.meaning_options) updates.meaning_options = w.meaning_options;
           if (w.selected_meaning_key !== undefined) updates.selected_meaning_key = w.selected_meaning_key;
             
-            // Only update image if a new one is provided (base64)
+            // Image is now handled by the edge function (shared storage)
+            // If a new imageBase64 is provided, trigger regeneration via edge function
             if (w.imageBase64) {
-                const imagePath = await uploadImage(w.imageBase64, userId);
-                if (imagePath) {
-                    updates.image_path = imagePath;
-                }
+                triggerImageGenerationBatch([{ text: w.text, language: w.language }]);
             }
 
             const { error: upError } = await executeWordsMutationWithCompatibility(

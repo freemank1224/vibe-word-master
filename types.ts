@@ -14,8 +14,9 @@ export interface WordEntry {
   sessionId: string;
   correct: boolean;
   tested: boolean;
-  image_path?: string | null; // Path in Supabase Storage
-  image_url?: string | null; // Public URL
+  image_path?: string | null; // Path in Supabase Storage (legacy, being phased out)
+  image_url?: string | null; // Public URL (computed from image_asset or legacy image_path)
+  image_asset_id?: string | null; // FK to shared image_assets table
   // V2 Fields
   error_count: number;
   best_time_ms: number | null;

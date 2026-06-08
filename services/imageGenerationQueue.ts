@@ -1,11 +1,12 @@
-import { ImageGenerationProviderId, requestImageGenerationViaEdge } from './imageGenerationEdge';
+import { ImageGenerationProviderId, requestImageGenerationViaEdge, ImageGenerationEdgeResult } from './imageGenerationEdge';
 
 type QueueTask = {
   id: string;
   word: string;
   language: string;
   promptOverride?: string;
-  resolve: (value: { dataUrl: string; providerId: ImageGenerationProviderId }) => void;
+  force?: boolean;
+  resolve: (value: ImageGenerationEdgeResult) => void;
   reject: (reason?: any) => void;
 };
 
@@ -25,9 +26,10 @@ class ImageGenerationQueue {
       word: task.word,
       language: task.language,
       promptOverride: task.promptOverride,
+      force: task.force,
     })
-      .then(({ dataUrl, providerId }) => {
-        task.resolve({ dataUrl, providerId });
+      .then((result) => {
+        task.resolve(result);
       })
       .catch((error) => {
         task.reject(error);
@@ -38,7 +40,7 @@ class ImageGenerationQueue {
       });
   }
 
-  enqueue(word: string, options?: { language?: string; promptOverride?: string }): Promise<{ dataUrl: string; providerId: ImageGenerationProviderId }> {
+  enqueue(word: string, options?: { language?: string; promptOverride?: string; force?: boolean }): Promise<ImageGenerationEdgeResult> {
     const text = (word || '').trim();
     if (!text) {
       return Promise.reject(new Error('Word is empty'));
@@ -50,6 +52,7 @@ class ImageGenerationQueue {
         word: text,
         language: options?.language || 'en',
         promptOverride: options?.promptOverride,
+        force: options?.force,
         resolve,
         reject,
       });
@@ -71,7 +74,7 @@ class ImageGenerationQueue {
 
 const imageGenerationQueue = new ImageGenerationQueue();
 
-export const requestQueuedWordImage = (word: string, options?: { language?: string; promptOverride?: string }) => {
+export const requestQueuedWordImage = (word: string, options?: { language?: string; promptOverride?: string; force?: boolean }) => {
   return imageGenerationQueue.enqueue(word, options);
 };
 

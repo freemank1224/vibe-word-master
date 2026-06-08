@@ -1,17 +1,22 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 
-export type ImageGenerationProviderId = 'letsmakesail' | 'newapi' | 'tokendance' | 'edge';
+export type ImageGenerationProviderId = 'letsmakesail' | 'newapi' | 'tokendance' | 'edge' | 'cache';
 
 export type ImageGenerationEdgeRequest = {
   word: string;
   language?: string;
   promptOverride?: string;
+  force?: boolean; // Force regeneration, skip cache
 };
 
 export type ImageGenerationEdgeResult = {
-  dataUrl: string;
+  dataUrl: string | null; // null for cache hits
   providerId: ImageGenerationProviderId;
   model?: string | null;
+  // New fields for shared image storage
+  publicUrl?: string | null;
+  assetId?: string | null;
+  source?: 'cache-hit' | 'generated';
 };
 
 const IMAGE_GENERATION_TIMEOUT_MS = 120_000; // 2 minutes - allow primary + backup timeout
@@ -40,6 +45,7 @@ export const requestImageGenerationViaEdge = async (
       word,
       language: request.language || 'en',
       prompt: request.promptOverride,
+      force: request.force || false,
     },
   });
 
@@ -49,18 +55,34 @@ export const requestImageGenerationViaEdge = async (
     throw new Error(error.message || 'image-generate invoke failed');
   }
 
-  if (typeof data?.dataUrl !== 'string' || data.dataUrl.length === 0) {
-    throw new Error('image-generate returned empty dataUrl');
-  }
-
   const providerId = typeof data?.providerId === 'string' && data.providerId.length > 0
     ? data.providerId as ImageGenerationProviderId
     : 'edge';
+
+  // Cache hit: dataUrl is null but publicUrl is set
+  if (data?.source === 'cache-hit' && data?.publicUrl) {
+    return {
+      dataUrl: null,
+      providerId: providerId,
+      model: data.model || 'cached',
+      publicUrl: data.publicUrl,
+      assetId: data.assetId || null,
+      source: 'cache-hit',
+    };
+  }
+
+  // Generated: dataUrl is present (backward compatible)
+  if (typeof data?.dataUrl !== 'string' || data.dataUrl.length === 0) {
+    throw new Error('image-generate returned empty dataUrl');
+  }
 
   return {
     dataUrl: data.dataUrl,
     providerId,
     model: typeof data?.model === 'string' ? data.model : null,
+    publicUrl: data.publicUrl || null,
+    assetId: data.assetId || null,
+    source: 'generated',
   };
 };
 
