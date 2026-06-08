@@ -268,6 +268,49 @@ const tryGenerateByProvider = async (
 };
 
 // -------------------------------------------------------
+// Convert image blob to WebP using OffscreenCanvas (Deno supports it)
+// Falls back to original blob if conversion is unavailable
+// -------------------------------------------------------
+const convertToWebP = async (
+  blob: Blob,
+  maxWidth: number = 1024,
+  maxHeight: number = 1024,
+  quality: number = 0.8,
+): Promise<Blob> => {
+  try {
+    // Create ImageBitmap from blob
+    const bitmap = await createImageBitmap(blob);
+
+    // Calculate new dimensions maintaining aspect ratio
+    let width = bitmap.width;
+    let height = bitmap.height;
+    if (width > maxWidth || height > maxHeight) {
+      const ratio = Math.min(maxWidth / width, maxHeight / height);
+      width = Math.round(width * ratio);
+      height = Math.round(height * ratio);
+    }
+
+    // Draw to OffscreenCanvas and export as WebP
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.warn('[image-generate] OffscreenCanvas 2d context unavailable, storing original');
+      return blob;
+    }
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    // Convert to WebP blob
+    const webpBlob = await canvas.convertToBlob({ type: 'image/webp', quality });
+    console.log(`[image-generate] Converted to WebP: ${blob.size} -> ${webpBlob.size} bytes (${width}x${height})`);
+    return webpBlob;
+  } catch (err) {
+    console.warn(`[image-generate] WebP conversion failed, storing original: ${err}`);
+    return blob;
+  }
+};
+
+// -------------------------------------------------------
 // New: Persist image to shared storage + link words
 // -------------------------------------------------------
 const persistAndLink = async (
@@ -296,17 +339,20 @@ const persistAndLink = async (
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
-    const blob = new Blob([bytes], { type: contentType });
+    const rawBlob = new Blob([bytes], { type: contentType });
 
-    // Determine extension from content type
-    const ext = contentType.includes('png') ? 'png' : contentType.includes('jpeg') ? 'jpeg' : 'webp';
-    const storagePath = `images/${language}/${encodeURIComponent(normalizedWord)}.${ext}`;
+    // Convert to WebP for optimal storage (always store as .webp)
+    const blob = await convertToWebP(rawBlob, 1024, 1024, 0.8);
+    const isWebP = blob.type === 'image/webp';
+
+    // Always use .webp extension after conversion
+    const storagePath = `images/${language}/${encodeURIComponent(normalizedWord)}.webp`;
 
     // Upload to shared storage
     const { error: ulErr } = await sb.storage
       .from(NEW_BUCKET)
       .upload(storagePath, blob, {
-        contentType,
+        contentType: blob.type || 'image/webp',
         cacheControl: '31536000',
         upsert: true,
       });

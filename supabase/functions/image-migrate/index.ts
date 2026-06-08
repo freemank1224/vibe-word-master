@@ -471,6 +471,68 @@ const handleApplySelection = async (
 };
 
 // -------------------------------------------------------
+// action: upload-converted
+// Replace an existing asset's storage file with a pre-converted WebP version.
+// Used for one-time PNG→WebP conversion of oversized images.
+// -------------------------------------------------------
+const handleUploadConverted = async (
+  word: string,
+  language: string,
+  webpDataUrl: string,
+  sizeBytes: number,
+) => {
+  const sb = getSupabaseClient();
+  const nw = normalizeWord(word);
+  const lang = (language || 'en').trim() || 'en';
+
+  try {
+    // Decode base64 data URL to blob
+    const base64Match = webpDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!base64Match) return { ok: false, error: 'Invalid dataUrl format' };
+
+    const base64Data = base64Match[2];
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'image/webp' });
+
+    const storagePath = `images/${lang}/${encodeURIComponent(nw)}.webp`;
+
+    // Upload (overwrite) to storage
+    const { error: ulErr } = await sb.storage
+      .from(NEW_BUCKET)
+      .upload(storagePath, blob, {
+        contentType: 'image/webp',
+        cacheControl: '31536000',
+        upsert: true,
+      });
+
+    if (ulErr) {
+      return { ok: false, error: `Upload failed: ${ulErr.message}` };
+    }
+
+    // Update image_assets row
+    const { error: dbErr } = await sb
+      .from('image_assets')
+      .update({ file_size_bytes: sizeBytes })
+      .eq('normalized_word', nw)
+      .eq('language', lang)
+      .eq('storage_path', storagePath);
+
+    if (dbErr) {
+      return { ok: false, error: `DB update failed: ${dbErr.message}` };
+    }
+
+    console.log(`[image-migrate] Converted ${nw}: uploaded ${sizeBytes} bytes`);
+    return { ok: true, word: nw, sizeBytes };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+};
+
+// -------------------------------------------------------
 // Main handler
 // -------------------------------------------------------
 serve(async (req) => {
@@ -512,6 +574,15 @@ serve(async (req) => {
           result = { ok: false, error: 'selections array is required' };
         } else {
           result = await handleApplySelection(selections);
+        }
+        break;
+      }
+      case 'upload-converted': {
+        const { word: w, language: l, webpDataUrl: du, sizeBytes: sz } = body;
+        if (!w || !du) {
+          result = { ok: false, error: 'word and webpDataUrl are required' };
+        } else {
+          result = await handleUploadConverted(w, l || 'en', du, sz || 0);
         }
         break;
       }
