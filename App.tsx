@@ -27,6 +27,7 @@ import TestModeV2 from './components/TestModeV2';
 import PuzzleGameMode from './components/PuzzleGameMode';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
+import { compressToWebP } from './utils/imageUtils';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
 import { fetchDictionaryData, fetchWordMeaningOptions, playWordAudio as playWordAudioService } from './services/dictionaryService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
@@ -981,6 +982,25 @@ const App: React.FC = () => {
               source: generated.source, hasPublicUrl: !!publicUrl, hasAssetId: !!assetId,
             });
 
+            // Client-side WebP conversion + upload to replace any non-WebP stored by edge function
+            let finalUrl = publicUrl;
+            if (generated.dataUrl && generated.source === 'generated') {
+              try {
+                const webpBlob = await compressToWebP(generated.dataUrl, 1024, 1024, 0.8);
+                if (webpBlob) {
+                  const reader = new FileReader();
+                  const webpDataUrl = await new Promise<string>((resolve) => { reader.onload = () => resolve(reader.result as string); reader.readAsDataURL(webpBlob); });
+                  // Upload the WebP to replace edge function's potentially-PNG storage
+                  await supabase.functions.invoke('image-migrate', {
+                    body: { action: 'upload-converted', word: w.text, language: w.language || 'en', webpDataUrl, sizeBytes: webpBlob.size },
+                  });
+                  appendImageGenDebug('image_webp_convert_success', { id: w.id, text: w.text, originalSize: generated.dataUrl.length, webpSize: webpBlob.size });
+                }
+              } catch (e) {
+                appendImageGenDebug('image_webp_convert_failed', { id: w.id, text: w.text, error: String(e) });
+              }
+            }
+
             // Cache in browser if dataUrl is available
             if (generated.dataUrl) {
               await cacheGeneratedImageForWord({ id: w.id, text: w.text, language: w.language || 'en' }, generated.dataUrl);
@@ -1071,6 +1091,23 @@ const App: React.FC = () => {
         appendImageGenDebug('manual_image_gen_failed', { id: word.id, text: word.text, reason: 'no publicUrl or dataUrl' });
         showNotification(`⚠️ 图片生成失败：${word.text}`, 'warning');
         return false;
+      }
+
+      // Client-side WebP conversion + upload to replace any non-WebP stored by edge function
+      if (generated.dataUrl && generated.source === 'generated') {
+        try {
+          const webpBlob = await compressToWebP(generated.dataUrl, 1024, 1024, 0.8);
+          if (webpBlob) {
+            const reader = new FileReader();
+            const webpDataUrl = await new Promise<string>((resolve) => { reader.onload = () => resolve(reader.result as string); reader.readAsDataURL(webpBlob); });
+            await supabase.functions.invoke('image-migrate', {
+              body: { action: 'upload-converted', word: word.text, language: word.language || 'en', webpDataUrl, sizeBytes: webpBlob.size },
+            });
+            appendImageGenDebug('manual_webp_convert_success', { id: word.id, text: word.text, webpSize: webpBlob.size });
+          }
+        } catch (e) {
+          appendImageGenDebug('manual_webp_convert_failed', { id: word.id, text: word.text, error: String(e) });
+        }
       }
 
       // Cache in browser if dataUrl is available
