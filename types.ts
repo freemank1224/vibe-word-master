@@ -65,7 +65,7 @@ export interface CompletedTestSummary {
   slowestWordTimeMs: number | null;
 }
 
-export type TestModeKind = 'CLASSIC' | 'PUZZLE';
+export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'SCENE';
 
 export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'RESULT';
 
@@ -124,6 +124,112 @@ export interface PuzzleGameCardState {
   isLocked: boolean;
   activatedAtMs: number | null;
   solvedAtMs: number | null;
+}
+
+// ================================================================
+// Scene Fusion Game Mode (看图拼写 / 大海捞针)
+// ================================================================
+
+export type SceneGamePhase =
+  | 'INTRO'
+  | 'PREPARING'
+  | 'MODE_SELECT'
+  | 'COUNTDOWN'
+  | 'PLAYING_SPELL'
+  | 'PLAYING_HAYSTACK'
+  | 'RESULT';
+
+export type ScenePlayMode = 'spell' | 'haystack';
+
+export interface SceneGameConfig {
+  kind: 'SCENE';
+}
+
+/** Metadata for one selected word, sent to the scene-generate edge function. */
+export interface SceneWordMeta {
+  text: string;
+  pos: string; // 'noun' | 'adjective' | 'verb' | 'adverb' | 'other'
+  definitionCn: string;
+}
+
+/** A per-word region of a fused scene image. Coordinates are normalized 0..1. */
+export interface WordRegion {
+  word: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
+  detectionFailed?: boolean;
+}
+
+/** A generated + cached fused scene image with per-word regions. */
+export interface SceneAsset {
+  id: string;
+  wordSetHash: string;
+  dayIndex: number; // 0..6 (Sun..Sat)
+  language: string;
+  imageUrl: string;
+  storagePath: string;
+  prompt: string;
+  regions: WordRegion[];
+  model: string;
+  visionModel: string;
+  status: 'ready' | 'failed';
+  createdAt: string;
+}
+
+export interface SceneCardResult {
+  wordId: string;
+  wordText: string;
+  correct: boolean;
+  attemptsUsed: number;
+  hintUsed: boolean;
+  solvedAtMs: number | null;
+  activatedAtMs: number | null;
+}
+
+export interface SceneGameSummary {
+  totalScore: number;
+  accuracyRate: number;
+  speedScore: number;
+  noHintScore: number;
+  wordsCorrect: number;
+  wordsTotal: number;
+  hintsUsed: number;
+  solvedWithoutHint: number;
+  timeUsedSeconds: number;
+  secondsRemaining: number;
+  totalDurationSeconds: number;
+  selectionMode: PuzzleGameSelectionMode;
+  playMode: ScenePlayMode;
+  dayIndex: number;
+  wordCount: number;
+  overlapRate: number;
+  rankingEligible: boolean;
+  rankingIneligibleReason?: string | null;
+  sceneAssetId?: string | null;
+  results: SceneCardResult[];
+}
+
+export type SceneLeaderboardScope = 'daily' | 'all_time';
+export type SceneLeaderboardMetric = 'total_score' | 'accuracy_rate' | 'speed_score';
+
+export interface SceneLeaderboardEntry {
+  user_id: string;
+  rank_position: number;
+  metric_value: number;
+  total_score: number;
+  accuracy_rate: number;
+  speed_score: number;
+  play_mode: ScenePlayMode;
+  words_total: number;
+  words_correct: number;
+  time_used_seconds: number;
+  played_date: string;
+  display_name?: string;
+  email_masked?: string;
+  is_current_user?: boolean;
 }
 
 export type AppMode = 'DASHBOARD' | 'INPUT' | 'TEST' | 'LIBRARY';

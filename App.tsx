@@ -18,13 +18,15 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, WordEntry, WordMeaningOption } from './types';
+import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, SceneGameConfig, SceneGameSummary, WordEntry, WordMeaningOption } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
 import PuzzleGameMode from './components/PuzzleGameMode';
+import SceneGameMode from './components/SceneGameMode';
+import { recordSceneGameRound } from './services/sceneGame';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { compressToWebP } from './utils/imageUtils';
@@ -102,7 +104,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) 
                                     );
                                 };
 
-type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' };
+type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | SceneGameConfig;
 
 type EditableWord = {
   tempId: string;
@@ -1807,6 +1809,11 @@ const App: React.FC = () => {
     setMode('TEST');
   };
 
+  const handleStartSceneGame = () => {
+    setTestConfig({ kind: 'SCENE' });
+    setMode('TEST');
+  };
+
   if (!isSupabaseConfigured) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-dark-charcoal p-4 text-center animate-in fade-in duration-700">
@@ -2124,8 +2131,27 @@ const App: React.FC = () => {
               }}
               onCancel={() => setMode('DASHBOARD')}
             />
+          ) : testConfig?.kind === 'SCENE' ? (
+            <SceneGameMode
+              allWords={visibleWords}
+              sessions={sessions}
+              onComplete={async (summary: SceneGameSummary) => {
+                if (!summary.rankingEligible) {
+                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
+                  return;
+                }
+                try {
+                  await recordSceneGameRound(summary);
+                  showNotification(`🎬 场景成绩已记录：${summary.totalScore} 分`, 'success');
+                } catch (error) {
+                  console.error('[SceneGameMode] Failed to record scene game round:', error);
+                  showNotification('⚠️ 场景成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
+                }
+              }}
+              onCancel={() => setMode('DASHBOARD')}
+            />
           ) : (
-            <TestModeV2 
+            <TestModeV2
               allWords={visibleWords}
               sessions={sessions}
               initialSessionIds={testConfig?.sessionIds || []}
@@ -2323,7 +2349,33 @@ const App: React.FC = () => {
                             </span>
                           </button>
 
-                        <button 
+                          <button
+                            onClick={() => {
+                              handleStartSceneGame();
+                              setShowQuickTestModal(false);
+                            }}
+                            disabled={visibleWords.filter(w => !w.deleted).length < 5}
+                            className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
+                              visibleWords.filter(w => !w.deleted).length >= 5
+                                ? 'bg-mid-charcoal hover:bg-purple-500 hover:text-white'
+                                : 'bg-mid-charcoal/50 border border-dashed border-mid-charcoal text-text-dark cursor-not-allowed'
+                            }`}
+                          >
+                            <span className={`text-sm font-mono uppercase tracking-widest ${
+                              visibleWords.filter(w => !w.deleted).length >= 5
+                                ? 'text-purple-400 group-hover:text-white'
+                                : 'text-text-dark'
+                            }`}><HoverTranslationText text="Option 4" translation="选项 4" /></span>
+                            <span className="text-xl font-headline"><HoverTranslationText text="SCENE FUSION GAME" translation="场景融合游戏" /></span>
+                            <span className="text-xs opacity-50 font-body group-hover:text-white/70">
+                              <HoverTranslationText
+                                text={`AI fuses 5-10 words into one isometric scene with today's monster. Two modes share one image. Available words: ${visibleWords.filter(w => !w.deleted).length}.`}
+                                translation={`AI 把 5-10 个单词融合成一张等轴场景图，含当日小怪兽。看图拼写 / 大海捞针共享同一张图。当前可用单词：${visibleWords.filter(w => !w.deleted).length}。`}
+                              />
+                            </span>
+                          </button>
+
+                        <button
                             onClick={() => setShowQuickTestModal(false)}
                             className="mt-4 text-text-dark hover:text-white transition-colors uppercase font-mono text-xs tracking-[0.2em]"
                         >
