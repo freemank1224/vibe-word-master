@@ -12,10 +12,14 @@
 -- ================================================================
 
 -- ----------------------------------------------------------------
--- 1. scene_assets: shared, world-readable cache of fused scenes
+-- 1. scene_assets: per-user cache of fused scenes + per-word regions.
+--    (Design doc §7.1: per-user cache. Each user's library yields its own
+--    scenes, so the cache is keyed by (user_id, word_set_hash, day, language)
+--    and isolated per owner. The edge function writes via the service role.)
 -- ----------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.scene_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     word_set_hash TEXT NOT NULL,
     day_index SMALLINT NOT NULL CHECK (day_index BETWEEN 0 AND 6),
     language TEXT NOT NULL DEFAULT 'en',
@@ -25,25 +29,27 @@ CREATE TABLE IF NOT EXISTS public.scene_assets (
     public_url TEXT NOT NULL,
     prompt TEXT NOT NULL DEFAULT '',
     regions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    scene_design JSONB DEFAULT NULL,
     model TEXT,
-    vision_model TEXT,
     status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready', 'failed')),
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS scene_assets_cache_uidx
-    ON public.scene_assets (word_set_hash, day_index, language);
+    ON public.scene_assets (user_id, word_set_hash, day_index, language);
 CREATE INDEX IF NOT EXISTS scene_assets_status_idx ON public.scene_assets (status);
+CREATE INDEX IF NOT EXISTS scene_assets_user_idx ON public.scene_assets (user_id, created_at DESC);
 
 ALTER TABLE public.scene_assets ENABLE ROW LEVEL SECURITY;
 
--- Shared cache: anyone may read ready scenes (no user data inside).
+-- Per-user cache: owners may read their own scenes. The edge function writes
+-- with the service role (bypasses RLS); no client INSERT/UPDATE policy.
 DROP POLICY IF EXISTS "Anyone can read ready scene assets" ON public.scene_assets;
-CREATE POLICY "Anyone can read ready scene assets"
+DROP POLICY IF EXISTS "Owners can read their scene assets" ON public.scene_assets;
+CREATE POLICY "Owners can read their scene assets"
     ON public.scene_assets FOR SELECT
-    USING (true);
--- Writes are service-role only (edge function). No client INSERT/UPDATE policy.
+    USING (auth.uid() = user_id);
 
 -- ----------------------------------------------------------------
 -- 2. scene_game_rounds: per-user round results

@@ -1,18 +1,34 @@
 // @ts-nocheck
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  buildSceneDirectorSystemPrompt,
+  buildSceneDirectorUserPayload,
+  deriveRegionsFromElements,
+  parseSceneDesign,
+  zoneToBbox,
+  DEFAULT_ZONE,
+} from './sceneDesign.ts';
 
 // ================================================================
-// scene-generate edge function
+// scene-generate edge function — refreshed pipeline (design doc v2 §3)
 //
-// Fuses N words (5-10) into ONE isometric cartoon scene that also
-// contains the day-of-week monster, then asks a vision model for
-// per-word bounding boxes. Caches the result in scene_assets keyed
-// by (word-set hash + day + language) so re-runs are instant/free.
+// ① Scene director (strong text LLM, gpt-4o)  → core; replaces old template
+//    conceives ONE coherent scene holding all N words + the day monster,
+//    and assigns each word a positionZone. Returns a structuredPrompt.
+// ② Render (image model, gpt-image-2)          → uses ①' structuredPrompt
+// ③ Region refinement (multimodal LLM, gpt-4o) → OPTIONAL, default OFF
 //
-// Self-contained (mirrors the style of image-generate): provider
-// fallback chain + WebP conversion are inlined here so the critical
-// single-word image-generate function is untouched.
+// By default, regions are derived directly from ①'s positionZones via the
+// §5 zone→bbox table (NO extra model call). Vision ③ runs only when
+// enabled, and tightens boxes per word; failures fall back to the zone.
+//
+// LLM config (scene director + vision) may be supplied by the caller in
+// request body `llmConfig` (the app's Admin Console / "~" panel stores it
+// client-side). Anything missing falls back to edge secrets / defaults.
+//
+// Cache is per-user (scene_assets.user_id) keyed by
+// (user_id, word_set_hash, day_index, language).
 // ================================================================
 
 const corsHeaders = {
@@ -206,7 +222,7 @@ const convertToWebP = async (blob: Blob, maxWidth = 1024, maxHeight = 1024, qual
 };
 
 // ----------------------------------------------------------------
-// Fusion prompt builder
+// Fusion prompt builder (deterministic FALLBACK when ① fails — §3.3)
 // ----------------------------------------------------------------
 const POS_RULES: Record<string, (w: SceneWordMetaInput) => string> = {
   noun: (w) => `Clearly render the object or character for the noun "${w.text}" (sense: ${w.definitionCn || '—'}) as a distinct, isolated element with clear visual margin around it.`,
@@ -221,25 +237,16 @@ const buildFusionPrompt = (words: SceneWordMetaInput[], dayIndex: number): strin
   const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
   const parts: string[] = [];
 
-  // 1. Style
   parts.push('Isometric-perspective cartoon illustration, HD, highly detailed, vibrant saturated colors, clean studio lighting, soft global illumination, 1:1 square composition.');
-
-  // 2. Daily monster
   parts.push(`ALWAYS include this exact mascot somewhere in the scene as a visible, clearly identifiable, unoccluded character: ${mascot}`);
 
-  // 3. POS-aware per-word rules
   for (const w of words) {
     const rule = POS_RULES[w.pos] || POS_RULES.noun;
     parts.push(rule(w));
   }
 
-  // 4. Layout helper (improves bounding-box separability)
   parts.push(`Lay out the ${words.length} word-elements plus the mascot on a rough grid so none overlap and each word-element occupies its own distinct bounding region. Avoid stacking elements on top of each other.`);
-
-  // 5. Anti-text-overlay clause
   parts.push('Do NOT add floating captions, subtitles, UI labels, watermarks, or any text that spells out the target words. Diegetic text that belongs to objects (book covers, street signs, packaging) is allowed.');
-
-  // 6. Explicit enumerator (grounds the vision step)
   const enumerated = words.map((w, i) => `${i + 1}. ${w.text}`).join(', ');
   parts.push(`The scene MUST contain exactly these ${words.length} distinct visual elements corresponding to the English words: ${enumerated}. The order of this list is arbitrary; placement in the image is up to you.`);
 
@@ -247,59 +254,134 @@ const buildFusionPrompt = (words: SceneWordMetaInput[], dayIndex: number): strin
 };
 
 // ----------------------------------------------------------------
-// Vision bounding-box detection (gpt-4o, OpenAI-compatible chat)
+// ① Scene director (text LLM) — §4 contract
+// ----------------------------------------------------------------
+interface DesignLLMConfig { baseUrl: string; apiKey: string; model: string; }
+
+const chatCompletionsUrl = (baseUrl: string): string => {
+  const s = normalizeUrl(baseUrl);
+  if (!s) return '';
+  return s.endsWith('/chat/completions') ? s : `${s}/v1/chat/completions`;
+};
+
+const designScene = async (
+  words: SceneWordMetaInput[],
+  dayIndex: number,
+  cfg: DesignLLMConfig,
+): Promise<{ structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null> => {
+  if (!cfg.apiKey || !cfg.baseUrl) {
+    console.warn('[scene-generate] design skipped: no design LLM key/endpoint');
+    return null;
+  }
+
+  const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
+  const systemPrompt = buildSceneDirectorSystemPrompt();
+  const userPayload = buildSceneDirectorUserPayload(words, dayIndex, mascot);
+
+  const call = async (useJsonMode: boolean, insistOnlyJson: boolean): Promise<string> => {
+    const url = chatCompletionsUrl(cfg.baseUrl);
+    if (!url) return '';
+    const userContent = insistOnlyJson
+      ? JSON.stringify(userPayload) + '\n\nOutput ONLY a JSON object — no markdown, no prose.'
+      : JSON.stringify(userPayload);
+    const body = {
+      model: cfg.model,
+      max_tokens: 1200,
+      temperature: 0.7,
+      ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+    };
+    try {
+      const response = await withTimeout(
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
+          body: JSON.stringify(body),
+        }),
+        45000,
+        'design timeout after 45s',
+      );
+      const data = await parseResponseJson(response);
+      if (!response.ok) {
+        console.warn(`[scene-generate] design http ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}`);
+        return '';
+      }
+      return typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+    } catch (err) {
+      console.warn(`[scene-generate] design error: ${err}`);
+      return '';
+    }
+  };
+
+  // §4.4: try json_object first; on empty/unparseable, retry once without json_object + an ONLY-JSON nudge.
+  let content = await call(true, false);
+  let design = content ? parseSceneDesign(content, words) : null;
+  if (!design) {
+    console.log('[scene-generate] design retry (no json_object + ONLY-JSON nudge)');
+    content = await call(false, true);
+    design = content ? parseSceneDesign(content, words) : null;
+  }
+  if (!design) return null;
+
+  console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements zoned, title="${(design.sceneTitle || '').substring(0, 40)}"`);
+  return design;
+};
+
+// ----------------------------------------------------------------
+// ③ Vision region refinement (multimodal LLM) — OPTIONAL, default OFF
 // ----------------------------------------------------------------
 interface DetectedRegion { word: string; x: number; y: number; w: number; h: number; confidence: number; }
 
-const getVisionConfig = (): { baseUrl: string; apiKey: string; model: string } => {
-  // Defaults reuse the omgteam gateway (OpenAI-compatible, proxies gpt-4o).
-  const baseUrl = (Deno.env.get('SCENE_VISION_BASE_URL') || Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL') || 'https://newapi.omgteam.me').trim();
-  const apiKey = Deno.env.get('SCENE_VISION_API_KEY') || Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY') || '';
-  const model = Deno.env.get('SCENE_VISION_MODEL') || 'gpt-4o';
-  return { baseUrl: normalizeUrl(baseUrl), apiKey, model };
-};
-
-const detectRegions = async (dataUrl: string, words: SceneWordMetaInput[]): Promise<DetectedRegion[]> => {
-  const cfg = getVisionConfig();
-  if (!cfg.apiKey) {
-    console.warn('[scene-generate] vision skipped: no SCENE_VISION_API_KEY');
+const detectRegions = async (
+  dataUrl: string,
+  words: SceneWordMetaInput[],
+  cfg: DesignLLMConfig,
+  zoneHints: Map<string, string>,
+): Promise<DetectedRegion[]> => {
+  if (!cfg.apiKey || !cfg.baseUrl) {
+    console.warn('[scene-generate] vision skipped: no vision LLM key/endpoint');
     return [];
   }
 
-  const enumerated = words.map((w, i) => `${i + 1}. ${w.text} (${w.definitionCn || '—'})`).join('\n');
+  const enumerated = words.map((w, i) => {
+    const zone = zoneHints.get(w.text.toLowerCase());
+    const zoneHint = zone ? ` (expected near ${zone})` : '';
+    return `${i + 1}. ${w.text} (${w.definitionCn || '—'})${zoneHint}`;
+  }).join('\n');
   const instruction = [
     'You are given an isometric cartoon scene that contains exactly these visual elements:',
     enumerated,
     '',
-    'Find each element\'s bounding box in the image. Coordinates are NORMALIZED to [0,1] where (0,0) is top-left and (1,1) is bottom-right.',
+    'Find each element\'s tight bounding box in the image. Coordinates are NORMALIZED to [0,1] where (0,0) is top-left and (1,1) is bottom-right.',
     'Respond as JSON: {"regions":[{"word":"<exact word>","x":<top-left x>,"y":<top-left y>,"w":<width>,"h":<height>,"confidence":<0..1>}]}.',
     '- Every word in the list MUST appear exactly once in "regions".',
     '- If an element is genuinely not visible, still emit a region with a best-guess location and set confidence <= 0.3.',
     '- Output ONLY the JSON object, no prose.',
   ].join('\n');
 
-  const buildMessages = (useJsonMode: boolean) => [
-    {
-      model: cfg.model,
-      max_tokens: 1000,
-      ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
-      messages: [
-        { role: 'user', content: [
-          { type: 'text', text: instruction },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ] },
-      ],
-    },
-  ];
+  const url = chatCompletionsUrl(cfg.baseUrl);
+  if (!url) return [];
 
   const attempt = async (useJsonMode: boolean): Promise<any | null> => {
-    const chatUrl = cfg.baseUrl.endsWith('/chat/completions') ? cfg.baseUrl : `${cfg.baseUrl}/v1/chat/completions`;
     try {
       const response = await withTimeout(
-        fetch(chatUrl, {
+        fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
-          body: JSON.stringify(buildMessages(useJsonMode)),
+          body: JSON.stringify({
+            model: cfg.model,
+            max_tokens: 1000,
+            ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
+            messages: [
+              { role: 'user', content: [
+                { type: 'text', text: instruction },
+                { type: 'image_url', image_url: { url: dataUrl } },
+              ] },
+            ],
+          }),
         }),
         60000,
         'vision timeout after 60s',
@@ -317,13 +399,12 @@ const detectRegions = async (dataUrl: string, words: SceneWordMetaInput[]): Prom
   };
 
   let data = await attempt(true);
-  if (!data) data = await attempt(false); // retry without json_object
+  if (!data) data = await attempt(false);
   if (!data) return [];
 
   const rawContent: string = data?.choices?.[0]?.message?.content || '';
   if (!rawContent) return [];
 
-  // Extract JSON from possibly-wrapped content.
   let parsed: any = null;
   try {
     parsed = JSON.parse(rawContent);
@@ -340,7 +421,7 @@ const detectRegions = async (dataUrl: string, words: SceneWordMetaInput[]): Prom
   for (const r of parsed.regions) {
     if (!r || typeof r.word !== 'string') continue;
     const word = r.word.trim();
-    if (!validWords.has(word.toLowerCase())) continue; // ignore hallucinated words
+    if (!validWords.has(word.toLowerCase())) continue;
     const num = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
     regions.push({
       word,
@@ -355,11 +436,12 @@ const detectRegions = async (dataUrl: string, words: SceneWordMetaInput[]): Prom
 };
 
 // ----------------------------------------------------------------
-// Persist image + regions
+// Persist image + regions (per-user cache + scene_design JSONB)
 // ----------------------------------------------------------------
 const persistScene = async (
   sb: ReturnType<typeof getSupabaseClient>,
   params: {
+    userId: string;
     wordSetHash: string;
     dayIndex: number;
     language: string;
@@ -367,8 +449,8 @@ const persistScene = async (
     dataUrl: string;
     prompt: string;
     model: string;
-    visionModel: string;
-    regions: DetectedRegion[];
+    regions: any[];
+    sceneDesign: any;
     status: 'ready' | 'failed';
     errorMessage: string | null;
   },
@@ -383,7 +465,7 @@ const persistScene = async (
   const rawBlob = new Blob([bytes], { type: contentType });
   const blob = await convertToWebP(rawBlob, 1024, 1024, 0.8);
 
-  const storagePath = `scenes/${params.dayIndex}/${params.wordSetHash}.webp`;
+  const storagePath = `scenes/${params.userId}/${params.dayIndex}/${params.wordSetHash}.webp`;
   const { error: ulErr } = await sb.storage.from(NEW_BUCKET).upload(storagePath, blob, {
     contentType: blob.type || 'image/webp',
     cacheControl: '31536000',
@@ -397,15 +479,26 @@ const persistScene = async (
   const { data: urlData } = sb.storage.from(NEW_BUCKET).getPublicUrl(storagePath);
   const publicUrl = urlData.publicUrl;
 
-  // Backfill missing words with detectionFailed regions so the client knows to degrade.
-  const regionMap = new Map(params.regions.map((r) => [r.word.toLowerCase(), r]));
+  // regions always carry one entry per word (zone/default/vision); keep source for debugging.
   const fullRegions = params.words.map((w) => {
-    const found = regionMap.get(w.text.toLowerCase());
-    if (!found) return { word: w.text, x: 0.4, y: 0.4, w: 0.2, h: 0.2, confidence: 0, detectionFailed: true };
-    return { ...found, detectionFailed: found.confidence < 0.4 };
+    const found = params.regions.find((r) => r.word && r.word.toLowerCase() === w.text.toLowerCase());
+    if (!found) {
+      const c = zoneToBbox(DEFAULT_ZONE);
+      return { word: w.text, x: c.x, y: c.y, w: c.w, h: c.h, confidence: 0.5, source: 'default' };
+    }
+    return {
+      word: w.text,
+      x: found.x,
+      y: found.y,
+      w: found.w,
+      h: found.h,
+      confidence: found.confidence,
+      source: found.source || 'zone',
+    };
   });
 
   const row = {
+    user_id: params.userId,
     word_set_hash: params.wordSetHash,
     day_index: params.dayIndex,
     language: params.language,
@@ -415,15 +508,15 @@ const persistScene = async (
     public_url: publicUrl,
     prompt: params.prompt,
     regions: JSON.stringify(fullRegions),
+    scene_design: params.sceneDesign ? JSON.stringify(params.sceneDesign) : null,
     model: params.model,
-    vision_model: params.visionModel,
     status: params.status,
     error_message: params.errorMessage,
   };
 
   const { data: asset, error } = await sb
     .from('scene_assets')
-    .upsert(row, { onConflict: 'word_set_hash,day_index,language' })
+    .upsert(row, { onConflict: 'user_id,word_set_hash,day_index,language' })
     .select('id, created_at')
     .single();
 
@@ -438,12 +531,63 @@ const persistScene = async (
     storagePath: storagePath,
     prompt: params.prompt,
     regions: fullRegions,
+    sceneDesign: params.sceneDesign || null,
     model: params.model,
-    visionModel: params.visionModel,
     status: params.status,
     createdAt: asset.created_at,
   };
 };
+
+// ----------------------------------------------------------------
+// Auth: resolve the caller's user id from the forwarded JWT (per-user cache)
+// ----------------------------------------------------------------
+const resolveUserId = async (req: Request): Promise<string | null> => {
+  const authHeader = req.headers.get('Authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || '';
+  if (!anonKey || !supabaseUrl) return null;
+  try {
+    const userClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data } = await userClient.auth.getUser();
+    return data?.user?.id || null;
+  } catch (err) {
+    console.warn(`[scene-generate] auth resolve failed: ${err}`);
+    return null;
+  }
+};
+
+// ----------------------------------------------------------------
+// LLM config resolution: caller-supplied (body.llmConfig) → secrets → defaults
+// ----------------------------------------------------------------
+interface LLMConfig { baseUrl: string; apiKey: string; model: string; }
+interface CallerLLMConfig { design?: Partial<LLMConfig>; vision?: Partial<LLMConfig>; visionEnabled?: boolean; }
+
+const pickStr = (...vals: (string | undefined | null)[]): string => {
+  for (const v of vals) {
+    const s = typeof v === 'string' ? v.trim() : '';
+    if (s) return s;
+  }
+  return '';
+};
+
+const resolveDesignConfig = (caller: CallerLLMConfig): LLMConfig => ({
+  baseUrl: pickStr(caller.design?.baseUrl, Deno.env.get('SCENE_DESIGN_BASE_URL'), Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL')),
+  apiKey: pickStr(caller.design?.apiKey, Deno.env.get('SCENE_DESIGN_API_KEY'), Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY')),
+  model: pickStr(caller.design?.model, Deno.env.get('SCENE_DESIGN_MODEL')) || 'gpt-4o',
+});
+
+const resolveVisionEnabled = (caller: CallerLLMConfig): boolean =>
+  caller.visionEnabled === true || Deno.env.get('SCENE_VISION_ENABLED') === 'true';
+
+const resolveVisionConfig = (caller: CallerLLMConfig, designCfg: LLMConfig): LLMConfig => ({
+  baseUrl: pickStr(caller.vision?.baseUrl, Deno.env.get('SCENE_VISION_BASE_URL'), designCfg.baseUrl, Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL')),
+  apiKey: pickStr(caller.vision?.apiKey, Deno.env.get('SCENE_VISION_API_KEY'), designCfg.apiKey, Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY')),
+  model: pickStr(caller.vision?.model, Deno.env.get('SCENE_VISION_MODEL')) || 'gpt-4o',
+});
 
 // ----------------------------------------------------------------
 // Handler
@@ -461,6 +605,7 @@ serve(async (req) => {
     const dayIndex = Number(body?.dayIndex);
     const language = typeof body?.language === 'string' ? body.language.trim() : 'en';
     const force = body?.force === true || body?.force === '1';
+    const callerLlm: CallerLLMConfig = body?.llmConfig && typeof body.llmConfig === 'object' ? body.llmConfig : {};
 
     if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) return json({ error: 'Invalid dayIndex (0-6)' }, 400);
 
@@ -475,23 +620,27 @@ serve(async (req) => {
     }
     if (words.length < 5 || words.length > 10) return json({ error: 'words must contain 5-10 entries' }, 400);
 
+    const userId = await resolveUserId(req);
+    if (!userId) return json({ error: 'Authentication required' }, 401);
+
     const normalizedWords = words.map((w) => normalizeWord(w.text)).sort();
     const wordSetHash = (await sha1Hex(normalizedWords.join('|'))).slice(0, 16);
 
     const sb = getSupabaseClient();
 
-    // Cache check
+    // Cache check (per-user)
     if (!force) {
       const { data: cached } = await sb
         .from('scene_assets')
         .select('*')
+        .eq('user_id', userId)
         .eq('word_set_hash', wordSetHash)
         .eq('day_index', dayIndex)
         .eq('language', language)
         .eq('status', 'ready')
         .maybeSingle();
       if (cached) {
-        console.log(`[scene-generate] cache hit ${wordSetHash} day=${dayIndex}`);
+        console.log(`[scene-generate] cache hit ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)}`);
         return json({
           ok: true,
           source: 'cache-hit',
@@ -504,8 +653,8 @@ serve(async (req) => {
             storagePath: cached.storage_path,
             prompt: cached.prompt || '',
             regions: cached.regions || [],
+            sceneDesign: cached.scene_design || null,
             model: cached.model || '',
-            visionModel: cached.vision_model || '',
             status: cached.status,
             createdAt: cached.created_at,
           },
@@ -513,41 +662,87 @@ serve(async (req) => {
       }
     }
 
-    // Image generation
+    // ① Scene director
+    const designCfg = resolveDesignConfig(callerLlm);
+    const design = await designScene(words, dayIndex, designCfg);
+
+    let prompt: string;
+    let sceneDesignPayload: any = null;
+    let fellBack = false;
+    if (design) {
+      prompt = design.structuredPrompt;
+      sceneDesignPayload = {
+        sceneTitle: design.sceneTitle || null,
+        sceneConcept: design.sceneConcept || null,
+        structuredPrompt: design.structuredPrompt,
+        elements: design.elements,
+        source: 'director',
+      };
+    } else {
+      prompt = buildFusionPrompt(words, dayIndex);
+      fellBack = true;
+      console.log('[scene-generate] director failed/absent -> buildFusionPrompt fallback');
+    }
+
+    // ② Render
     const providers = getProviderConfigs();
     if (providers.length === 0) return json({ error: 'No image generation providers configured' }, 500);
 
-    const prompt = buildFusionPrompt(words, dayIndex);
     const failures: ProviderAttemptFailure[] = [];
     let generated: { dataUrl: string; providerId: ProviderId; model: string } | null = null;
-
     for (let i = 0; i < providers.length; i++) {
       const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0);
       if ('error' in result) { failures.push(result.error); continue; }
       generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model };
       break;
     }
-
     if (!generated) {
-      // Persist a failed row so the client can show a clean error (not cached as ready).
       return json({ ok: false, error: 'All image providers failed', failures }, 502);
     }
 
-    // Vision bounding-box detection
-    const visionModel = getVisionConfig().model;
-    let detected: DetectedRegion[] = [];
-    try {
-      detected = await detectRegions(generated.dataUrl, words);
-    } catch (err) {
-      console.warn(`[scene-generate] vision detection threw: ${err}`);
+    // Regions — DEFAULT path: derive from director zones (no extra model call).
+    let regions = deriveRegionsFromElements(
+      design ? { structuredPrompt: design.structuredPrompt, elements: design.elements } : { structuredPrompt: '', elements: [] },
+      words,
+    );
+    let regionsSource: string = fellBack ? 'default' : 'zone';
+
+    // ③ Optional vision refinement (only when enabled)
+    const visionEnabled = resolveVisionEnabled(callerLlm);
+    let visionModelUsed = '';
+    if (visionEnabled) {
+      const visionCfg = resolveVisionConfig(callerLlm, designCfg);
+      const zoneHints = new Map<string, string>();
+      for (const el of design?.elements || []) {
+        if (el.positionZone) zoneHints.set(String(el.word).toLowerCase(), el.positionZone);
+      }
+      let detected: DetectedRegion[] = [];
+      try {
+        detected = await detectRegions(generated.dataUrl, words, visionCfg, zoneHints);
+      } catch (err) {
+        console.warn(`[scene-generate] vision detection threw: ${err}`);
+      }
+      visionModelUsed = visionCfg.model;
+      if (detected.length > 0) {
+        const byWord = new Map(detected.map((r) => [r.word.toLowerCase(), r]));
+        let visionCount = 0;
+        regions = regions.map((r) => {
+          const v = byWord.get(r.word.toLowerCase());
+          if (v) {
+            visionCount += 1;
+            return { word: r.word, x: v.x, y: v.y, w: v.w, h: v.h, confidence: v.confidence, source: 'vision' as const };
+          }
+          return r;
+        });
+        regionsSource = visionCount === regions.length ? 'vision' : 'mixed';
+        console.log(`[scene-generate] vision refined ${visionCount}/${words.length} regions`);
+      } else {
+        console.log('[scene-generate] vision enabled but returned 0 regions -> keeping zone/default regions');
+      }
     }
 
-    const detectedCount = detected.length;
-    const failedCount = words.length - detectedCount;
-    // If fewer than half the words were found, mark the asset failed (degraded but not cached).
-    const status: 'ready' | 'failed' = detectedCount >= Math.ceil(words.length / 2) ? 'ready' : 'failed';
-
     const asset = await persistScene(sb, {
+      userId,
       wordSetHash,
       dayIndex,
       language,
@@ -555,20 +750,20 @@ serve(async (req) => {
       dataUrl: generated.dataUrl,
       prompt,
       model: generated.model,
-      visionModel,
-      regions: detected,
-      status,
-      errorMessage: status === 'failed' ? `vision found ${detectedCount}/${words.length} regions` : null,
+      regions,
+      sceneDesign: sceneDesignPayload,
+      status: 'ready',
+      errorMessage: null,
     });
 
-    console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} regions=${detectedCount}/${words.length} status=${status}`);
+    console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'}`);
 
     return json({
       ok: true,
       source: 'generated',
-      degraded: status === 'failed',
+      degraded: false,
       asset,
-      visionStats: { detected: detectedCount, total: words.length },
+      pipeline: { design: design ? 'director' : 'fallback', regions: regionsSource, vision: visionEnabled ? (visionModelUsed || 'on') : 'off' },
     });
   } catch (error) {
     console.error('[scene-generate] handler error:', error);

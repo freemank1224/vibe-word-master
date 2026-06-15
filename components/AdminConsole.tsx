@@ -4,6 +4,7 @@ import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
 import { HoverTranslationText } from './HoverTranslationText';
+import { SceneGameSettings, SceneGameLLMSettings } from '../services/sceneGameSettings';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -94,7 +95,7 @@ const formatBytes = (bytes: number): string => {
 };
 
 export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => void }> = ({ onClose, onDataChange }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'image' | 'vision' | 'text'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'text' | 'scene'>('dashboard');
   const [logs, setLogs] = useState<string[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -185,9 +186,8 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
 
       <div style={{ display: 'flex', borderBottom: '1px solid #333' }}>
         <button style={TAB_BUTTON_STYLE(activeTab === 'dashboard')} onClick={() => setActiveTab('dashboard')}>概览</button>
-        <button style={TAB_BUTTON_STYLE(activeTab === 'image')} onClick={() => setActiveTab('image')}>图像生成</button>
-        <button style={TAB_BUTTON_STYLE(activeTab === 'vision')} onClick={() => setActiveTab('vision')}>图像识别</button>
         <button style={TAB_BUTTON_STYLE(activeTab === 'text')} onClick={() => setActiveTab('text')}>普通文本</button>
+        <button style={TAB_BUTTON_STYLE(activeTab === 'scene')} onClick={() => setActiveTab('scene')}>场景游戏</button>
       </div>
 
       <div style={CONTENT_STYLE}>
@@ -269,9 +269,115 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
           </>
         )}
 
-        {activeTab === 'image' && <TaskSettingsPanel task="IMAGE_GEN" title="图像生成配置" onLog={addLog} />}
-        {activeTab === 'vision' && <TaskSettingsPanel task="VISION" title="图像识别配置" onLog={addLog} />}
         {activeTab === 'text' && <TaskSettingsPanel task="TEXT" title="普通文本思考配置" onLog={addLog} />}
+        {activeTab === 'scene' && <SceneGameSettingsPanel onLog={addLog} />}
+      </div>
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------
+// Scene Fusion Game — LLM config (① scene director + ③ vision refiner).
+// Stores the user's own keys client-side (services/sceneGameSettings) and
+// forwards them to the scene-generate edge function. Anything left blank
+// falls back to the edge function's secrets / defaults.
+// ----------------------------------------------------------------
+const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLog }) => {
+  const [settings, setSettings] = useState<SceneGameLLMSettings>(() => SceneGameSettings.load());
+
+  const updateEndpoint = (which: 'design' | 'vision', field: keyof SceneGameLLMSettings['design'], value: string) => {
+    setSettings((prev) => ({ ...prev, [which]: { ...prev[which], [field]: value } }));
+  };
+
+  const handleSave = () => {
+    SceneGameSettings.save(settings);
+    onLog('Saved scene-game LLM settings.');
+    alert('已保存场景游戏 LLM 配置！');
+  };
+
+  const handleClear = () => {
+    if (!confirm('清空场景游戏的所有 LLM 配置？(将回退到服务端默认配置)')) return;
+    SceneGameSettings.clear();
+    const cleared = SceneGameSettings.load();
+    setSettings(cleared);
+    onLog('Cleared scene-game LLM settings.');
+  };
+
+  const EndpointFields: React.FC<{ which: 'design' | 'vision'; title: string; hint: string; placeholderModel: string }> = ({ which, title, hint, placeholderModel }) => (
+    <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
+      <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>{title}</div>
+      <div style={{ fontSize: '11px', color: '#999', marginBottom: '12px' }}>{hint}</div>
+
+      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>BASE_URL (Endpoint)</label>
+      <input
+        type="text"
+        style={INPUT_STYLE}
+        placeholder="https://newapi.omgteam.me  (OpenAI 兼容网关)"
+        value={settings[which].baseUrl}
+        onChange={(e) => updateEndpoint(which, 'baseUrl', e.target.value)}
+      />
+
+      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>API_KEY</label>
+      <input
+        type="password"
+        style={INPUT_STYLE}
+        placeholder="sk-..."
+        value={settings[which].apiKey}
+        onChange={(e) => updateEndpoint(which, 'apiKey', e.target.value)}
+      />
+
+      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>模型名称 (Model)</label>
+      <input
+        type="text"
+        style={INPUT_STYLE}
+        placeholder={placeholderModel}
+        value={settings[which].model}
+        onChange={(e) => updateEndpoint(which, 'model', e.target.value)}
+      />
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: '520px', margin: '0 auto' }}>
+      <h4 style={{ marginBottom: '12px' }}>场景融合游戏 · LLM 配置</h4>
+      <p style={{ fontSize: '11px', color: '#aaa', marginBottom: '18px', lineHeight: 1.6 }}>
+        场景游戏流水线用到大模型：① 场景导演（强文本 LLM，把 N 个词编排进同一场景并分配位置区域，默认 gpt-4o）；③ 视觉精修（多模态 LLM，把高亮框收紧到元素实际位置，可选，默认关闭）。留空则回退到服务端 Edge Secret。
+      </p>
+
+      <EndpointFields
+        which="design"
+        title="① 场景导演 (Scene Director)"
+        hint="必填。用于构思连贯场景 + 生成结构化生图提示词 + 为每个词分配位置区域。"
+        placeholderModel="gpt-4o"
+      />
+
+      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.visionEnabled}
+            onChange={(e) => setSettings((prev) => ({ ...prev, visionEnabled: e.target.checked }))}
+            style={{ width: '16px', height: '16px' }}
+          />
+          ③ 启用视觉精修（默认关闭）
+        </label>
+        <div style={{ fontSize: '11px', color: '#999', marginTop: '6px', marginLeft: '24px' }}>
+          开启后，出图会用多模态 LLM 回扫，把高亮框收紧到元素实际位置；失败自动回退到位置区域。省钱省时建议保持关闭。
+        </div>
+      </div>
+
+      {settings.visionEnabled && (
+        <EndpointFields
+          which="vision"
+          title="③ 视觉精修 (Vision Refinement)"
+          hint="可选。留空则复用上方场景导演的 BASE_URL / API_KEY。"
+          placeholderModel="gpt-4o"
+        />
+      )}
+
+      <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
+        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={handleSave}>保存配置</button>
+        <button style={{ ...BUTTON_STYLE, backgroundColor: '#666' }} onClick={handleClear}>清空</button>
       </div>
     </div>
   );

@@ -233,3 +233,194 @@ alter table public.scene_assets add column if not exists scene_design jsonb defa
 - 场景连贯性：肉眼判断 N 个词是否"有主题地"融在一张图里（而非机械拼贴）。
 - zone 与元素的对应度：高亮框是否大致落在对应元素上（偏离一点可接受，明显错位才需考虑开 ③）。
 - 延迟：默认路径 = 场景导演 +3–8s + 生图；首局总时长 ~35–95s（缓存命中后 0）。开启 ③ 再 +3–8s。
+
+---
+
+## 9. 实施状态（2026-06-14 完成，TDD）
+
+> §3 的刷新流水线已按测试驱动方式落地。纯逻辑有单测覆盖（34 项全过），`vite build` 通过，我的新增/改动文件 `tsc --noEmit` 零错误。
+
+### 9.1 已落地清单
+
+| 改动 | 文件 | 说明 |
+|---|---|---|
+| 纯逻辑（§4/§5） | [supabase/functions/scene-generate/sceneDesign.ts](../supabase/functions/scene-generate/sceneDesign.ts) | zone 表、`zoneToBbox`、`normalizeZone`、`parseSceneDesign`、`deriveRegionsFromElements`、导演 system/user prompt 构造。**零依赖**，Deno 边缘函数与 `node --test` 共用同一文件。 |
+| 单元测试 | [__tests__/scene/sceneDesign.test.ts](../__tests__/scene/sceneDesign.test.ts) | 28 项：zone 表精确性、JSON 解析容错（fenced/嵌散文/垃圾）、zone→bbox 派生、缺 zone 回退 center、确定性、prompt 构造。 |
+| LLM 设置模块 | [services/sceneGameSettings.ts](../services/sceneGameSettings.ts) + 测试 | 控制面板存储的 ①导演 / ③视觉 配置 + `visionEnabled`；`toRequestPayload()` 生成 edge 请求体 `llmConfig`。6 项单测。 |
+| Edge 函数重构 | [supabase/functions/scene-generate/index.ts](../supabase/functions/scene-generate/index.ts) | `designScene`(①) → `tryGenerateByProvider`(② 用 structuredPrompt) → `deriveRegionsFromElements`(默认 zone 派生) → 可选 `detectRegions`(③)。① 失败回退 `buildFusionPrompt`。接收 `body.llmConfig`（面板配置优先 → Edge Secret 兜底）。从 JWT 解析 `user_id`，按用户缓存。`scene_design JSONB` 持久化。 |
+| SQL 迁移 | [database/migrations/20260614_add_scene_game.sql](../database/migrations/20260614_add_scene_game.sql) | `scene_assets` 改为 **按用户**（`user_id NOT NULL`、唯一索引 `(user_id, word_set_hash, day_index, language)`、owner-read RLS）+ `scene_design JSONB`。基础迁移尚未应用到生产，已就地修正为最终 schema。 |
+| 控制面板 | [components/AdminConsole.tsx](../components/AdminConsole.tsx) | 新增「场景游戏」标签：① 场景导演 + ③ 视觉精修 的 BASE_URL / API_KEY / MODEL + 视觉开关。 |
+| 客户端接线 | [services/sceneGame.ts](../services/sceneGame.ts) | `requestSceneGeneration` / `requestSceneRegeneration` 注入 `llmConfig`。 |
+| 测试脚本 | `package.json` | `npm run test:scene` → `node --test __tests__/scene/*.test.ts`（零依赖，Node 类型擦除）。 |
+
+### 9.2 决策落定（覆盖原待定项）
+
+- **§7.1 缓存粒度 → 按用户**（已实施）：`scene_assets.user_id` + owner-read RLS；edge 从 JWT 取 `user_id`；存储路径改为 `scenes/{user_id}/{day}/{hash}.webp`。
+- **LLM 配置 → 控制面板优先**（覆盖 §4.4/§8.1 的纯 env 方案）：用户在「~」面板「场景游戏」标签填的 BASE_URL/API_KEY/MODEL 随请求体发给 edge 函数；留空则回退 Edge Secret（`SCENE_DESIGN_*` / `SCENE_VISION_*`）再回退默认（导演/视觉均 `gpt-4o`，复用 `PRIMARY_IMAGE_GEN_*`）。
+- **§7.2 导演模型**：默认 `gpt-4o`，可在面板或 `SCENE_DESIGN_MODEL` 覆盖。
+- **③ 视觉精修默认关闭**；面板有开关，或 `SCENE_VISION_ENABLED=true`。
+
+### 9.3 配置解析优先级（edge 函数内）
+
+```text
+场景导演 baseUrl/apiKey/model : body.llmConfig.design > SCENE_DESIGN_* > PRIMARY_IMAGE_GEN_*(baseUrl/apiKey) / gpt-4o(model)
+视觉开关                     : body.llmConfig.visionEnabled > SCENE_VISION_ENABLED==='true'
+视觉 baseUrl/apiKey/model     : body.llmConfig.vision > SCENE_VISION_* > (回退导演配置) > PRIMARY_IMAGE_GEN_* / gpt-4o
+```
+
+### 9.4 部署步骤（上线前必做）
+
+1. 应用迁移（基础迁移尚未应用）：Dashboard SQL Editor 跑 [20260614_add_scene_game.sql](../database/migrations/20260614_add_scene_game.sql)，或 `supabase db push`。
+2. 部署 edge 函数：`supabase functions deploy scene-generate`（会把同目录 `sceneDesign.ts` 一起打包）。
+3. （可选）配置 Edge Secret 兜底：`supabase secrets set SCENE_DESIGN_BASE_URL=... SCENE_DESIGN_API_KEY=...`；或仅依赖面板配置。
+4. 端到端按 §8.2 验证（注意：③ 默认关闭，区域来自 zone 表）。
+
+### 9.5 验证记录
+
+- 单测：`npm run test:scene` → 34/34 通过。
+- 构建：`npx vite build` → 通过（exit 0）。
+- 类型：`npx tsc --noEmit` → 新增/改动文件零错误（仓库存在 1 个 **既有** 遗留测试 `services/__tests__/offlineSyncQueue.test.ts` 的语法错误，与本功能无关）。
+
+### 9.6 控制台配置 vs Supabase Secret 的架构关系
+
+> ⚠️ **本节所述「前端 `llmConfig` 随请求体回传」方案存在安全缺陷，已作废，由 §10 取代。** 保留本节仅作历史/对比说明。新 session 请直接按 §10 实施。
+
+> 本项目的 AI 配置有**两条互不相干的执行路径**。理解这点才能正确配置「场景游戏」。**当前架构经验证稳定，本节为说明，不改动架构。**
+
+**路径 A — 客户端执行（浏览器直接调 LLM）**
+
+- 功能：TTS 朗读（[App.tsx](../App.tsx) `generateSpeech`）、拍照识词（`extractWordFromImage`）、短语/搭配/释义校验。
+- 密钥来源：控制台「普通文本」等 BYOK 标签（`AISettings` localStorage）→ 未填则回退前端打包的 `VITE_*` 环境变量。
+- Supabase 边缘函数与 Secret **完全不参与**。
+
+**路径 B — 服务端执行（边缘函数调 LLM，用 Supabase Secret）**
+
+- 功能：单词配图 `image-generate`、拼词校验 `spelling-check`、发音、词典查询、**以及本次的 `scene-generate`**。
+- 密钥来源：Supabase Edge Secret（`PRIMARY_IMAGE_GEN_*`、`SCENE_DESIGN_*` 等），边缘函数用 `Deno.env.get()` 读取。
+- 浏览器只 `invoke` 边缘函数，**永远看不到这些 Secret**。
+
+**结论：Supabase Secret 自己就能独立工作。** 所有边缘函数功能即使控制台一个字都不填也完全正常；控制台配置是**可选的"覆盖 / 自带密钥"**，不是必需拼图，两者无需同时填。
+
+**本次「场景游戏」是混合特例：**
+
+- ① 导演 + ③ 视觉这两个 LLM 跑在服务端边缘函数里 → 本质是**路径 B**（靠 Supabase Secret）。
+- 额外加了一条：浏览器把控制台填的 key 放进请求体 `llmConfig` 传给边缘函数；边缘函数**有就用控制台的，没有就回退自己的 Secret**。即控制台配置与 Secret 是"二选一"（控制台优先，Secret 兜底），填其一即可。
+- ⚠️ **② 渲染出图永远走 `image-generate` 的 provider 链（`PRIMARY_IMAGE_GEN_*` 等 Supabase Secret），控制台无法覆盖。** 即使「场景游戏」面板填好了导演 key，若 Supabase 缺图片生成 Secret，仍出不了图。
+
+**最小可用配置：**
+
+- 完全靠服务端：Supabase 设好 `PRIMARY_IMAGE_GEN_*`（②出图必需）+ `SCENE_DESIGN_*`（①导演，或改在面板填）。
+- 用户自带导演 key：面板「场景游戏」填导演配置，但 `PRIMARY_IMAGE_GEN_*` Secret **仍必须存在**。
+
+### 9.7 控制台标签清理（仅 UI，架构不变）
+
+经代码核查（`resolveConfig` 调用点 + 各 `aiService.*` 消费方），控制台原四个配置标签的实际归属：
+
+| 原标签 | `AITask` | 运行时消费方 | 处置 |
+|---|---|---|---|
+| 普通文本 | `TEXT` | 客户端 TTS / 短语 / 搭配 / 释义 | **保留** |
+| 场景游戏 | 本次新增 | `scene-generate` 边缘函数（①导演+③视觉） | **保留（本次新增）** |
+| 图像生成 | `IMAGE_GEN` | ⚠️ 运行时**从未被读取**（配图走 `image-generate` 边缘函数 + Secret） | **移除标签** |
+| 图像识别 | `VISION` | 客户端拍照识词 `extractWordFromImage` | **移除标签**（与场景游戏无关，避免误配） |
+
+本次仅删除了「图像生成」「图像识别」两个**标签入口**（[AdminConsole.tsx](../components/AdminConsole.tsx)）。底层 `AISettings` / `resolveConfig` / `IMAGE_GEN` / `VISION` 代码与 localStorage 键**全部保留**，确保既有客户端 AI 功能（拍照识词等）行为零变化。
+
+> 说明：「图像生成」标签移除的依据——`resolveConfig('IMAGE_GEN')` 在全代码库无任何运行时调用方；单词配图统一由 `image-generate` 边缘函数 + Supabase `PRIMARY_IMAGE_GEN_*` Secret 完成，与该标签写入的 localStorage 无关。
+
+---
+
+## 10. 安全重构规格（供下一个 session 执行）
+
+> 本节是**自包含的实施规格**。新 session 读到这里即可独立开工，无需翻阅历史对话。
+> **最高约束：绝对不得破坏当前已部署的功能，也不得改动已有数据库结构。** 详见 §10.4。
+> **当前线上事实（2026-06-15 核查）**：`scene-generate` 边缘函数**尚未部署**；`scene_assets` / `scene_game_rounds` 表**尚未创建**。因此本特性整体处于"未上线"状态——重构它不会影响任何正在运行的功能。
+
+### 10.1 为什么要重构（当前 `llmConfig` 方案的缺陷）
+
+当前仓库实现（§9）把 ①导演/③视觉 的 `BASE_URL/API_KEY/MODEL` 存在前端 localStorage，再随请求体 `llmConfig` 明文回传给边缘函数。问题：
+
+- **毫无安全收益**：key 明文存在浏览器 localStorage（DevTools / XSS 直接可见），又明文随 body 发出——等于公开。
+- **本末倒置**：①②③ 三步都跑在边缘函数（服务端）里，服务端本可用 Supabase Secret（`Deno.env.get`，前端永远看不到）持有密钥。把 key 拽到前端再传回服务端是纯粹的多余且引入漏洞。
+- **缺连通性自检**：用户配好后无法验证"端点通不通、模型能不能服务"。
+
+### 10.2 目标架构
+
+- **密钥只在服务端**：①导演 / ③视觉 的 `BASE_URL/API_KEY/MODEL` 一律放 **Supabase Edge Secret**，边缘函数用 `Deno.env.get()` 读取。前端**永不接触 key**。
+- **前端控制台「场景游戏」标签只保留非敏感控件**：仅一个「启用视觉精修」布尔开关（可留 localStorage，无安全敏感性）。删除所有 `BASE_URL/API_KEY/MODEL` 输入框。
+- **不再回传 `llmConfig`**：`requestSceneGeneration` / `requestSceneRegeneration` 的 invoke body 移除 `llmConfig`。
+- **新增「测试连接」按钮**：见 §10.5，验证服务端 Secret 配置是否可用。
+
+### 10.3 需要的 Supabase Secret（在 Supabase 后台设置，前端不可见）
+
+```text
+# ① 场景导演（文本 LLM，例如 minimax 的文本模型）
+SCENE_DESIGN_BASE_URL    # OpenAI 兼容网关，如 https://.../v1
+SCENE_DESIGN_API_KEY     # 导演模型 key
+SCENE_DESIGN_MODEL       # 如 minimax-m3（或 gpt-4o）
+
+# ③ 视觉精修（多模态 LLM，可选；留空则回退导演配置）
+SCENE_VISION_BASE_URL / SCENE_VISION_API_KEY / SCENE_VISION_MODEL
+# 是否启用 ③：默认 OFF；或设 SCENE_VISION_ENABLED=true 全局开启
+
+# ② 出图（图片模型）—— 复用已部署 image-generate 的同一组 Secret，无需新增
+PRIMARY_IMAGE_GEN_BASE_URL / PRIMARY_IMAGE_GEN_API_KEY / PRIMARY_IMAGE_GEN_MODEL
+```
+
+设置命令（示例）：
+
+```bash
+supabase secrets set SCENE_DESIGN_BASE_URL=https://gw.example.com/v1 SCENE_DESIGN_API_KEY=sk-xxx SCENE_DESIGN_MODEL=minimax-m3
+```
+
+### 10.4 硬约束（不可破坏清单）
+
+重构必须**外科手术式**，只动场景融合相关文件。**严禁**触碰以下任一项：
+
+1. **已部署的其它边缘函数**：`image-generate`、`pronunciation`、`pronunciation-rebuild`、`spelling-check`、`dictionary-lookup`、`lexeme-meaning-backfill`、`admin-console`、`update-leaderboard`、`check_user_exists`、`watcha-oauth-callback`、`image-migrate` —— 一行都不改。
+2. **已有数据库结构**：`words`、`sessions`、`daily_stats`、`daily_test_records`、`leaderboards`、`puzzle_game_rounds`、`image_assets`、`pronunciation_assets`、`lexeme_*`、`user_*` 等所有**既有**表/索引/RLS/函数。场景迁移 `20260614_add_scene_game.sql` 只 **CREATE** 新表（`scene_assets` / `scene_game_rounds`）+ 2 个新 RPC，**纯增量**，不得 ALTER 任何既有表。
+3. **既有 AI 服务架构**：[services/ai/](../services/ai/) 全家桶（`AISettings` / `resolveConfig` / `TEXT`/`VISION` BYOK / TTS / 拍照识词）、[imageGenerationEdge.ts](../services/imageGenerationEdge.ts)、[imageGenerationTask.ts](../services/imageGenerationTask.ts) —— 行为零变化。
+4. **纯逻辑模块** [sceneDesign.ts](../supabase/functions/scene-generate/sceneDesign.ts) 及其单测 [sceneDesign.test.ts](../__tests__/scene/sceneDesign.test.ts)：zone 表 / `parseSceneDesign` / `deriveRegionsFromElements` / prompt 构造**保持不变**（这层逻辑与密钥来源无关，无需改动）。
+
+允许改动（且仅限）的文件：
+
+- [supabase/functions/scene-generate/index.ts](../supabase/functions/scene-generate/index.ts) — 去掉 `body.llmConfig` 解析，改纯读 Secret；新增 `probe` 分支。
+- [services/sceneGameSettings.ts](../services/sceneGameSettings.ts) — 精简为"仅 `visionEnabled` 开关"（删 `design`/`vision` 端点字段与 `toRequestPayload`）。
+- [services/sceneGame.ts](../services/sceneGame.ts) — invoke body 去掉 `llmConfig`。
+- [components/AdminConsole.tsx](../components/AdminConsole.tsx) — 「场景游戏」标签去掉 key/baseUrl/model 输入，保留视觉开关 + 新增「测试连接」按钮。
+- [__tests__/scene/sceneGameSettings.test.ts](../__tests__/scene/sceneGameSettings.test.ts) — 同步精简（只测开关读写）。
+
+### 10.5 连通性自检（probe）设计
+
+- **边缘函数**：在 handler 开头加分支——当 `body.action === 'probe'` 时，不生成图片、不读写 `scene_assets`，仅用服务端 `SCENE_DESIGN_*` Secret 向导演模型发一次**最小请求**（如 `messages:[{role:'user',content:'ping'}]`、`max_tokens:1`），计时并捕获错误，返回：
+
+  ```json
+  { "ok": true, "probe": "design", "model": "minimax-m3", "latencyMs": 612, "baseUrl": "…(脱敏)" }
+  ```
+
+  失败时 `{ "ok": false, "error": "...", "status": 502 }`。probe 仍需 JWT 鉴权（复用 `resolveUserId`），但不依赖任何表。
+- **前端**：「场景游戏」标签放「测试导演连接」按钮 → `supabase.functions.invoke('scene-generate', { body:{ action:'probe' } })` → 绿/红显示 `model + 延迟` 或错误。可顺带提示"若失败请检查 Supabase Secret `SCENE_DESIGN_*`"。
+
+### 10.6 仓库当前待回退状态（重构起点）
+
+当前工作区已包含作废的 `llmConfig` 实现，新 session 需先回退再按 §10.2 落地：
+
+- [services/sceneGameSettings.ts](../services/sceneGameSettings.ts) 含 `design`/`vision` 端点 + `toRequestPayload()` → **精简**。
+- [services/sceneGame.ts](../services/sceneGame.ts) 两处 invoke body 含 `llmConfig: buildLlmConfigPayload()` → **删除**。
+- [components/AdminConsole.tsx](../components/AdminConsole.tsx) `SceneGameSettingsPanel` 含 3×key 输入 → **改为开关 + 测试按钮**。
+- [supabase/functions/scene-generate/index.ts](../supabase/functions/scene-generate/index.ts) `resolveDesignConfig/resolveVisionConfig` 读 `callerLlm` → **改为纯 `Deno.env.get`**；handler 去掉 `const callerLlm = body.llmConfig`。
+
+### 10.7 验证（重构后）
+
+1. `npm run test:scene` → 全绿（sceneDesign 逻辑不变；sceneGameSettings 测试同步精简后仍全绿）。
+2. `npx tsc --noEmit`（除既有遗留 `offlineSyncQueue.test.ts` 外零错误）、`npx vite build` 通过。
+3. grep 确认 `llmConfig` / `toRequestPayload` 在前端代码中**已无残留**。
+4. 设好 Secret → 部署 `scene-generate` → 控制台「测试导演连接」返回 `ok:true`。
+5. 端到端：LOAD SCENE → 边缘函数日志为"导演(服务端 Secret)→ 出图 → zone 区域"，前端不再传任何 key。
+
+### 10.8 部署顺序（重构完成后，上线）
+
+1. 应用迁移 [20260614_add_scene_game.sql](../database/migrations/20260614_add_scene_game.sql)（仅 CREATE 新表 + 2 RPC，不动既有结构）。
+2. 设置 Secret（§10.3）。
+3. `supabase functions deploy scene-generate`。
+4. 控制台「测试连接」自检 → LOAD SCENE 端到端验证。
+

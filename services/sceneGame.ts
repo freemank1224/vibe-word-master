@@ -1,6 +1,7 @@
 import { adaptiveWordSelector } from './adaptiveWordSelector';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { getShanghaiDateString } from '../utils/timezone';
+import { SceneGameSettings } from './sceneGameSettings';
 import {
   InputSession,
   PuzzleGameSelectionMode,
@@ -276,6 +277,13 @@ const normalizeAsset = (raw: any): SceneAsset => ({
   createdAt: String(raw?.created_at || raw?.createdAt || ''),
 });
 
+/**
+ * Read the Admin Console ("~" panel) scene-LLM config and shape it into the
+ * `llmConfig` body field the edge function consumes. The edge function uses
+ * caller config first, then its own secrets/defaults.
+ */
+const buildLlmConfigPayload = () => SceneGameSettings.toRequestPayload();
+
 export const requestSceneGeneration = async (
   words: SceneWordMeta[],
   dayIndex: number,
@@ -287,7 +295,7 @@ export const requestSceneGeneration = async (
   }
 
   const invokePromise = supabase.functions.invoke('scene-generate', {
-    body: { words, dayIndex, language, force: false },
+    body: { words, dayIndex, language, force: false, llmConfig: buildLlmConfigPayload() },
   });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -318,7 +326,7 @@ export const requestSceneRegeneration = async (
     throw new Error('Supabase is not configured for scene generation');
   }
   const { data, error } = await Promise.race([
-    supabase.functions.invoke('scene-generate', { body: { words, dayIndex, language, force: true } }),
+    supabase.functions.invoke('scene-generate', { body: { words, dayIndex, language, force: true, llmConfig: buildLlmConfigPayload() } }),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error('scene-generate timeout')), 150000)),
   ]);
   if (error) throw new Error(error.message || 'scene-generate invoke failed');
