@@ -456,7 +456,7 @@ export const modifySession = async (
     if (removedWordIds.length > 0) {
         const { error: delError } = await supabase
             .from('words')
-            .update({ deleted: true })
+            .update({ deleted: true, deleted_at: new Date().toISOString() })
             .in('id', removedWordIds);
         
         if (delError) {
@@ -1093,7 +1093,7 @@ export const deleteSessions = async (
   console.log('[deleteSessions] Step 1: Soft deleting words...');
   const { error: wordsError, data: wordsData, count: wordsCount } = await supabase
       .from('words')
-      .update({ deleted: true })
+      .update({ deleted: true, deleted_at: new Date().toISOString() })
       .in('session_id', sessionIds)
       .eq('user_id', userId)
       .select();
@@ -1207,7 +1207,7 @@ export const deleteWordsByIds = async (
 
   const { error } = await supabase
     .from('words')
-    .update({ deleted: true })
+    .update({ deleted: true, deleted_at: new Date().toISOString() })
     .in('id', wordIds)
     .eq('user_id', userId);
 
