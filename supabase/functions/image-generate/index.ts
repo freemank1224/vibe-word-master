@@ -547,6 +547,11 @@ serve(async (req) => {
     const prompt = promptOverride || buildPrompt(word);
     const failures: ProviderAttemptFailure[] = [];
 
+    // clientPersist=true (default): edge only returns the raw PNG dataUrl and the
+    // client (browser) converts to WebP via Canvas and uploads. This is reliable.
+    // clientPersist=false: legacy path, edge converts+uploads (unreliable WebP).
+    const clientPersist = body?.clientPersist !== false;
+
     const providerCount = providers.length;
     for (let i = 0; i < providerCount; i++) {
       const provider = providers[i];
@@ -557,7 +562,28 @@ serve(async (req) => {
         continue;
       }
 
-      // ---- NEW: Persist to shared storage and link words ----
+      // Client-managed persistence: return raw PNG dataUrl, client converts to
+      // WebP (reliable Canvas API) and uploads to storage + writes image_assets.
+      if (clientPersist) {
+        return new Response(JSON.stringify({
+          ok: true,
+          word,
+          language,
+          providerId: result.providerId,
+          model: result.model,
+          attemptedUrl: result.attemptedUrl,
+          dataUrl: result.dataUrl,
+          publicUrl: null,
+          assetId: null,
+          source: 'generated',
+          persistMode: 'client',
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Legacy server-side persistence (kept as fallback).
       const persisted = await persistAndLink(
         normalizedWord,
         word,
@@ -575,10 +601,10 @@ serve(async (req) => {
         model: result.model,
         attemptedUrl: result.attemptedUrl,
         dataUrl: result.dataUrl,
-        // New fields for shared storage
         publicUrl: persisted?.publicUrl || null,
         assetId: persisted?.assetId || null,
         source: 'generated',
+        persistMode: 'server',
         persistError: persisted ? null : 'Failed to persist to shared storage',
       }), {
         status: 200,

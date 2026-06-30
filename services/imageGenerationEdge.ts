@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { processAndUploadImage } from './imageProcessAndUpload';
 
 export type ImageGenerationProviderId = 'letsmakesail' | 'newapi' | 'tokendance' | 'edge' | 'cache';
 
@@ -17,6 +18,7 @@ export type ImageGenerationEdgeResult = {
   publicUrl?: string | null;
   assetId?: string | null;
   source?: 'cache-hit' | 'generated';
+  persistMode?: 'client' | 'server';
 };
 
 const IMAGE_GENERATION_TIMEOUT_MS = 120_000; // 2 minutes - allow primary + backup timeout
@@ -46,6 +48,7 @@ export const requestImageGenerationViaEdge = async (
       language: request.language || 'en',
       prompt: request.promptOverride,
       force: request.force || false,
+      clientPersist: true,
     },
   });
 
@@ -76,6 +79,41 @@ export const requestImageGenerationViaEdge = async (
     throw new Error('image-generate returned empty dataUrl');
   }
 
+  // Client-managed persistence: convert to WebP in-browser and upload.
+  // This is the reliable path (edge-function WebP encoding is unreliable).
+  if (data?.persistMode === 'client') {
+    try {
+      const uploaded = await processAndUploadImage({
+        dataUrl: data.dataUrl,
+        displayWord: word,
+        language: request.language || 'en',
+        model: typeof data?.model === 'string' ? data.model : null,
+      });
+      return {
+        dataUrl: data.dataUrl,
+        providerId,
+        model: typeof data?.model === 'string' ? data.model : null,
+        publicUrl: uploaded.publicUrl,
+        assetId: uploaded.assetId,
+        source: 'generated',
+        persistMode: 'client',
+      };
+    } catch (e) {
+      // Fallback: keep dataUrl for display, no publicUrl persisted yet.
+      console.warn('[imageGenerationEdge] client persist failed:', e);
+      return {
+        dataUrl: data.dataUrl,
+        providerId,
+        model: typeof data?.model === 'string' ? data.model : null,
+        publicUrl: null,
+        assetId: null,
+        source: 'generated',
+        persistMode: 'client',
+      };
+    }
+  }
+
+  // Legacy server-managed persistence.
   return {
     dataUrl: data.dataUrl,
     providerId,
@@ -83,6 +121,7 @@ export const requestImageGenerationViaEdge = async (
     publicUrl: data.publicUrl || null,
     assetId: data.assetId || null,
     source: 'generated',
+    persistMode: 'server',
   };
 };
 
