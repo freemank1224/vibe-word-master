@@ -13,19 +13,20 @@ import {
 // ================================================================
 // scene-generate edge function — refreshed pipeline (design doc v2 §3)
 //
-// ① Scene director (strong text LLM, gpt-4o)  → core; replaces old template
-//    conceives ONE coherent scene holding all N words + the day monster,
-//    and assigns each word a positionZone. Returns a structuredPrompt.
-// ② Render (image model, gpt-image-2)          → uses ①' structuredPrompt
-// ③ Region refinement (multimodal LLM, gpt-4o) → OPTIONAL, default OFF
+// ① Scene director (strong text LLM) → core; conceives ONE coherent scene
+//    holding all N words + the day monster, assigns each a positionZone,
+//    returns a structuredPrompt. Config: SCENE_DESIGN_* secrets only.
+// ② Render (image model)              → uses ①' structuredPrompt. Config:
+//    PRIMARY_IMAGE_GEN_* secrets (reuses the image-generate provider chain).
+// ③ Region refinement (multimodal LLM) → OPTIONAL, default OFF. Config:
+//    SCENE_VISION_* secrets (falls back to ①'s design endpoint/key).
 //
-// By default, regions are derived directly from ①'s positionZones via the
-// §5 zone→bbox table (NO extra model call). Vision ③ runs only when
-// enabled, and tightens boxes per word; failures fall back to the zone.
+// ① and ③ are server-side only (Supabase Edge Secrets). The front end never
+// sees or sends these keys. Vision ③ runs only when enabled and tightens
+// boxes per word; failures fall back to the zone-derived regions.
 //
-// LLM config (scene director + vision) may be supplied by the caller in
-// request body `llmConfig` (the app's Admin Console / "~" panel stores it
-// client-side). Anything missing falls back to edge secrets / defaults.
+// A `probe` action lets the Admin Console verify the SCENE_DESIGN_* secret
+// is wired correctly without generating any image or touching scene_assets.
 //
 // Cache is per-user (scene_assets.user_id) keyed by
 // (user_id, word_set_hash, day_index, language).
@@ -157,7 +158,7 @@ const tryGenerateByProvider = async (
   let lastFailure: ProviderAttemptFailure | null = null;
   for (const url of urls) {
     try {
-      const timeoutMs = isPrimary ? 90000 : 60000;
+      const timeoutMs = isPrimary ? 115000 : 80000;
       const requestBody = JSON.stringify({ model: provider.model, prompt, n: 1, size: '1024x1024', response_format: 'b64_json' });
       console.log(`[scene-generate] image ${provider.id} @ ${url} timeout=${timeoutMs}ms`);
       const response = await withTimeout(
@@ -188,7 +189,7 @@ const tryGenerateByProvider = async (
       lastFailure = { providerId: provider.id, url, message: 'response has no b64_json/url' };
     } catch (error) {
       const isTimeout = error instanceof Error && error.message.includes('timeout');
-      lastFailure = { providerId: provider.id, url, message: isTimeout ? `Request timeout after ${isPrimary ? '90s' : '60s'}` : (error instanceof Error ? error.message : String(error)) };
+      lastFailure = { providerId: provider.id, url, message: isTimeout ? `Request timeout after ${isPrimary ? '115s' : '80s'}` : (error instanceof Error ? error.message : String(error)) };
     }
   }
   return { error: lastFailure || { providerId: provider.id, url: provider.baseUrl, message: 'generation failed' } };
@@ -278,22 +279,25 @@ const designScene = async (
   const systemPrompt = buildSceneDirectorSystemPrompt();
   const userPayload = buildSceneDirectorUserPayload(words, dayIndex, mascot);
 
-  const call = async (useJsonMode: boolean, insistOnlyJson: boolean): Promise<string> => {
+  const call = async (useJsonMode: boolean): Promise<string> => {
     const url = chatCompletionsUrl(cfg.baseUrl);
     if (!url) return '';
-    const userContent = insistOnlyJson
-      ? JSON.stringify(userPayload) + '\n\nOutput ONLY a JSON object — no markdown, no prose.'
-      : JSON.stringify(userPayload);
-    const body = {
+    const userContent = JSON.stringify(userPayload) +
+      '\n\nRespond with a SINGLE JSON object only. No markdown fences, no prose before/after. ' +
+      'The object MUST contain keys: sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array).';
+    const body: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: 1200,
+      max_tokens: 1500,
       temperature: 0.7,
-      ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ],
     };
+    // Some OpenAI-compatible gateways truncate the stream / return ~1 token when
+    // response_format is forwarded to non-OpenAI models. Default OFF; only enable
+    // when the model is known to support it (opt-in via SCENE_DESIGN_JSON_MODE=true).
+    if (useJsonMode) body['response_format'] = { type: 'json_object' };
     try {
       const response = await withTimeout(
         fetch(url, {
@@ -301,30 +305,40 @@ const designScene = async (
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
           body: JSON.stringify(body),
         }),
-        45000,
-        'design timeout after 45s',
+        55000,
+        'design timeout after 55s',
       );
       const data = await parseResponseJson(response);
       if (!response.ok) {
         console.warn(`[scene-generate] design http ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}`);
         return '';
       }
-      return typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+      const content = typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+      console.log(`[scene-generate] design raw len=${content.length} head=${JSON.stringify(content.substring(0, 80))}`);
+      return content;
     } catch (err) {
       console.warn(`[scene-generate] design error: ${err}`);
       return '';
     }
   };
 
-  // §4.4: try json_object first; on empty/unparseable, retry once without json_object + an ONLY-JSON nudge.
-  let content = await call(true, false);
-  let design = content ? parseSceneDesign(content, words) : null;
-  if (!design) {
-    console.log('[scene-generate] design retry (no json_object + ONLY-JSON nudge)');
-    content = await call(false, true);
-    design = content ? parseSceneDesign(content, words) : null;
+  // Strategy: ask for plain-text JSON first (works for any instruction-following
+  // model, avoids gateway response_format truncation). Only retry WITH json_object
+  // if the model clearly needs it AND opted in. Short/garbage output short-circuits
+  // so we never burn the full timeout budget on a broken response.
+  const wantsJsonMode = (Deno.env.get('SCENE_DESIGN_JSON_MODE') || '').toLowerCase() === 'true';
+  let content = await call(wantsJsonMode);
+  let design = content && content.trim().length >= 40 ? parseSceneDesign(content, words) : null;
+  if (!design && wantsJsonMode) {
+    // opted-in json mode failed -> one retry without it.
+    console.log('[scene-generate] design retry (json_mode -> plain JSON)');
+    content = await call(false);
+    design = content && content.trim().length >= 40 ? parseSceneDesign(content, words) : null;
   }
-  if (!design) return null;
+  if (!design) {
+    console.warn('[scene-generate] design failed -> buildFusionPrompt fallback');
+    return null;
+  }
 
   console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements zoned, title="${(design.sceneTitle || '').substring(0, 40)}"`);
   return design;
@@ -561,32 +575,31 @@ const resolveUserId = async (req: Request): Promise<string | null> => {
 };
 
 // ----------------------------------------------------------------
-// LLM config resolution: caller-supplied (body.llmConfig) → secrets → defaults
+// LLM config resolution — server-side only (Supabase Edge Secrets).
+// ① director reads SCENE_DESIGN_*; ③ vision reads SCENE_VISION_* and falls
+// back to the director's endpoint/key (but NOT to PRIMARY_IMAGE_GEN_* — that
+// chain is for ② image rendering only).
 // ----------------------------------------------------------------
 interface LLMConfig { baseUrl: string; apiKey: string; model: string; }
-interface CallerLLMConfig { design?: Partial<LLMConfig>; vision?: Partial<LLMConfig>; visionEnabled?: boolean; }
 
-const pickStr = (...vals: (string | undefined | null)[]): string => {
-  for (const v of vals) {
-    const s = typeof v === 'string' ? v.trim() : '';
-    if (s) return s;
-  }
-  return '';
+const envStr = (name: string): string => {
+  const v = Deno.env.get(name);
+  return typeof v === 'string' ? v.trim() : '';
 };
 
-const resolveDesignConfig = (caller: CallerLLMConfig): LLMConfig => ({
-  baseUrl: pickStr(caller.design?.baseUrl, Deno.env.get('SCENE_DESIGN_BASE_URL'), Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL')),
-  apiKey: pickStr(caller.design?.apiKey, Deno.env.get('SCENE_DESIGN_API_KEY'), Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY')),
-  model: pickStr(caller.design?.model, Deno.env.get('SCENE_DESIGN_MODEL')) || 'gpt-4o',
+const resolveDesignConfig = (): LLMConfig => ({
+  baseUrl: envStr('SCENE_DESIGN_BASE_URL'),
+  apiKey: envStr('SCENE_DESIGN_API_KEY'),
+  model: envStr('SCENE_DESIGN_MODEL') || 'gpt-4o',
 });
 
-const resolveVisionEnabled = (caller: CallerLLMConfig): boolean =>
-  caller.visionEnabled === true || Deno.env.get('SCENE_VISION_ENABLED') === 'true';
+const resolveVisionEnabled = (bodyVisionEnabled: boolean): boolean =>
+  bodyVisionEnabled === true || Deno.env.get('SCENE_VISION_ENABLED') === 'true';
 
-const resolveVisionConfig = (caller: CallerLLMConfig, designCfg: LLMConfig): LLMConfig => ({
-  baseUrl: pickStr(caller.vision?.baseUrl, Deno.env.get('SCENE_VISION_BASE_URL'), designCfg.baseUrl, Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL')),
-  apiKey: pickStr(caller.vision?.apiKey, Deno.env.get('SCENE_VISION_API_KEY'), designCfg.apiKey, Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY')),
-  model: pickStr(caller.vision?.model, Deno.env.get('SCENE_VISION_MODEL')) || 'gpt-4o',
+const resolveVisionConfig = (designCfg: LLMConfig): LLMConfig => ({
+  baseUrl: envStr('SCENE_VISION_BASE_URL') || designCfg.baseUrl,
+  apiKey: envStr('SCENE_VISION_API_KEY') || designCfg.apiKey,
+  model: envStr('SCENE_VISION_MODEL') || 'gpt-4o',
 });
 
 // ----------------------------------------------------------------
@@ -601,11 +614,49 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const action = typeof body?.action === 'string' ? body.action.trim() : '';
     const wordsRaw = Array.isArray(body?.words) ? body.words : [];
     const dayIndex = Number(body?.dayIndex);
     const language = typeof body?.language === 'string' ? body.language.trim() : 'en';
     const force = body?.force === true || body?.force === '1';
-    const callerLlm: CallerLLMConfig = body?.llmConfig && typeof body.llmConfig === 'object' ? body.llmConfig : {};
+    // ③ vision on/off may be toggled from the Admin Console (non-sensitive).
+    const visionEnabledBody = body?.visionEnabled === true;
+
+    // ---- probe: verify SCENE_DESIGN_* secret without any image/DB work ----
+    if (action === 'probe') {
+      const userId = await resolveUserId(req);
+      if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
+      const cfg = resolveDesignConfig();
+      if (!cfg.baseUrl || !cfg.apiKey) {
+        return json({ ok: false, error: 'SCENE_DESIGN_* secret not configured (BASE_URL/API_KEY missing)' }, 502);
+      }
+      const url = chatCompletionsUrl(cfg.baseUrl);
+      const startedAt = Date.now();
+      try {
+        const response = await withTimeout(
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
+            body: JSON.stringify({
+              model: cfg.model,
+              max_tokens: 1,
+              messages: [{ role: 'user', content: 'ping' }],
+            }),
+          }),
+          20000,
+          'probe timeout after 20s',
+        );
+        const latencyMs = Date.now() - startedAt;
+        if (!response.ok) {
+          const data = await parseResponseJson(response);
+          return json({ ok: false, error: data?.error?.message || `director HTTP ${response.status}`, status: 502 }, 502);
+        }
+        const masked = cfg.baseUrl.length > 24 ? `${cfg.baseUrl.slice(0, 12)}…${cfg.baseUrl.slice(-8)}` : cfg.baseUrl;
+        return json({ ok: true, probe: 'design', model: cfg.model, latencyMs, baseUrl: masked });
+      } catch (err) {
+        return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502 }, 502);
+      }
+    }
 
     if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) return json({ error: 'Invalid dayIndex (0-6)' }, 400);
 
@@ -663,7 +714,7 @@ serve(async (req) => {
     }
 
     // ① Scene director
-    const designCfg = resolveDesignConfig(callerLlm);
+    const designCfg = resolveDesignConfig();
     const design = await designScene(words, dayIndex, designCfg);
 
     let prompt: string;
@@ -708,10 +759,10 @@ serve(async (req) => {
     let regionsSource: string = fellBack ? 'default' : 'zone';
 
     // ③ Optional vision refinement (only when enabled)
-    const visionEnabled = resolveVisionEnabled(callerLlm);
+    const visionEnabled = resolveVisionEnabled(visionEnabledBody);
     let visionModelUsed = '';
     if (visionEnabled) {
-      const visionCfg = resolveVisionConfig(callerLlm, designCfg);
+      const visionCfg = resolveVisionConfig(designCfg);
       const zoneHints = new Map<string, string>();
       for (const el of design?.elements || []) {
         if (el.positionZone) zoneHints.set(String(el.word).toLowerCase(), el.positionZone);

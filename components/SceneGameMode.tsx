@@ -93,6 +93,9 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   const [degraded, setDegraded] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [preparingElapsed, setPreparingElapsed] = useState(0);
+  // Pipeline stages surfaced to the user during PREPARING.
+  // 0 = selecting words, 1 = designing scene (LLM), 2 = rendering image, 3 = ready.
+  const [preparingStage, setPreparingStage] = useState(0);
   const [isRegenerating, setIsRegenerating] = useState(false);
 
   const [playMode, setPlayMode] = useState<ScenePlayMode>('spell');
@@ -135,6 +138,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setGenError(null);
     setPhase('PREPARING');
     setPreparingElapsed(0);
+    setPreparingStage(0);
     setAsset(null);
     setDegraded(false);
 
@@ -172,11 +176,23 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }
   }, [allWords, sessions, dayIndex]);
 
-  // Preparing elapsed-time stepper (purely cosmetic; the edge fn doesn't stream).
+  // Preparing elapsed-time stepper + staged progress.
+  // The edge function returns only at the end (no streaming via invoke), so we
+  // surface stage hints derived from elapsed time, aligned to the real pipeline:
+  //   ~0–3s   ① selecting words (client-side, instant)
+  //   ~3–25s  ② scene director (LLM conceives scene + structured prompt)
+  //   ~25s+   ③ image render (image model draws the scene)
   useEffect(() => {
     if (phase !== 'PREPARING') return;
     const start = Date.now();
-    const t = window.setInterval(() => setPreparingElapsed(Math.floor((Date.now() - start) / 1000)), 500);
+    const t = window.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - start) / 1000);
+      setPreparingElapsed(elapsed);
+      let stage = 0;
+      if (elapsed >= 3) stage = 1;
+      if (elapsed >= 25) stage = 2;
+      setPreparingStage(stage);
+    }, 500);
     return () => window.clearInterval(t);
   }, [phase]);
 
@@ -192,6 +208,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setGenError(null);
     setPhase('PREPARING');
     setPreparingElapsed(0);
+    setPreparingStage(0);
     try {
       const meta = gatherWordMeta(selectedWords);
       const res = await requestSceneRegeneration(meta, dayIndex, 'en');
@@ -602,16 +619,49 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               <h3 className="mt-6 font-headline text-2xl text-white md:text-3xl">
                 <HoverTranslationText text="Fusing words into one scene" translation="把单词融合进同一张图" />
               </h3>
-              <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-text-light">
-                <HoverTranslationText
-                  text={`Selecting ${selectionMode === 'smart' ? 'smart' : 'random'} words → generating isometric scene → detecting word regions. This can take 30-90s on the first run.`}
-                  translation={`正在以${selectionMode === 'smart' ? '智能' : '随机'}方式选词 → 生成等轴场景图 → 检测每个单词的区域。首次生成可能需要 30-90 秒。`}
-                />
-              </p>
+              <div className="mx-auto mt-6 max-w-md space-y-2.5 text-left">
+                {([
+                  { stage: 0, icon: 'checklist', en: 'Selecting words', zh: '抽取单词', hint: 'Smart/random pick from your library' },
+                  { stage: 1, icon: 'auto_awesome', en: 'Designing scene', zh: '场景导演构思', hint: 'LLM arranges words into one scene + prompt' },
+                  { stage: 2, icon: 'image', en: 'Rendering image', zh: '渲染场景图', hint: 'Image model draws the isometric scene' },
+                ] as const).map((step) => {
+                  const done = preparingStage > step.stage;
+                  const active = preparingStage === step.stage;
+                  return (
+                    <div
+                      key={step.stage}
+                      className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-all duration-300 ${
+                        active
+                          ? 'border-purple-400/50 bg-purple-500/10'
+                          : done
+                            ? 'border-green-500/30 bg-green-500/5'
+                            : 'border-mid-charcoal bg-light-charcoal/10 opacity-50'
+                      }`}
+                    >
+                      <span className={`material-symbols-outlined text-xl ${active ? 'animate-spin text-purple-300' : done ? 'text-green-400' : 'text-text-dark'}`}>
+                        {done ? 'check_circle' : step.icon}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className={`text-sm font-medium ${active ? 'text-white' : done ? 'text-text-light' : 'text-text-dark'}`}>
+                          <HoverTranslationText text={step.en} translation={step.zh} />
+                        </div>
+                        <div className="truncate text-[11px] text-text-dark">{step.hint}</div>
+                      </div>
+                      {active && (
+                        <span className="font-mono text-[11px] uppercase tracking-widest text-purple-300">
+                          <HoverTranslationText text="working" translation="进行中" />
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
 
-              <div className="mt-8 flex items-center justify-center gap-3 text-text-dark">
-                <span className="material-symbols-outlined animate-spin text-purple-400">sync</span>
+              <div className="mt-6 flex items-center justify-center gap-3 text-text-dark">
                 <span className="font-mono text-sm tracking-widest text-purple-300">{preparingElapsed}s</span>
+                <span className="text-[11px] text-text-dark">
+                  <HoverTranslationText text="elapsed" translation="已用时" />
+                </span>
               </div>
 
               <button

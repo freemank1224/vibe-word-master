@@ -1,6 +1,7 @@
 /**
- * TDD tests for the Scene Game LLM settings module (Admin Console / "~" panel).
- * Uses a minimal in-memory localStorage shim since node:test has no `window`.
+ * Tests for the Scene Game client-side settings (Admin Console / "~" panel).
+ * After the §10 security refactor, the only persisted field is the
+ * non-sensitive `visionEnabled` toggle. All LLM keys live server-side.
  */
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,69 +20,34 @@ const { SceneGameSettings } = await import('../../services/sceneGameSettings.ts'
 
 beforeEach(() => store.clear());
 
-test('load() returns empty defaults when nothing stored', () => {
+test('load() returns visionEnabled=false by default when nothing stored', () => {
   const s = SceneGameSettings.load();
-  assert.equal(s.design.baseUrl, '');
-  assert.equal(s.design.apiKey, '');
-  assert.equal(s.vision.model, '');
   assert.equal(s.visionEnabled, false);
 });
 
-test('save() then load() round-trips all fields', () => {
-  SceneGameSettings.save({
-    design: { baseUrl: 'https://gw.example.com', apiKey: 'sk-1', model: 'gpt-4o' },
-    vision: { baseUrl: 'https://gw.example.com', apiKey: 'sk-2', model: 'gpt-4o' },
-    visionEnabled: true,
-  });
+test('save() then load() round-trips visionEnabled', () => {
+  SceneGameSettings.save({ visionEnabled: true });
   const s = SceneGameSettings.load();
-  assert.equal(s.design.baseUrl, 'https://gw.example.com');
-  assert.equal(s.design.apiKey, 'sk-1');
-  assert.equal(s.design.model, 'gpt-4o');
-  assert.equal(s.vision.apiKey, 'sk-2');
   assert.equal(s.visionEnabled, true);
 });
 
-test('corrupted stored JSON degrades gracefully to empty endpoint', () => {
-  store.set('vibe-word-scene-llm-design', '{not json');
+test('isVisionEnabled() reflects the persisted toggle', () => {
+  SceneGameSettings.save({ visionEnabled: true });
+  assert.equal(SceneGameSettings.isVisionEnabled(), true);
+  SceneGameSettings.save({ visionEnabled: false });
+  assert.equal(SceneGameSettings.isVisionEnabled(), false);
+});
+
+test('a stray legacy value does not affect default load', () => {
+  store.set('vibe-word-scene-llm-design', '{"baseUrl":"u","apiKey":"k"}');
   const s = SceneGameSettings.load();
-  assert.equal(s.design.baseUrl, '');
-  assert.equal(s.design.apiKey, '');
+  assert.equal(s.visionEnabled, false);
 });
 
-test('toRequestPayload includes design only when configured', () => {
-  SceneGameSettings.save({
-    design: { baseUrl: 'u', apiKey: 'k', model: 'm' },
-    vision: { baseUrl: '', apiKey: '', model: '' },
-    visionEnabled: false,
-  });
-  const p = SceneGameSettings.toRequestPayload();
-  assert.ok(p.design, 'design present');
-  assert.equal(p.design!.apiKey, 'k');
-  assert.equal(p.vision, undefined);
-  assert.equal(p.visionEnabled, false);
-});
-
-test('toRequestPayload carries visionEnabled flag independently of config presence', () => {
-  SceneGameSettings.save({
-    design: { baseUrl: '', apiKey: '', model: '' },
-    vision: { baseUrl: '', apiKey: '', model: '' },
-    visionEnabled: true,
-  });
-  const p = SceneGameSettings.toRequestPayload();
-  assert.equal(p.design, undefined);
-  assert.equal(p.vision, undefined);
-  assert.equal(p.visionEnabled, true);
-});
-
-test('clear() wipes all keys', () => {
-  SceneGameSettings.save({
-    design: { baseUrl: 'u', apiKey: 'k', model: 'm' },
-    vision: { baseUrl: 'u2', apiKey: 'k2', model: 'm2' },
-    visionEnabled: true,
-  });
+test('clear() resets the toggle to false', () => {
+  SceneGameSettings.save({ visionEnabled: true });
   SceneGameSettings.clear();
   const s = SceneGameSettings.load();
-  assert.equal(s.design.baseUrl, '');
-  assert.equal(s.vision.baseUrl, '');
   assert.equal(s.visionEnabled, false);
+  assert.equal(SceneGameSettings.isVisionEnabled(), false);
 });

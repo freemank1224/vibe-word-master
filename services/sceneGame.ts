@@ -245,7 +245,7 @@ export const selectSceneWords = (
 // ----------------------------------------------------------------
 // Scene generation request
 // ----------------------------------------------------------------
-const SCENE_GENERATION_TIMEOUT_MS = 150_000; // image gen (up to 90s) + vision (up to 60s)
+const SCENE_GENERATION_TIMEOUT_MS = 240_000; // ① director (up to 55s) + ② render (up to 115s) + margin
 
 export interface SceneGenerationResult {
   source: 'cache-hit' | 'generated';
@@ -277,13 +277,6 @@ const normalizeAsset = (raw: any): SceneAsset => ({
   createdAt: String(raw?.created_at || raw?.createdAt || ''),
 });
 
-/**
- * Read the Admin Console ("~" panel) scene-LLM config and shape it into the
- * `llmConfig` body field the edge function consumes. The edge function uses
- * caller config first, then its own secrets/defaults.
- */
-const buildLlmConfigPayload = () => SceneGameSettings.toRequestPayload();
-
 export const requestSceneGeneration = async (
   words: SceneWordMeta[],
   dayIndex: number,
@@ -295,7 +288,7 @@ export const requestSceneGeneration = async (
   }
 
   const invokePromise = supabase.functions.invoke('scene-generate', {
-    body: { words, dayIndex, language, force: false, llmConfig: buildLlmConfigPayload() },
+    body: { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled() },
   });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -326,8 +319,8 @@ export const requestSceneRegeneration = async (
     throw new Error('Supabase is not configured for scene generation');
   }
   const { data, error } = await Promise.race([
-    supabase.functions.invoke('scene-generate', { body: { words, dayIndex, language, force: true, llmConfig: buildLlmConfigPayload() } }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('scene-generate timeout')), 150000)),
+    supabase.functions.invoke('scene-generate', { body: { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled() } }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('scene-generate timeout')), 240000)),
   ]);
   if (error) throw new Error(error.message || 'scene-generate invoke failed');
   if (!data || data.ok !== true || !data.asset) {
@@ -337,6 +330,35 @@ export const requestSceneRegeneration = async (
     source: 'generated',
     asset: normalizeAsset(data.asset),
     degraded: Boolean(data.degraded),
+  };
+};
+
+// ----------------------------------------------------------------
+// Director connectivity self-check (Admin Console "测试连接" button).
+// Hits the edge function's `probe` branch — no image, no DB writes.
+// ----------------------------------------------------------------
+export interface SceneDirectorProbeResult {
+  ok: boolean;
+  model?: string;
+  latencyMs?: number;
+  baseUrl?: string;
+  error?: string;
+}
+
+export const probeSceneDirector = async (): Promise<SceneDirectorProbeResult> => {
+  if (!isSupabaseConfigured) {
+    return { ok: false, error: 'Supabase is not configured' };
+  }
+  const { data, error } = await supabase.functions.invoke('scene-generate', { body: { action: 'probe' } });
+  if (error) return { ok: false, error: error.message || 'scene-generate invoke failed' };
+  if (!data || data.ok !== true) {
+    return { ok: false, error: data?.error || 'probe failed' };
+  }
+  return {
+    ok: true,
+    model: String(data.model || ''),
+    latencyMs: Number(data.latencyMs ?? 0),
+    baseUrl: String(data.baseUrl || ''),
   };
 };
 

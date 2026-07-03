@@ -4,7 +4,8 @@ import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
 import { HoverTranslationText } from './HoverTranslationText';
-import { SceneGameSettings, SceneGameLLMSettings } from '../services/sceneGameSettings';
+import { SceneGameSettings } from '../services/sceneGameSettings';
+import { probeSceneDirector, SceneDirectorProbeResult } from '../services/sceneGame';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -275,88 +276,77 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
     </div>
   );
 };
-
 // ----------------------------------------------------------------
-// Scene Fusion Game — LLM config (① scene director + ③ vision refiner).
-// Stores the user's own keys client-side (services/sceneGameSettings) and
-// forwards them to the scene-generate edge function. Anything left blank
-// falls back to the edge function's secrets / defaults.
+// Scene Fusion Game — non-sensitive controls only.
+// All LLM keys live server-side (SCENE_DESIGN_* / SCENE_VISION_* secrets);
+// ② render reuses PRIMARY_IMAGE_GEN_*. The panel exposes only the ③ vision
+// ON/OFF toggle (stored client-side) and a "测试连接" button that probes the
+// server-side SCENE_DESIGN_* secret via the edge function's probe branch.
 // ----------------------------------------------------------------
 const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLog }) => {
-  const [settings, setSettings] = useState<SceneGameLLMSettings>(() => SceneGameSettings.load());
+  const [visionEnabled, setVisionEnabled] = useState<boolean>(() => SceneGameSettings.load().visionEnabled);
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [probeResult, setProbeResult] = useState<SceneDirectorProbeResult | null>(null);
 
-  const updateEndpoint = (which: 'design' | 'vision', field: keyof SceneGameLLMSettings['design'], value: string) => {
-    setSettings((prev) => ({ ...prev, [which]: { ...prev[which], [field]: value } }));
-  };
-
-  const handleSave = () => {
-    SceneGameSettings.save(settings);
-    onLog('Saved scene-game LLM settings.');
-    alert('已保存场景游戏 LLM 配置！');
+  const handleToggleVision = (enabled: boolean) => {
+    setVisionEnabled(enabled);
+    SceneGameSettings.save({ visionEnabled: enabled });
   };
 
   const handleClear = () => {
-    if (!confirm('清空场景游戏的所有 LLM 配置？(将回退到服务端默认配置)')) return;
+    if (!confirm('重置场景游戏的视觉精修开关？(将恢复默认关闭)')) return;
     SceneGameSettings.clear();
-    const cleared = SceneGameSettings.load();
-    setSettings(cleared);
-    onLog('Cleared scene-game LLM settings.');
+    setVisionEnabled(false);
+    onLog('Cleared scene-game settings.');
   };
 
-  const EndpointFields: React.FC<{ which: 'design' | 'vision'; title: string; hint: string; placeholderModel: string }> = ({ which, title, hint, placeholderModel }) => (
-    <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
-      <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>{title}</div>
-      <div style={{ fontSize: '11px', color: '#999', marginBottom: '12px' }}>{hint}</div>
-
-      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>BASE_URL (Endpoint)</label>
-      <input
-        type="text"
-        style={INPUT_STYLE}
-        placeholder="https://newapi.omgteam.me  (OpenAI 兼容网关)"
-        value={settings[which].baseUrl}
-        onChange={(e) => updateEndpoint(which, 'baseUrl', e.target.value)}
-      />
-
-      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>API_KEY</label>
-      <input
-        type="password"
-        style={INPUT_STYLE}
-        placeholder="sk-..."
-        value={settings[which].apiKey}
-        onChange={(e) => updateEndpoint(which, 'apiKey', e.target.value)}
-      />
-
-      <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px' }}>模型名称 (Model)</label>
-      <input
-        type="text"
-        style={INPUT_STYLE}
-        placeholder={placeholderModel}
-        value={settings[which].model}
-        onChange={(e) => updateEndpoint(which, 'model', e.target.value)}
-      />
-    </div>
-  );
+  const handleProbe = async () => {
+    setProbeBusy(true);
+    setProbeResult(null);
+    onLog('Probing scene director connection…');
+    const result = await probeSceneDirector();
+    setProbeResult(result);
+    setProbeBusy(false);
+    if (result.ok) {
+      onLog(`Scene director OK: ${result.model} (${result.latencyMs}ms) @ ${result.baseUrl}`);
+    } else {
+      onLog(`Scene director probe failed: ${result.error}`);
+    }
+  };
 
   return (
     <div style={{ maxWidth: '520px', margin: '0 auto' }}>
-      <h4 style={{ marginBottom: '12px' }}>场景融合游戏 · LLM 配置</h4>
+      <h4 style={{ marginBottom: '12px' }}>场景融合游戏 · 配置</h4>
       <p style={{ fontSize: '11px', color: '#aaa', marginBottom: '18px', lineHeight: 1.6 }}>
-        场景游戏流水线用到大模型：① 场景导演（强文本 LLM，把 N 个词编排进同一场景并分配位置区域，默认 gpt-4o）；③ 视觉精修（多模态 LLM，把高亮框收紧到元素实际位置，可选，默认关闭）。留空则回退到服务端 Edge Secret。
+        场景导演 ①、视觉精修 ③ 的 BASE_URL/API_KEY/MODEL 一律在 Supabase Edge Secret 配置（<code>SCENE_DESIGN_*</code> / <code>SCENE_VISION_*</code>），浏览器不再保存或发送密钥。② 出图复用 <code>PRIMARY_IMAGE_GEN_*</code>。
       </p>
 
-      <EndpointFields
-        which="design"
-        title="① 场景导演 (Scene Director)"
-        hint="必填。用于构思连贯场景 + 生成结构化生图提示词 + 为每个词分配位置区域。"
-        placeholderModel="gpt-4o"
-      />
+      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
+        <button
+          style={{ ...BUTTON_STYLE, opacity: probeBusy ? 0.6 : 1 }}
+          onClick={handleProbe}
+          disabled={probeBusy}
+        >
+          {probeBusy ? '测试中…' : '测试导演连接'}
+        </button>
+        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px' }}>
+          验证服务端 <code>SCENE_DESIGN_*</code> Secret 是否可用。不发图、不写库。
+        </div>
+        {probeResult && (
+          <div style={{ marginTop: '10px', fontSize: '12px', color: probeResult.ok ? '#7CFC8A' : '#FF8A8A' }}>
+            {probeResult.ok
+              ? `✓ ${probeResult.model} · ${probeResult.latencyMs}ms · ${probeResult.baseUrl}`
+              : `✗ ${probeResult.error}`}
+          </div>
+        )}
+      </div>
 
       <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer' }}>
           <input
             type="checkbox"
-            checked={settings.visionEnabled}
-            onChange={(e) => setSettings((prev) => ({ ...prev, visionEnabled: e.target.checked }))}
+            checked={visionEnabled}
+            onChange={(e) => handleToggleVision(e.target.checked)}
             style={{ width: '16px', height: '16px' }}
           />
           ③ 启用视觉精修（默认关闭）
@@ -366,18 +356,9 @@ const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLo
         </div>
       </div>
 
-      {settings.visionEnabled && (
-        <EndpointFields
-          which="vision"
-          title="③ 视觉精修 (Vision Refinement)"
-          hint="可选。留空则复用上方场景导演的 BASE_URL / API_KEY。"
-          placeholderModel="gpt-4o"
-        />
-      )}
-
       <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
-        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={handleSave}>保存配置</button>
-        <button style={{ ...BUTTON_STYLE, backgroundColor: '#666' }} onClick={handleClear}>清空</button>
+        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={() => { SceneGameSettings.save({ visionEnabled }); onLog('Saved scene-game settings.'); alert('已保存场景游戏设置！'); }}>保存设置</button>
+        <button style={{ ...BUTTON_STYLE, backgroundColor: '#666' }} onClick={handleClear}>重置</button>
       </div>
     </div>
   );
