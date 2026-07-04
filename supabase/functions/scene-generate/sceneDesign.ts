@@ -109,27 +109,106 @@ export interface SceneWordInput {
 
 const normalizeWordKey = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, ' ');
 
-/** Extract the first balanced JSON object substring from arbitrary text. */
-const extractJsonObject = (text: string): string | null => {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escape) escape = false;
-      else if (ch === '\\') escape = true;
-      else if (ch === '"') inString = false;
-      continue;
+/**
+ * Strip reasoning model chain-of-thought blocks.
+ *
+ * MiniMax M3, DeepSeek R1, Qwen-QwQ and similar "reasoning" models emit a
+ * `<think>...</think>` block containing their internal reasoning BEFORE the
+ * actual answer. This block can contain JSON-like braces, prose, and
+ * half-formed structures that confuse JSON parsers. We strip it entirely so
+ * only the real answer remains.
+ *
+ * Also handles unclosed `<think>` (model forgot the `</think>` tag) by
+ * stripping from `<think>` up to the next standalone `{` on a new line
+ * (where the JSON answer typically begins).
+ */
+export const stripReasoningBlocks = (text: string): string => {
+  // Remove closed <think>...</think> blocks.
+  let result = text.replace(/<think>[\s\S]*?<\/think>\s*/gi, '');
+  // Handle unclosed <think> (no matching </think> tag).
+  // MiniMax M3 sometimes emits <think> reasoning, then starts the JSON
+  // WITHOUT a closing </think> tag. We strip everything from <think> up to
+  // the first standalone { that begins a line (the JSON object start).
+  if (/<think>/i.test(result) && !/<\/think>/i.test(result)) {
+    result = result.replace(/<think>[\s\S]*?(?=\n\s*\{)/gi, '');
+  }
+  // Some models emit <think> on its own line, then JSON on subsequent lines
+  // without any closing tag. If <think> still remains, strip the entire
+  // <think> tag and everything up to the LAST { (the real JSON usually
+  // starts with the outermost object).
+  if (/<think>/i.test(result)) {
+    const lastBrace = result.lastIndexOf('{');
+    if (lastBrace >= 0) {
+      // Find the matching opening line
+      const lineStart = result.lastIndexOf('\n', lastBrace);
+      result = result.slice(lineStart >= 0 ? lineStart + 1 : lastBrace);
     }
-    if (ch === '"') inString = true;
-    else if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+  }
+  return result;
+};
+
+/**
+ * Extract ALL balanced {...} substrings from text, in order of appearance.
+ * Used to find JSON candidates embedded in prose, reasoning blocks, etc.
+ * Each candidate is verified to have balanced braces (string-aware).
+ */
+const extractAllJsonObjects = (text: string): string[] => {
+  const results: string[] = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const start = text.indexOf('{', pos);
+    if (start === -1) break;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (ch === '\\') escape = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
     }
+    if (end >= 0) {
+      results.push(text.slice(start, end + 1));
+      pos = end + 1;
+    } else {
+      break; // unbalanced from here — no point continuing
+    }
+  }
+  return results;
+};
+
+/**
+ * Try to parse text as JSON. If direct parse fails, extract all {...} blocks
+ * and return the first one that parses to an object with the expected shape.
+ *
+ * `shapeProbe` is a function that gets the parsed candidate and returns true
+ * if it "looks right" (e.g., has structuredPrompt or elements). This lets us
+ * skip JSON-like debris from reasoning blocks and pick the real answer.
+ */
+const parseJsonLenient = (text: string, shapeProbe: (obj: any) => boolean): any | null => {
+  // Fast path: clean JSON.
+  try {
+    const obj = JSON.parse(text);
+    if (obj && typeof obj === 'object' && shapeProbe(obj)) return obj;
+  } catch { /* not clean JSON — fall through */ }
+
+  // Slow path: extract all {...} candidates and try each.
+  const candidates = extractAllJsonObjects(text);
+  for (const candidate of candidates) {
+    try {
+      const obj = JSON.parse(candidate);
+      if (obj && typeof obj === 'object' && shapeProbe(obj)) return obj;
+    } catch { /* try next candidate */ }
   }
   return null;
 };
@@ -138,30 +217,30 @@ const extractJsonObject = (text: string): string | null => {
  * Parse + validate the scene director's raw text output into a SceneDesign.
  * Returns null on any malformed/insufficient payload so the caller can fall
  * back to the deterministic buildFusionPrompt template (§3.3).
+ *
+ * Handles:
+ *   - Clean JSON
+ *   - JSON wrapped in ```json fences
+ *   - JSON preceded by reasoning-model <think> blocks (MiniMax, DeepSeek, etc.)
+ *   - JSON embedded in prose
+ *   - Multiple JSON candidates (picks the one with structuredPrompt/elements)
  */
 export const parseSceneDesign = (raw: unknown, words: SceneWordInput[]): SceneDesign | null => {
   if (typeof raw !== 'string') return null;
   let text = raw.trim();
   if (text.length === 0) return null;
 
+  // Strip reasoning-model <think>...</think> blocks first.
+  text = stripReasoningBlocks(text);
+
   // Strip a single surrounding ``` … ``` fence (with or without a language tag).
   const fence = text.match(/^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/);
   if (fence) text = fence[1].trim();
 
-  let parsed: any;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    const slice = extractJsonObject(text);
-    if (!slice) return null;
-    try {
-      parsed = JSON.parse(slice);
-    } catch {
-      return null;
-    }
-  }
-
-  if (!parsed || typeof parsed !== 'object') return null;
+  const parsed = parseJsonLenient(text, (obj) =>
+    typeof obj.structuredPrompt === 'string' || Array.isArray(obj.elements),
+  );
+  if (!parsed) return null;
 
   const structuredPrompt = typeof parsed.structuredPrompt === 'string' ? parsed.structuredPrompt.trim() : '';
   if (structuredPrompt.length === 0) return null;
@@ -240,15 +319,23 @@ export const buildSceneDirectorSystemPrompt = (): string => {
   return [
     'You are an art director for isometric-perspective cartoon illustration.',
     'You are given N English words (each with part-of-speech and a Chinese gloss) and one day-of-week mascot.',
-    'Your job:',
-    '1. Conceive a single coherent, appealing scene that naturally contains ALL N words AND the mascot (give a scene title and a one-sentence concept).',
-    '2. For EACH word decide how to render it visually (noun → object/character; adjective → a character whose expression/body/costume shows it; verb → a character mid-action; adverb → a character behaving that way) and assign it a positionZone.',
-    `3. Turn all of that into ONE clear, complete, ready-to-send text-to-image prompt (structuredPrompt): isometric-perspective cartoon style, HD, highly detailed, vibrant saturated colors, 1:1 square composition, the mascot as a visible character, and EVERY element drawn inside its assigned zone. Do NOT add floating captions, subtitles, UI labels, or watermarks (diegetic text on book covers / signs / packaging is allowed).`,
     '',
-    `positionZone is CRITICAL — it is BOTH the image-composition instruction AND the region the game will highlight for that word. Choose ONLY from these 9: ${zoneList}.`,
-    '- Spread elements across DIFFERENT zones for a balanced, beautiful composition (this matters more than pixel-precise fit).',
-    '- N=5–8: one distinct zone per word. N=9–10: a couple of zones may hold two small elements (state front/back occlusion in the presentation); prefer placing the mascot at center.',
-    '- Visual elegance beats pixel precision: frame loosely and gracefully rather than crowding to hug an outline.',
+    'Your job:',
+    '1. Design ONE coherent, meaningful scene that naturally contains ALL N words AND the mascot.',
+    '   This is NOT a grid, NOT separate panels, NOT a layout exercise. It is ONE unified illustration where all elements',
+    '   coexist naturally and tell a visual story. For example: if the words are "fountain", "truck", "mountain", you might',
+    '   depict a mountain town square with a fountain and a truck driving through — all woven into a single scene.',
+    '2. For each word, decide how it appears WITHIN that scene (noun → object/character in the scene; adjective → a',
+    '   character whose visible trait shows it; verb → a character mid-action; adverb → a character behaving that way).',
+    `3. Write ONE clear text-to-image prompt (structuredPrompt) that describes this SCENE naturally — not a list of items`,
+    '   at positions. The image model should read it and see a cohesive scene description.',
+    '   Style: isometric-perspective cartoon, HD, vibrant saturated colors, 1:1 square.',
+    `4. Assign each word a positionZone (approximate location in the scene — the game uses this to highlight where each`,
+    `   word is). Choose from: ${zoneList}.`,
+    '',
+    'CRITICAL: Do NOT write prompts like "put X at top-left, Y at center". Write natural scene descriptions like',
+    '"a cozy mountain town square with a fountain in the center, a truck parked by the road, mountains in the background".',
+    'Do NOT add floating captions, subtitles, UI labels, or watermarks.',
     '',
     'Output STRICT JSON ONLY with this shape:',
     '{"sceneTitle":string,"sceneConcept":string,"structuredPrompt":string,"elements":[{"word":string,"element":string,"presentation":string,"positionZone":string}]}.',

@@ -23,6 +23,7 @@ import {
   deriveRegionsFromElements,
   buildSceneDirectorSystemPrompt,
   buildSceneDirectorUserPayload,
+  stripReasoningBlocks,
 } from '../../supabase/functions/scene-generate/sceneDesign.ts';
 
 const WORDS = [
@@ -171,6 +172,67 @@ test('parseSceneDesign returns null for non-JSON garbage', () => {
   assert.equal(parseSceneDesign('the quick brown fox', WORDS), null);
   assert.equal(parseSceneDesign('', WORDS), null);
   assert.equal(parseSceneDesign('   \n  ', WORDS), null);
+});
+
+// ----------------------------------------------------------------
+// Reasoning-model <think> blocks (MiniMax M3, DeepSeek R1, etc.)
+// ----------------------------------------------------------------
+test('parseSceneDesign strips a closed <think>...</think> block before the JSON', () => {
+  const withThink = [
+    '<think>Let me analyze the inputs:',
+    '- Day: Saturday (dayIndex 6)',
+    '- Mascot: A sloth-like turquoise monster',
+    'I need to place 5 words + mascot in distinct zones.',
+    '</think>',
+    VALID_DESIGN_JSON,
+  ].join('\n');
+  const design = parseSceneDesign(withThink, WORDS);
+  assert.ok(design, 'should parse despite the <think> prefix');
+  assert.equal(design!.sceneTitle, 'Cozy Kitchen Morning');
+  assert.equal(design!.elements.length, 5);
+});
+
+test('parseSceneDesign handles <think> block that contains JSON-like braces', () => {
+  // The reasoning block mentions {zone: "center"} — must not be mistaken for the answer.
+  const tricky = [
+    '<think>Reasoning about layout.',
+    'Maybe I should use {"zone": "center"} for the mascot.',
+    'But that\'s just reasoning, not the answer.',
+    '</think>',
+    VALID_DESIGN_JSON,
+  ].join('\n');
+  const design = parseSceneDesign(tricky, WORDS);
+  assert.ok(design, 'should pick the real design JSON, not the reasoning debris');
+  assert.equal(design!.elements.length, 5);
+  assert.equal(design!.elements[0].word, 'apple');
+});
+
+test('parseSceneDesign handles unclosed <think> (model forgot </think>)', () => {
+  const unclosed = [
+    '<think>Let me think about this scene.',
+    'I need 5 elements in an isometric kitchen.',
+    '',
+    '{"sceneTitle":"Kitchen","sceneConcept":"morning","structuredPrompt":"isometric scene","elements":[' +
+      '{"word":"apple","element":"red apple","positionZone":"top-left"},' +
+      '{"word":"angry","element":"chef","positionZone":"center"},' +
+      '{"word":"run","element":"running child","positionZone":"bottom-right"},' +
+      '{"word":"quickly","element":"rabbit","positionZone":"mid-right"},' +
+      '{"word":"moon","element":"crescent moon","positionZone":"top-right"}' +
+    ']}',
+  ].join('\n');
+  const design = parseSceneDesign(unclosed, WORDS);
+  assert.ok(design, 'should recover JSON even when <think> is unclosed');
+  assert.equal(design!.elements.length, 5);
+});
+
+test('stripReasoningBlocks removes closed think blocks', () => {
+  const input = '<think>reasoning here</think>\n{"answer": true}';
+  assert.equal(stripReasoningBlocks(input), '{"answer": true}');
+});
+
+test('stripReasoningBlocks leaves non-think text untouched', () => {
+  assert.equal(stripReasoningBlocks('no think tags here'), 'no think tags here');
+  assert.equal(stripReasoningBlocks('{"json": true}'), '{"json": true}');
 });
 
 test('parseSceneDesign returns null when structuredPrompt is missing/empty', () => {

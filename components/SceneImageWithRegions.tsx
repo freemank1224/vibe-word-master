@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { HoverTranslationText } from './HoverTranslationText';
 import { WordRegion } from '../types';
 
 interface SceneImageWithRegionsProps {
@@ -12,6 +13,10 @@ interface SceneImageWithRegionsProps {
   revealedWordIndices: number[];
   /** Increments each time the active word advances — forces the blink to restart. */
   blinkNonce: number;
+  /** Optional handler shown in the load-failure placeholder (e.g. "Regenerate"). */
+  onRegenerate?: () => void;
+  /** When true (PLAYING mode), render at full container size with NO max-width cap. */
+  fullSize?: boolean;
 }
 
 /**
@@ -20,6 +25,8 @@ interface SceneImageWithRegionsProps {
  *  - Solved regions get a persistent ✅.
  *  - Revealed regions (timeout) show the word text.
  *  - When a region's detection failed, the whole image pulses instead.
+ *  - When the image itself fails to load (404, network, CORS), an explicit
+ *    failure placeholder is shown instead of a silent black box.
  */
 export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   imageUrl,
@@ -28,6 +35,8 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   solvedWordIndices,
   revealedWordIndices,
   blinkNonce,
+  onRegenerate,
+  fullSize = false,
 }) => {
   const activeRegion = activeWordIndex != null ? regions[activeWordIndex] : null;
   const activeFailed = Boolean(activeRegion?.detectionFailed);
@@ -44,8 +53,19 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
     return () => window.clearTimeout(t);
   }, [activeWordIndex, blinkNonce]);
 
+  // Image load failure state. Reset whenever a new URL is supplied so a
+  // successful regenerate doesn't inherit the previous error.
+  const [imgError, setImgError] = useState(false);
+  useEffect(() => {
+    setImgError(false);
+    console.log('[SceneImage] imageUrl changed, imgError reset. imageUrl =', imageUrl || '(empty)');
+  }, [imageUrl]);
+
+  // Diagnostic: log every render so we can confirm the component mounts.
+  console.log('[SceneImage] render', { hasImageUrl: !!imageUrl, imageUrlHead: imageUrl ? imageUrl.substring(0, 50) : '(empty)', imgError, regionCount: regions.length });
+
   return (
-    <div className="relative mx-auto w-full max-w-[min(70vh,560px)]">
+    <div className={`relative mx-auto w-full ${fullSize ? '' : 'max-w-[min(70vh,560px)]'}`}>
       <style>{`
         @keyframes scene-region-blink {
           0%, 100% { opacity: 1; box-shadow: 0 0 0 4px rgba(163,255,0,0.95), 0 0 22px rgba(163,255,0,0.45); }
@@ -70,18 +90,45 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
         .scene-check-pop { animation: scene-check-pop 0.35s ease-out; }
       `}</style>
 
+      {/* Key does NOT include activeWordIndex — this prevents remount on every
+          word change. The <img> stays mounted for the entire PLAYING session;
+          only the region overlays (rendered as siblings inside) change position. */}
       <div
-        key={`img-${activeFailed ? activeWordIndex : 'static'}-${blinkNonce}`}
-        className={`relative aspect-square w-full overflow-hidden rounded-[28px] border border-mid-charcoal bg-black/40 ${
+        key={`img-scene`}
+        style={{ aspectRatio: '1 / 1' }}
+        className={`relative w-full overflow-hidden rounded-[28px] border border-mid-charcoal bg-black/40 ${
           activeFailed && blinking ? 'scene-image-pulsing' : ''
         }`}
       >
-        {imageUrl ? (
+        {imgError ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <span className="material-symbols-outlined text-5xl text-red-400">broken_image</span>
+            <div className="text-sm leading-6 text-red-200">
+              <HoverTranslationText
+                text="Image failed to load. Check your network or regenerate the scene."
+                translation="图片加载失败，请检查网络或重新生成场景。"
+              />
+            </div>
+            {onRegenerate && (
+              <button
+                onClick={onRegenerate}
+                className="mt-1 rounded-xl border border-red-400/50 bg-red-500/10 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.2em] text-red-100 transition-colors hover:bg-red-500/20"
+              >
+                <HoverTranslationText text="Regenerate" translation="重新生成" />
+              </button>
+            )}
+          </div>
+        ) : imageUrl ? (
           <img
             src={imageUrl}
             alt="Scene"
             className="absolute inset-0 h-full w-full object-cover"
             draggable={false}
+            onLoad={() => console.log('[SceneImage] loaded', imageUrl)}
+            onError={(e) => {
+              console.error('[SceneImage] onError', imageUrl, e);
+              setImgError(true);
+            }}
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-text-dark">

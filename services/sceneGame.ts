@@ -247,10 +247,31 @@ export const selectSceneWords = (
 // ----------------------------------------------------------------
 const SCENE_GENERATION_TIMEOUT_MS = 240_000; // ① director (up to 55s) + ② render (up to 115s) + margin
 
+// Static env-var access (vite.config.ts `define` replaces these at build time,
+// mirroring lib/supabaseClient.ts). Needed because raw `fetch` bypasses the
+// auto-injected auth headers that `supabase.functions.invoke` provides.
+const SUPABASE_URL: string = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY: string = process.env.SUPABASE_ANON_KEY || '';
+
 export interface SceneGenerationResult {
   source: 'cache-hit' | 'generated';
   asset: SceneAsset;
   degraded: boolean;
+}
+
+/**
+ * Pipeline stages surfaced to the UI as the edge function progresses.
+ * - `designed`  : director LLM returned a structured prompt (or fallback built)
+ * - `rendered`  : image provider returned image bytes (decoded to dataUrl)
+ * - `persisted` : scene_assets row written + storage upload confirmed
+ * - `done`      : final asset is ready; client switches to MODE_SELECT
+ *
+ * Errors do NOT appear here — they throw from the request function instead.
+ */
+export type ScenePipelineStage = 'designed' | 'rendered' | 'persisted' | 'done';
+
+export interface SceneGenerationCallbacks {
+  onStage?: (stage: ScenePipelineStage, payload: any) => void;
 }
 
 /** Normalize a raw edge-function asset payload into a typed SceneAsset. */
@@ -277,36 +298,169 @@ const normalizeAsset = (raw: any): SceneAsset => ({
   createdAt: String(raw?.created_at || raw?.createdAt || ''),
 });
 
-export const requestSceneGeneration = async (
-  words: SceneWordMeta[],
-  dayIndex: number,
-  language: string = 'en',
-  signal?: AbortSignal,
+/**
+ * Call scene-generate via raw fetch and parse the NDJSON event stream.
+ *
+ * Response shapes supported (for migration safety):
+ *   1. Non-2xx status      → read JSON body, throw error.message
+ *   2. application/json    → legacy single-shot response (old edge fn still
+ *                            deployed, or cache-hit backward-compat path)
+ *   3. application/x-ndjson→ streaming pipeline events; final `done` carries
+ *                            the asset
+ *
+ * After parsing, `asset.imageUrl` is verified non-empty — empty-URL assets
+ * never reach the caller (they would cause a black-screen MODE_SELECT).
+ */
+const callSceneGenerate = async (
+  body: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  callbacks: SceneGenerationCallbacks | undefined,
+  timeoutMs: number,
 ): Promise<SceneGenerationResult> => {
   if (!isSupabaseConfigured) {
     throw new Error('Supabase is not configured for scene generation');
   }
 
-  const invokePromise = supabase.functions.invoke('scene-generate', {
-    body: { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled() },
-  });
+  const functionUrl = `${SUPABASE_URL}/functions/v1/scene-generate`;
+  const accessToken = (await supabase.auth.getSession())?.data?.session?.access_token || '';
+
+  const fetchPromise = (async () => {
+    const res = await fetch(functionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    // 1. Non-2xx → read JSON error (validation 400, auth 401, legacy 502).
+    if (!res.ok) {
+      let message = `scene-generate HTTP ${res.status}`;
+      try {
+        const errData = await res.json();
+        if (errData?.error) message = String(errData.error);
+      } catch { /* response body wasn't JSON */ }
+      throw new Error(message);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    console.log('[sceneGame] response', { status: res.status, contentType, force: body.force });
+
+    // 2. application/json → backward-compat single-shot response.
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      if (!data || data.ok !== true || !data.asset) {
+        throw new Error(data?.error || 'scene-generate returned no asset');
+      }
+      const asset = normalizeAsset(data.asset);
+      if (!asset.imageUrl) throw new Error('scene-generate returned empty imageUrl');
+      return {
+        source: data.source === 'cache-hit' ? 'cache-hit' : 'generated',
+        asset,
+        degraded: Boolean(data.degraded),
+      };
+    }
+
+    // 3. application/x-ndjson → streaming parse.
+    if (!res.body) throw new Error('scene-generate returned no stream body');
+    return await parseSceneGenerateNdjsonStream(res.body, callbacks);
+  })();
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    const t = setTimeout(() => reject(new Error(`scene-generate invoke timeout after ${SCENE_GENERATION_TIMEOUT_MS}ms`)), SCENE_GENERATION_TIMEOUT_MS);
-    signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+    const t = setTimeout(() => reject(new Error(`scene-generate timeout after ${timeoutMs}ms`)), timeoutMs);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      reject(new DOMException('Aborted', 'AbortError'));
+    });
   });
 
-  const { data, error } = await Promise.race([invokePromise, timeoutPromise]);
-  if (error) throw new Error(error.message || 'scene-generate invoke failed');
-  if (!data || data.ok !== true || !data.asset) {
-    throw new Error(data?.error || 'scene-generate returned no asset');
+  return await Promise.race([fetchPromise, timeoutPromise]);
+};
+
+/**
+ * Parse the NDJSON event stream returned by scene-generate. Exposed for unit
+ * tests that want to verify stage ordering / error handling without spinning
+ * up the edge function.
+ *
+ * Stages fired via callbacks.onStage:
+ *   - 'designed'  : director returned a prompt
+ *   - 'rendered'  : image provider returned bytes
+ *   - 'persisted' : scene_assets row written
+ *   - 'done'      : final asset is ready
+ *
+ * Throws on `error` events, malformed done events (missing asset / empty URL),
+ * or if the stream ends without a `done` event.
+ */
+export const parseSceneGenerateNdjsonStream = async (
+  stream: ReadableStream<Uint8Array>,
+  callbacks?: SceneGenerationCallbacks,
+): Promise<SceneGenerationResult> => {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalAsset: SceneAsset | null = null;
+  let finalSource: 'cache-hit' | 'generated' = 'generated';
+  let finalDegraded = false;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIdx: number;
+    while ((newlineIdx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newlineIdx).trim();
+      buffer = buffer.slice(newlineIdx + 1);
+      if (!line) continue;
+      let event: any;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        console.warn('[sceneGame] failed to parse NDJSON line:', line.substring(0, 120));
+        continue;
+      }
+      const stage = String(event?.stage || '');
+      console.log('[sceneGame] ndjson event', { stage, source: event?.source, fallbackReason: event?.fallbackReason || '', hasAsset: !!event?.asset, imageUrl: event?.asset?.imageUrl || event?.asset?.public_url || '' });
+      if (stage === 'designed' && event?.fallbackReason) {
+        console.warn('[sceneGame] director fallback reason:', event.fallbackReason);
+      }
+      if (stage === 'designed' || stage === 'rendered' || stage === 'persisted') {
+        callbacks?.onStage?.(stage as ScenePipelineStage, event);
+      } else if (stage === 'done') {
+        callbacks?.onStage?.('done', event);
+        if (!event.asset) throw new Error('scene-generate done event missing asset');
+        const asset = normalizeAsset(event.asset);
+        if (!asset.imageUrl) throw new Error('scene-generate returned empty imageUrl');
+        finalAsset = asset;
+        finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
+        finalDegraded = Boolean(event.degraded);
+      } else if (stage === 'error') {
+        const failedAt = event?.failedStage || 'unknown';
+        const message = event?.error || `scene-generate failed at ${failedAt}`;
+        throw new Error(String(message));
+      }
+    }
   }
 
-  return {
-    source: data.source === 'cache-hit' ? 'cache-hit' : 'generated',
-    asset: normalizeAsset(data.asset),
-    degraded: Boolean(data.degraded),
-  };
+  if (!finalAsset) throw new Error('scene-generate stream ended without done event');
+  return { source: finalSource, asset: finalAsset, degraded: finalDegraded };
+};
+
+export const requestSceneGeneration = async (
+  words: SceneWordMeta[],
+  dayIndex: number,
+  language: string = 'en',
+  signal?: AbortSignal,
+  callbacks?: SceneGenerationCallbacks,
+): Promise<SceneGenerationResult> => {
+  return callSceneGenerate(
+    { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled() },
+    signal,
+    callbacks,
+    SCENE_GENERATION_TIMEOUT_MS,
+  );
 };
 
 /** Force-regenerate the scene for an already-selected word set (skips cache). */
@@ -314,23 +468,15 @@ export const requestSceneRegeneration = async (
   words: SceneWordMeta[],
   dayIndex: number,
   language: string = 'en',
+  signal?: AbortSignal,
+  callbacks?: SceneGenerationCallbacks,
 ): Promise<SceneGenerationResult> => {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured for scene generation');
-  }
-  const { data, error } = await Promise.race([
-    supabase.functions.invoke('scene-generate', { body: { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled() } }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('scene-generate timeout')), 240000)),
-  ]);
-  if (error) throw new Error(error.message || 'scene-generate invoke failed');
-  if (!data || data.ok !== true || !data.asset) {
-    throw new Error(data?.error || 'scene-generate returned no asset');
-  }
-  return {
-    source: 'generated',
-    asset: normalizeAsset(data.asset),
-    degraded: Boolean(data.degraded),
-  };
+  return callSceneGenerate(
+    { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled() },
+    signal,
+    callbacks,
+    SCENE_GENERATION_TIMEOUT_MS,
+  );
 };
 
 // ----------------------------------------------------------------

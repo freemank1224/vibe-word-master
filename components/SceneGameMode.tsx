@@ -163,8 +163,26 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
     try {
       const meta = gatherWordMeta(selection.words);
-      const res = await requestSceneGeneration(meta, dayIndex, 'en', controller.signal);
+      const res = await requestSceneGeneration(
+        meta,
+        dayIndex,
+        'en',
+        controller.signal,
+        {
+          // Real-evidence stage progression: each tick is gated by an actual
+          // event from the edge function, not a wall-clock guess.
+          //   stage 0 (selecting words) is set synchronously above
+          //   stage 1 (designing) only ticks when director LLM truly returns
+          //   stage 2 (rendering) only ticks when image bytes truly arrive
+          onStage: (stage) => {
+            console.log('[SceneGameMode] onStage', stage);
+            if (stage === 'designed') setPreparingStage(1);
+            else if (stage === 'rendered') setPreparingStage(2);
+          },
+        },
+      );
       if (controller.signal.aborted) return;
+      console.log('[SceneGameMode] asset received', { source: res.source, imageUrl: res.asset.imageUrl, regionCount: res.asset.regions.length });
       setAsset(res.asset);
       setDegraded(res.degraded);
       setPhase('MODE_SELECT');
@@ -176,22 +194,14 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }
   }, [allWords, sessions, dayIndex]);
 
-  // Preparing elapsed-time stepper + staged progress.
-  // The edge function returns only at the end (no streaming via invoke), so we
-  // surface stage hints derived from elapsed time, aligned to the real pipeline:
-  //   ~0–3s   ① selecting words (client-side, instant)
-  //   ~3–25s  ② scene director (LLM conceives scene + structured prompt)
-  //   ~25s+   ③ image render (image model draws the scene)
+  // Preparing elapsed-time display ONLY (no longer drives stage progression —
+  // stage ticks come from real NDJSON events via requestSceneGeneration's
+  // onStage callback above).
   useEffect(() => {
     if (phase !== 'PREPARING') return;
     const start = Date.now();
     const t = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      setPreparingElapsed(elapsed);
-      let stage = 0;
-      if (elapsed >= 3) stage = 1;
-      if (elapsed >= 25) stage = 2;
-      setPreparingStage(stage);
+      setPreparingElapsed(Math.floor((Date.now() - start) / 1000));
     }, 500);
     return () => window.clearInterval(t);
   }, [phase]);
@@ -211,7 +221,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setPreparingStage(0);
     try {
       const meta = gatherWordMeta(selectedWords);
-      const res = await requestSceneRegeneration(meta, dayIndex, 'en');
+      const res = await requestSceneRegeneration(meta, dayIndex, 'en', undefined, {
+        onStage: (stage) => {
+          if (stage === 'designed') setPreparingStage(1);
+          else if (stage === 'rendered') setPreparingStage(2);
+        },
+      });
       setAsset(res.asset);
       setDegraded(res.degraded);
       setPhase('MODE_SELECT');
@@ -687,6 +702,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     solvedWordIndices={[]}
                     revealedWordIndices={[]}
                     blinkNonce={0}
+                    onRegenerate={regenerateImage}
                   />
                   <div className="mt-4 flex items-center gap-2 rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-2">
                     <img src={monsterImg} alt="monster" className="h-7 w-7 rounded-lg object-cover" />
@@ -788,6 +804,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   solvedWordIndices={solvedIndices}
                   revealedWordIndices={revealedIndices}
                   blinkNonce={blinkNonce}
+                  fullSize
                 />
               </div>
 

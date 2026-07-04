@@ -196,62 +196,25 @@ const tryGenerateByProvider = async (
 };
 
 // ----------------------------------------------------------------
-// WebP conversion (mirrors image-generate)
-// ----------------------------------------------------------------
-const convertToWebP = async (blob: Blob, maxWidth = 1024, maxHeight = 1024, quality = 0.8): Promise<Blob> => {
-  try {
-    const bitmap = await createImageBitmap(blob);
-    let width = bitmap.width;
-    let height = bitmap.height;
-    if (width > maxWidth || height > maxHeight) {
-      const ratio = Math.min(maxWidth / width, maxHeight / height);
-      width = Math.round(width * ratio);
-      height = Math.round(height * ratio);
-    }
-    const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return blob;
-    ctx.drawImage(bitmap, 0, 0, width, height);
-    bitmap.close();
-    const webpBlob = await canvas.convertToBlob({ type: 'image/webp', quality });
-    console.log(`[scene-generate] webp ${blob.size} -> ${webpBlob.size} bytes (${width}x${height})`);
-    return webpBlob;
-  } catch (err) {
-    console.warn(`[scene-generate] webp conversion failed: ${err}`);
-    return blob;
-  }
-};
-
-// ----------------------------------------------------------------
 // Fusion prompt builder (deterministic FALLBACK when ① fails — §3.3)
+// Emphasizes ONE coherent scene, NOT a grid of isolated items.
 // ----------------------------------------------------------------
-const POS_RULES: Record<string, (w: SceneWordMetaInput) => string> = {
-  noun: (w) => `Clearly render the object or character for the noun "${w.text}" (sense: ${w.definitionCn || '—'}) as a distinct, isolated element with clear visual margin around it.`,
-  adjective: (w) => `Express the adjective "${w.text}" (sense: ${w.definitionCn || '—'}) through a character's visible trait — facial expression, body language, or costume (for example "angry" means an angry red face and furrowed brows). Place that character at its own spot in the scene.`,
-  verb: (w) => `Depict the action "${w.text}" (sense: ${w.definitionCn || '—'}) as a character mid-action, placed at its own spot in the scene.`,
-  adverb: (w) => `Render a character behaving "${w.text}" (sense: ${w.definitionCn || '—'}); make the manner clearly visible at its own spot in the scene.`,
-};
-
 interface SceneWordMetaInput { text: string; pos: string; definitionCn: string; }
 
 const buildFusionPrompt = (words: SceneWordMetaInput[], dayIndex: number): string => {
   const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
-  const parts: string[] = [];
+  const wordList = words.map((w) => w.text).join(', ');
+  const wordDetails = words.map((w) => `${w.text} (${w.definitionCn || '—'})`).join(', ');
 
-  parts.push('Isometric-perspective cartoon illustration, HD, highly detailed, vibrant saturated colors, clean studio lighting, soft global illumination, 1:1 square composition.');
-  parts.push(`ALWAYS include this exact mascot somewhere in the scene as a visible, clearly identifiable, unoccluded character: ${mascot}`);
-
-  for (const w of words) {
-    const rule = POS_RULES[w.pos] || POS_RULES.noun;
-    parts.push(rule(w));
-  }
-
-  parts.push(`Lay out the ${words.length} word-elements plus the mascot on a rough grid so none overlap and each word-element occupies its own distinct bounding region. Avoid stacking elements on top of each other.`);
-  parts.push('Do NOT add floating captions, subtitles, UI labels, watermarks, or any text that spells out the target words. Diegetic text that belongs to objects (book covers, street signs, packaging) is allowed.');
-  const enumerated = words.map((w, i) => `${i + 1}. ${w.text}`).join(', ');
-  parts.push(`The scene MUST contain exactly these ${words.length} distinct visual elements corresponding to the English words: ${enumerated}. The order of this list is arbitrary; placement in the image is up to you.`);
-
-  return parts.join(' ');
+  return [
+    `Create a cartoon-style isometric-perspective illustration of ONE coherent, meaningful scene that naturally incorporates all of the following elements: ${wordDetails}.`,
+    `Also include this character as part of the scene: ${mascot}`,
+    `Design a single unified scene — NOT a grid, NOT separate boxes or panels — where all these elements coexist naturally and tell a visual story. For example: if the words include "fountain", "truck", and "mountain", depict a mountain landscape with a fountain in a town square and a truck driving through — all in one illustration.`,
+    `Each element must be clearly visible and identifiable within the scene, but they should interact with each other naturally as part of a cohesive environment, not float in separate cells.`,
+    `Isometric perspective, HD, highly detailed, vibrant saturated colors, clean studio lighting, 1:1 square composition.`,
+    `Do NOT add floating captions, subtitles, UI labels, watermarks, or text spelling out the words.`,
+    `The scene MUST contain these exact ${words.length} elements: ${wordList}.`,
+  ].join(' ');
 };
 
 // ----------------------------------------------------------------
@@ -269,15 +232,20 @@ const designScene = async (
   words: SceneWordMetaInput[],
   dayIndex: number,
   cfg: DesignLLMConfig,
-): Promise<{ structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null> => {
+): Promise<{ design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; failReason: string | null; httpStatus?: number; rawHead?: string }> => {
   if (!cfg.apiKey || !cfg.baseUrl) {
     console.warn('[scene-generate] design skipped: no design LLM key/endpoint');
-    return null;
+    return { design: null, failReason: 'no-key-or-endpoint' };
   }
 
   const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
   const systemPrompt = buildSceneDirectorSystemPrompt();
   const userPayload = buildSceneDirectorUserPayload(words, dayIndex, mascot);
+
+  let lastHttpStatus: number | undefined;
+  let lastHttpError: string | undefined;
+  let lastRawHead: string | undefined;
+  let lastException: string | undefined;
 
   const call = async (useJsonMode: boolean): Promise<string> => {
     const url = chatCompletionsUrl(cfg.baseUrl);
@@ -310,14 +278,18 @@ const designScene = async (
       );
       const data = await parseResponseJson(response);
       if (!response.ok) {
-        console.warn(`[scene-generate] design http ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}`);
+        lastHttpStatus = response.status;
+        lastHttpError = JSON.stringify(data?.error || data)?.substring(0, 200);
+        console.warn(`[scene-generate] design http ${response.status}: ${lastHttpError}`);
         return '';
       }
       const content = typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
-      console.log(`[scene-generate] design raw len=${content.length} head=${JSON.stringify(content.substring(0, 80))}`);
+      lastRawHead = JSON.stringify(content.substring(0, 500));
+      console.log(`[scene-generate] design raw len=${content.length} head=${lastRawHead}`);
       return content;
     } catch (err) {
-      console.warn(`[scene-generate] design error: ${err}`);
+      lastException = err instanceof Error ? err.message : String(err);
+      console.warn(`[scene-generate] design error: ${lastException}`);
       return '';
     }
   };
@@ -336,12 +308,24 @@ const designScene = async (
     design = content && content.trim().length >= 40 ? parseSceneDesign(content, words) : null;
   }
   if (!design) {
-    console.warn('[scene-generate] design failed -> buildFusionPrompt fallback');
-    return null;
+    let failReason: string;
+    if (lastException) {
+      failReason = `exception: ${lastException}`;
+    } else if (lastHttpStatus) {
+      failReason = `http ${lastHttpStatus}: ${lastHttpError || 'unknown'}`;
+    } else if (!content) {
+      failReason = 'empty response';
+    } else if (content.trim().length < 40) {
+      failReason = `short response (${content.trim().length} chars): ${lastRawHead || content.substring(0, 60)}`;
+    } else {
+      failReason = `unparseable JSON: ${lastRawHead || content.substring(0, 80)}`;
+    }
+    console.warn(`[scene-generate] design failed (${failReason}) -> buildFusionPrompt fallback`);
+    return { design: null, failReason, httpStatus: lastHttpStatus, rawHead: lastRawHead };
   }
 
   console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements zoned, title="${(design.sceneTitle || '').substring(0, 40)}"`);
-  return design;
+  return { design, failReason: null };
 };
 
 // ----------------------------------------------------------------
@@ -469,19 +453,23 @@ const persistScene = async (
     errorMessage: string | null;
   },
 ) => {
-  // Decode + WebP
+  // Decode original image bytes (no WebP conversion — see note below).
+  // Earlier code called convertToWebP here, but Deno's
+  // OffscreenCanvas.convertToBlob({type:'image/webp'}) silently falls back to
+  // PNG, leaving storage with mimetype:image/png + a .webp filename. Until
+  // front-end WebP conversion (a la image-generate@1eacefc) is added, persist
+  // raw PNG with a matching .png extension so mimetype == extension.
   const base64Match = params.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!base64Match) throw new Error('Invalid image dataUrl');
   const contentType = base64Match[1] || 'image/png';
   const binaryString = atob(base64Match[2]);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-  const rawBlob = new Blob([bytes], { type: contentType });
-  const blob = await convertToWebP(rawBlob, 1024, 1024, 0.8);
+  const blob = new Blob([bytes], { type: contentType });
 
-  const storagePath = `scenes/${params.userId}/${params.dayIndex}/${params.wordSetHash}.webp`;
+  const storagePath = `scenes/${params.userId}/${params.dayIndex}/${params.wordSetHash}.png`;
   const { error: ulErr } = await sb.storage.from(NEW_BUCKET).upload(storagePath, blob, {
-    contentType: blob.type || 'image/webp',
+    contentType: blob.type || 'image/png',
     cacheControl: '31536000',
     upsert: true,
   });
@@ -492,6 +480,7 @@ const persistScene = async (
 
   const { data: urlData } = sb.storage.from(NEW_BUCKET).getPublicUrl(storagePath);
   const publicUrl = urlData.publicUrl;
+  if (!publicUrl) throw new Error('storage getPublicUrl returned empty');
 
   // regions always carry one entry per word (zone/default/vision); keep source for debugging.
   const fullRegions = params.words.map((w) => {
@@ -608,6 +597,54 @@ const resolveVisionConfig = (designCfg: LLMConfig): LLMConfig => ({
 const json = (body: any, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
+// NDJSON streaming response. Each event is enqueued as a single JSON line + '\n'.
+// The frontend reads via res.body.getReader() + TextDecoder, parsing line-by-line.
+//
+// Event protocol (see plan §1):
+//   { stage: 'designed',  prompt, source: 'director'|'fallback', sceneTitle? }
+//   { stage: 'rendered',  providerId }
+//   { stage: 'persisted' }
+//   { stage: 'done',      source: 'generated'|'cache-hit', asset, degraded, pipeline? }
+//   { stage: 'error',     failedStage: 'designed'|'rendered'|'persisted'|'unknown', error, failures? }
+//
+// `Cache-Control: no-cache, no-transform` + `X-Accel-Buffering: no` ask intermediaries
+// (Nginx, CDN) not to buffer the whole stream before forwarding.
+const ndjsonResponse = (
+  pipelineRunner: (send: (event: any) => void) => Promise<void>,
+): Response => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: any) => {
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+        } catch (e) {
+          console.warn('[scene-generate] enqueue failed (stream closed?):', e);
+        }
+      };
+      try {
+        await pipelineRunner(send);
+      } catch (err) {
+        // Unexpected error not handled by stage-specific catches.
+        console.error('[scene-generate] pipeline uncaught:', err);
+        try {
+          send({ stage: 'error', failedStage: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        } catch { /* stream already closed */ }
+      } finally {
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -679,142 +716,187 @@ serve(async (req) => {
 
     const sb = getSupabaseClient();
 
-    // Cache check (per-user)
-    if (!force) {
-      const { data: cached } = await sb
-        .from('scene_assets')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('word_set_hash', wordSetHash)
-        .eq('day_index', dayIndex)
-        .eq('language', language)
-        .eq('status', 'ready')
-        .maybeSingle();
-      if (cached) {
-        console.log(`[scene-generate] cache hit ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)}`);
-        return json({
-          ok: true,
-          source: 'cache-hit',
-          asset: {
-            id: cached.id,
-            wordSetHash: cached.word_set_hash,
-            dayIndex: cached.day_index,
-            language: cached.language,
-            imageUrl: cached.public_url,
-            storagePath: cached.storage_path,
-            prompt: cached.prompt || '',
-            regions: cached.regions || [],
-            sceneDesign: cached.scene_design || null,
-            model: cached.model || '',
-            status: cached.status,
-            createdAt: cached.created_at,
-          },
-        });
-      }
-    }
-
-    // ① Scene director
-    const designCfg = resolveDesignConfig();
-    const design = await designScene(words, dayIndex, designCfg);
-
-    let prompt: string;
-    let sceneDesignPayload: any = null;
-    let fellBack = false;
-    if (design) {
-      prompt = design.structuredPrompt;
-      sceneDesignPayload = {
-        sceneTitle: design.sceneTitle || null,
-        sceneConcept: design.sceneConcept || null,
-        structuredPrompt: design.structuredPrompt,
-        elements: design.elements,
-        source: 'director',
-      };
-    } else {
-      prompt = buildFusionPrompt(words, dayIndex);
-      fellBack = true;
-      console.log('[scene-generate] director failed/absent -> buildFusionPrompt fallback');
-    }
-
-    // ② Render
-    const providers = getProviderConfigs();
-    if (providers.length === 0) return json({ error: 'No image generation providers configured' }, 500);
-
-    const failures: ProviderAttemptFailure[] = [];
-    let generated: { dataUrl: string; providerId: ProviderId; model: string } | null = null;
-    for (let i = 0; i < providers.length; i++) {
-      const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0);
-      if ('error' in result) { failures.push(result.error); continue; }
-      generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model };
-      break;
-    }
-    if (!generated) {
-      return json({ ok: false, error: 'All image providers failed', failures }, 502);
-    }
-
-    // Regions — DEFAULT path: derive from director zones (no extra model call).
-    let regions = deriveRegionsFromElements(
-      design ? { structuredPrompt: design.structuredPrompt, elements: design.elements } : { structuredPrompt: '', elements: [] },
-      words,
-    );
-    let regionsSource: string = fellBack ? 'default' : 'zone';
-
-    // ③ Optional vision refinement (only when enabled)
-    const visionEnabled = resolveVisionEnabled(visionEnabledBody);
-    let visionModelUsed = '';
-    if (visionEnabled) {
-      const visionCfg = resolveVisionConfig(designCfg);
-      const zoneHints = new Map<string, string>();
-      for (const el of design?.elements || []) {
-        if (el.positionZone) zoneHints.set(String(el.word).toLowerCase(), el.positionZone);
-      }
-      let detected: DetectedRegion[] = [];
-      try {
-        detected = await detectRegions(generated.dataUrl, words, visionCfg, zoneHints);
-      } catch (err) {
-        console.warn(`[scene-generate] vision detection threw: ${err}`);
-      }
-      visionModelUsed = visionCfg.model;
-      if (detected.length > 0) {
-        const byWord = new Map(detected.map((r) => [r.word.toLowerCase(), r]));
-        let visionCount = 0;
-        regions = regions.map((r) => {
-          const v = byWord.get(r.word.toLowerCase());
-          if (v) {
-            visionCount += 1;
-            return { word: r.word, x: v.x, y: v.y, w: v.w, h: v.h, confidence: v.confidence, source: 'vision' as const };
+    // === From here on, all responses are NDJSON streams. ===
+    // Input-validation errors above still return JSON (400/401). Pipeline
+    // progress, mid-pipeline failures, and the final asset all flow as NDJSON
+    // events so the client can drive its preparing-stage UI off real signals.
+    return ndjsonResponse(async (send) => {
+      // Cache check (per-user). A hit emits a single `done` event and closes.
+      // If public_url is empty (defensive — should never happen), treat as miss.
+      if (!force) {
+        const { data: cached } = await sb
+          .from('scene_assets')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('word_set_hash', wordSetHash)
+          .eq('day_index', dayIndex)
+          .eq('language', language)
+          .eq('status', 'ready')
+          .maybeSingle();
+        if (cached) {
+          if (!cached.public_url) {
+            console.warn(`[scene-generate] cache hit ${wordSetHash} but public_url empty -> regenerate`);
+          } else {
+            console.log(`[scene-generate] cache hit ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)}`);
+            send({
+              stage: 'done',
+              source: 'cache-hit',
+              asset: {
+                id: cached.id,
+                wordSetHash: cached.word_set_hash,
+                dayIndex: cached.day_index,
+                language: cached.language,
+                imageUrl: cached.public_url,
+                storagePath: cached.storage_path,
+                prompt: cached.prompt || '',
+                regions: cached.regions || [],
+                sceneDesign: cached.scene_design || null,
+                model: cached.model || '',
+                status: cached.status,
+                createdAt: cached.created_at,
+              },
+              degraded: false,
+            });
+            return;
           }
-          return r;
-        });
-        regionsSource = visionCount === regions.length ? 'vision' : 'mixed';
-        console.log(`[scene-generate] vision refined ${visionCount}/${words.length} regions`);
-      } else {
-        console.log('[scene-generate] vision enabled but returned 0 regions -> keeping zone/default regions');
+        }
       }
-    }
 
-    const asset = await persistScene(sb, {
-      userId,
-      wordSetHash,
-      dayIndex,
-      language,
-      words,
-      dataUrl: generated.dataUrl,
-      prompt,
-      model: generated.model,
-      regions,
-      sceneDesign: sceneDesignPayload,
-      status: 'ready',
-      errorMessage: null,
-    });
+      // ① Scene director
+      const designCfg = resolveDesignConfig();
+      let designResult: { design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; failReason: string | null; httpStatus?: number; rawHead?: string } = { design: null, failReason: 'not-called' };
+      try {
+        designResult = await designScene(words, dayIndex, designCfg);
+      } catch (err) {
+        send({ stage: 'error', failedStage: 'designed', error: `director threw: ${err instanceof Error ? err.message : String(err)}` });
+        return;
+      }
+      const design = designResult.design;
 
-    console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'}`);
+      let prompt: string;
+      let sceneDesignPayload: any = null;
+      let fellBack = false;
+      if (design) {
+        prompt = design.structuredPrompt;
+        sceneDesignPayload = {
+          sceneTitle: design.sceneTitle || null,
+          sceneConcept: design.sceneConcept || null,
+          structuredPrompt: design.structuredPrompt,
+          elements: design.elements,
+          source: 'director',
+        };
+      } else {
+        prompt = buildFusionPrompt(words, dayIndex);
+        fellBack = true;
+        console.log(`[scene-generate] director failed/absent -> buildFusionPrompt fallback (reason: ${designResult.failReason})`);
+      }
+      // → emit designed (real evidence: prompt string exists)
+      // When fell back, include the failure reason so the client can surface it.
+      send({
+        stage: 'designed',
+        prompt,
+        source: fellBack ? 'fallback' : 'director',
+        sceneTitle: design?.sceneTitle || null,
+        ...(fellBack && designResult.failReason ? { fallbackReason: designResult.failReason } : {}),
+      });
 
-    return json({
-      ok: true,
-      source: 'generated',
-      degraded: false,
-      asset,
-      pipeline: { design: design ? 'director' : 'fallback', regions: regionsSource, vision: visionEnabled ? (visionModelUsed || 'on') : 'off' },
+      // ② Render
+      const providers = getProviderConfigs();
+      if (providers.length === 0) {
+        send({ stage: 'error', failedStage: 'rendered', error: 'No image generation providers configured' });
+        return;
+      }
+
+      const failures: ProviderAttemptFailure[] = [];
+      let generated: { dataUrl: string; providerId: ProviderId; model: string } | null = null;
+      for (let i = 0; i < providers.length; i++) {
+        const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0);
+        if ('error' in result) { failures.push(result.error); continue; }
+        generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model };
+        break;
+      }
+      if (!generated) {
+        send({ stage: 'error', failedStage: 'rendered', error: 'All image providers failed', failures });
+        return;
+      }
+      // → emit rendered (real evidence: image dataUrl exists)
+      send({ stage: 'rendered', providerId: generated.providerId });
+
+      // Regions — DEFAULT path: derive from director zones (no extra model call).
+      let regions = deriveRegionsFromElements(
+        design ? { structuredPrompt: design.structuredPrompt, elements: design.elements } : { structuredPrompt: '', elements: [] },
+        words,
+      );
+      let regionsSource: string = fellBack ? 'default' : 'zone';
+
+      // ③ Optional vision refinement (only when enabled)
+      const visionEnabled = resolveVisionEnabled(visionEnabledBody);
+      let visionModelUsed = '';
+      if (visionEnabled) {
+        const visionCfg = resolveVisionConfig(designCfg);
+        const zoneHints = new Map<string, string>();
+        for (const el of design?.elements || []) {
+          if (el.positionZone) zoneHints.set(String(el.word).toLowerCase(), el.positionZone);
+        }
+        let detected: DetectedRegion[] = [];
+        try {
+          detected = await detectRegions(generated.dataUrl, words, visionCfg, zoneHints);
+        } catch (err) {
+          console.warn(`[scene-generate] vision detection threw: ${err}`);
+        }
+        visionModelUsed = visionCfg.model;
+        if (detected.length > 0) {
+          const byWord = new Map(detected.map((r) => [r.word.toLowerCase(), r]));
+          let visionCount = 0;
+          regions = regions.map((r) => {
+            const v = byWord.get(r.word.toLowerCase());
+            if (v) {
+              visionCount += 1;
+              return { word: r.word, x: v.x, y: v.y, w: v.w, h: v.h, confidence: v.confidence, source: 'vision' as const };
+            }
+            return r;
+          });
+          regionsSource = visionCount === regions.length ? 'vision' : 'mixed';
+          console.log(`[scene-generate] vision refined ${visionCount}/${words.length} regions`);
+        } else {
+          console.log('[scene-generate] vision enabled but returned 0 regions -> keeping zone/default regions');
+        }
+      }
+
+      // persistScene (upload + DB upsert)
+      let asset;
+      try {
+        asset = await persistScene(sb, {
+          userId,
+          wordSetHash,
+          dayIndex,
+          language,
+          words,
+          dataUrl: generated.dataUrl,
+          prompt,
+          model: generated.model,
+          regions,
+          sceneDesign: sceneDesignPayload,
+          status: 'ready',
+          errorMessage: null,
+        });
+      } catch (err) {
+        send({ stage: 'error', failedStage: 'persisted', error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      // → emit persisted (real evidence: scene_assets row written, publicUrl non-empty)
+      send({ stage: 'persisted' });
+
+      console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'}`);
+
+      // → emit done (final asset; client switches to MODE_SELECT)
+      send({
+        stage: 'done',
+        source: 'generated',
+        degraded: false,
+        asset,
+        pipeline: { design: design ? 'director' : 'fallback', regions: regionsSource, vision: visionEnabled ? (visionModelUsed || 'on') : 'off' },
+      });
     });
   } catch (error) {
     console.error('[scene-generate] handler error:', error);
