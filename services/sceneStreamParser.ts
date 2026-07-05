@@ -17,6 +17,15 @@ export interface SceneGenerationResult {
   source: 'cache-hit' | 'generated';
   asset: SceneAsset;
   degraded: boolean;
+  /**
+   * Present when the edge streamed a `clientPersist:true` done event (PNG bytes
+   * returned inline; client must run compressToWebP + upload + call finalize).
+   * `asset` is undefined in this case — the caller must finalize before use.
+   */
+  pendingClientPersist?: {
+    imageDataUrl: string;
+    pendingAsset: any;
+  };
 }
 
 export type { ScenePipelineStage } from '../types';
@@ -27,7 +36,19 @@ export interface SceneGenerationCallbacks {
 
 /** Normalize a raw edge-function asset payload into a typed SceneAsset. */
 export const normalizeAsset = (raw: any): SceneAsset => {
-  const regions: WordRegion[] = (Array.isArray(raw?.regions) ? raw.regions : []).map((r: any) => {
+  // Defensive: legacy rows stored regions/scene_design as a JSONB STRING
+  // (because persistScene pre-stringified via JSON.stringify before upsert).
+  // Undo that here so the rest of the parser sees real arrays/objects.
+  const unwrapJsonb = (v: any): any => {
+    if (typeof v === 'string' && v.length > 0) {
+      try { return JSON.parse(v); } catch { return v; }
+    }
+    return v;
+  };
+  const rawRegions = unwrapJsonb(raw?.regions);
+  const rawSceneDesign = unwrapJsonb(raw?.scene_design ?? raw?.sceneDesign);
+
+  const regions: WordRegion[] = (Array.isArray(rawRegions) ? rawRegions : []).map((r: any) => {
     const region: WordRegion = {
       word: String(r?.word || ''),
       x: Number(r?.x) || 0,
@@ -51,7 +72,7 @@ export const normalizeAsset = (raw: any): SceneAsset => {
       sentences[region.word.toLowerCase()] = region.sentence;
     }
   }
-  const elementsFallback = raw?.scene_design?.elements;
+  const elementsFallback = rawSceneDesign?.elements;
   if (Array.isArray(elementsFallback)) {
     for (const el of elementsFallback) {
       if (!el || typeof el !== 'object') continue;
@@ -85,11 +106,9 @@ export const normalizeAsset = (raw: any): SceneAsset => {
   // present. Stored on `scene_design.storyboard` in the DB and passed through
   // the edge function's done-event payload under `sceneDesign.storyboard`.
   const storyboard =
-    typeof raw?.sceneDesign?.storyboard === 'string'
-      ? raw.sceneDesign.storyboard.trim()
-      : typeof raw?.scene_design?.storyboard === 'string'
-        ? raw.scene_design.storyboard.trim()
-        : '';
+    typeof rawSceneDesign?.storyboard === 'string'
+      ? rawSceneDesign.storyboard.trim()
+      : '';
   if (storyboard) {
     asset.storyboard = storyboard;
   }
@@ -120,6 +139,7 @@ export const parseSceneGenerateNdjsonStream = async (
   let finalAsset: SceneAsset | null = null;
   let finalSource: 'cache-hit' | 'generated' = 'generated';
   let finalDegraded = false;
+  let pendingClientPersist: { imageDataUrl: string; pendingAsset: any } | undefined = undefined;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -146,12 +166,25 @@ export const parseSceneGenerateNdjsonStream = async (
         callbacks?.onStage?.(stage as ScenePipelineStage, event);
       } else if (stage === 'done') {
         callbacks?.onStage?.('done', event);
-        if (!event.asset) throw new Error('scene-generate done event missing asset');
-        const asset = normalizeAsset(event.asset);
-        if (!asset.imageUrl) throw new Error('scene-generate returned empty imageUrl');
-        finalAsset = asset;
-        finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
-        finalDegraded = Boolean(event.degraded);
+        if (event?.clientPersist === true && typeof event?.imageDataUrl === 'string' && event?.pendingAsset) {
+          // Client-persist path: edge returned raw PNG + metadata. Caller
+          // (sceneGame.callSceneGenerate) runs compressToWebP + upload +
+          // finalize to produce the final asset. We don't throw on missing
+          // `asset.imageUrl` here — that check only applies to the legacy path.
+          pendingClientPersist = {
+            imageDataUrl: event.imageDataUrl,
+            pendingAsset: event.pendingAsset,
+          };
+          finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
+          finalDegraded = Boolean(event.degraded);
+        } else {
+          if (!event.asset) throw new Error('scene-generate done event missing asset');
+          const asset = normalizeAsset(event.asset);
+          if (!asset.imageUrl) throw new Error('scene-generate returned empty imageUrl');
+          finalAsset = asset;
+          finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
+          finalDegraded = Boolean(event.degraded);
+        }
       } else if (stage === 'error') {
         const failedAt = event?.failedStage || 'unknown';
         const message = event?.error || `scene-generate failed at ${failedAt}`;
@@ -160,6 +193,9 @@ export const parseSceneGenerateNdjsonStream = async (
     }
   }
 
-  if (!finalAsset) throw new Error('scene-generate stream ended without done event');
-  return { source: finalSource, asset: finalAsset, degraded: finalDegraded };
+  if (!finalAsset && !pendingClientPersist) throw new Error('scene-generate stream ended without done event');
+  if (pendingClientPersist) {
+    return { source: finalSource, asset: null as any, degraded: finalDegraded, pendingClientPersist };
+  }
+  return { source: finalSource, asset: finalAsset!, degraded: finalDegraded };
 };

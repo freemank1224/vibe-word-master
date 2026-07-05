@@ -1033,9 +1033,12 @@ test('buildSceneDirectorSystemPrompt declares storyboard as a top-level JSON fie
   assert.ok(/"storyboard":\s*string/i.test(sys), 'JSON schema must include storyboard:string');
 });
 
-test('parseSceneDesignWithDiagnostics fails with storyboard-invalid when storyboard is present but violates constraints', () => {
+test('parseSceneDesignWithDiagnostics keeps the design (drops invalid storyboard) when storyboard violates constraints', () => {
   // Structured prompt + valid elements + valid cloze sentences, but a storyboard
-  // missing one word ("moon") → must fail with storyboard-invalid.
+  // missing one word ("moon"). Old behavior was to reject the WHOLE design,
+  // which discarded otherwise-good director output and forced the useless
+  // "hidden in today's scene" fallback. New behavior: drop only the storyboard
+  // field, keep elements + sentences so the UI still has real cloze clues.
   const storyboardNoMoon =
     'A glossy red apple sits on the counter. ' +
     'The angry chef slams his spoon onto the stove. ' +
@@ -1053,10 +1056,14 @@ test('parseSceneDesignWithDiagnostics fails with storyboard-invalid when storybo
     ],
   });
   const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, WORDS);
-  assert.equal(design, null);
-  assert.equal(diagnostics.parsedSuccessfully, false);
-  assert.equal(diagnostics.failReason, 'storyboard-invalid');
+  assert.ok(design, 'design must NOT be null — keep elements + sentences even when storyboard is invalid');
+  assert.equal(diagnostics.parsedSuccessfully, true);
+  assert.equal(diagnostics.failReason, undefined);
   assert.equal(diagnostics.storyboardPresent, true);
   assert.equal(diagnostics.storyboardWordCoverage, 4);
   assert.equal(diagnostics.storyboardViolation, 'uncovered-word');
+  // Design keeps structuredPrompt + elements but NOT the invalid storyboard.
+  assert.equal(design!.storyboard, undefined);
+  assert.equal(design!.elements.length, 5);
+  assert.equal(design!.elements[0].sentence, 'A glossy red apple sits on the counter.');
 });

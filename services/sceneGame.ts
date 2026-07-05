@@ -2,6 +2,7 @@ import { adaptiveWordSelector } from './adaptiveWordSelector';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { getShanghaiDateString } from '../utils/timezone';
 import { SceneGameSettings } from './sceneGameSettings';
+import { compressToWebP } from '../utils/imageUtils';
 // Re-exported from the pure parser module so unit tests can import the parser
 // without pulling in supabaseClient / adaptiveWordSelector (which depend on
 // `@/` path aliases that Node's native test runner cannot resolve).
@@ -334,7 +335,17 @@ const callSceneGenerate = async (
 
     // 3. application/x-ndjson → streaming parse.
     if (!res.body) throw new Error('scene-generate returned no stream body');
-    return await parseSceneGenerateNdjsonStream(res.body, callbacks);
+    const streamResult = await parseSceneGenerateNdjsonStream(res.body, callbacks);
+    // clientPersist path: parser returned pendingClientPersist (raw PNG +
+    // metadata). Run browser Canvas → WebP → upload → finalize before return.
+    if (streamResult.pendingClientPersist) {
+      const asset = await finalizeClientPersistedScene(
+        streamResult.pendingClientPersist.imageDataUrl,
+        streamResult.pendingClientPersist.pendingAsset,
+      );
+      return { source: streamResult.source, asset, degraded: streamResult.degraded };
+    }
+    return streamResult;
   })();
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -356,7 +367,7 @@ export const requestSceneGeneration = async (
   callbacks?: SceneGenerationCallbacks,
 ): Promise<SceneGenerationResult> => {
   return callSceneGenerate(
-    { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled() },
+    { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled(), clientPersist: true },
     signal,
     callbacks,
     SCENE_GENERATION_TIMEOUT_MS,
@@ -372,11 +383,174 @@ export const requestSceneRegeneration = async (
   callbacks?: SceneGenerationCallbacks,
 ): Promise<SceneGenerationResult> => {
   return callSceneGenerate(
-    { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled() },
+    { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled(), clientPersist: true },
     signal,
     callbacks,
     SCENE_GENERATION_TIMEOUT_MS,
   );
+};
+
+const SCENE_BUCKET = 'word-images';
+
+/**
+ * Client-side WebP conversion + finalize, mirroring imageProcessAndUpload.
+ * Called after a `clientPersist:true` done event carries `imageDataUrl` +
+ * `pendingAsset`. Steps:
+ *   1. compressToWebP (browser Canvas, true WebP, magic-byte verified)
+ *   2. Upload to storage at `scenes/{userId}/{dayIndex}/{wordSetHash}.webp`
+ *   3. Call scene-generate action='finalize' to write scene_assets row
+ *   4. Return a normalized SceneAsset so the caller can transition to PLAYING
+ */
+const finalizeClientPersistedScene = async (
+  imageDataUrl: string,
+  pending: {
+    wordSetHash: string;
+    dayIndex: number;
+    language: string;
+    words: SceneWordMeta[];
+    regions: any[];
+    sceneDesign: any;
+    prompt: string;
+    model: string;
+    visionModel: string;
+    userId: string;
+  },
+): Promise<SceneAsset> => {
+  // 1. Browser Canvas → true WebP (the same reliable encoder used by word image upload).
+  const webpBlob = await compressToWebP(imageDataUrl, 1024, 1024, 0.82);
+  // Verify the RIFF....WEBP magic — defends against ancient browsers that
+  // silently fall back to PNG inside canvas.toBlob.
+  const head = new Uint8Array(await webpBlob.slice(0, 12).arrayBuffer());
+  const isWebp = head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46
+    && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50;
+  if (!isWebp) {
+    throw new Error('compressToWebP produced non-WebP bytes — browser Canvas encoder unavailable');
+  }
+  const contentType = 'image/webp';
+
+  // 2. Upload storage (path mirrors the legacy .png layout but ends .webp).
+  const storagePath = `scenes/${pending.userId}/${pending.dayIndex}/${pending.wordSetHash}.webp`;
+  const { error: ulErr } = await supabase.storage
+    .from(SCENE_BUCKET)
+    .upload(storagePath, webpBlob, { contentType, cacheControl: '31536000', upsert: true });
+  if (ulErr) throw new Error(`storage upload failed: ${ulErr.message}`);
+
+  const { data: urlData } = supabase.storage.from(SCENE_BUCKET).getPublicUrl(storagePath);
+  const publicUrl = urlData.publicUrl;
+
+  // 3. Call finalize to write scene_assets row (server stays authoritative).
+  const { data, error } = await supabase.functions.invoke('scene-generate', {
+    body: {
+      action: 'finalize',
+      storagePath,
+      publicUrl,
+      wordSetHash: pending.wordSetHash,
+      dayIndex: pending.dayIndex,
+      language: pending.language,
+      words: pending.words,
+      regions: pending.regions,
+      sceneDesign: pending.sceneDesign,
+      prompt: pending.prompt,
+      model: pending.model,
+      visionModel: pending.visionModel,
+      fileSizeBytes: webpBlob.size,
+    },
+  });
+  if (error) throw new Error(`finalize invoke failed: ${error.message}`);
+  if (!data || data.ok !== true || !data.asset) {
+    throw new Error(data?.error || 'finalize returned no asset');
+  }
+  console.log(`[sceneGame] client-persist finalized ${pending.wordSetHash}: ${storagePath} (${webpBlob.size}B)`);
+
+  // 4. Normalize to SceneAsset. The asset comes back with snake_case keys from
+  // the DB row, so normalizeAsset handles the mapping.
+  return normalizeAsset(data.asset);
+};
+
+/**
+ * Run orphan-cleanup on the server (deletes scene_assets rows that lack usable
+ * sentence info, plus their PNG files). `dryRun` returns what would be deleted.
+ */
+export const cleanupOrphanSceneAssets = async (dryRun: boolean = false): Promise<{ ok: boolean; count?: number; rows?: any[]; deletedIds?: string[]; error?: string }> => {
+  if (!isSupabaseConfigured) return { ok: false, error: 'Supabase is not configured' };
+  const { data, error } = await supabase.functions.invoke('scene-generate', {
+    body: { action: 'orphan-cleanup', dryRun },
+  });
+  if (error) return { ok: false, error: error.message };
+  if (!data || data.ok !== true) return { ok: false, error: data?.error || 'orphan-cleanup failed' };
+  return { ok: true, count: data.count, rows: data.rows, deletedIds: data.deletedIds };
+};
+
+/**
+ * One-shot migration: convert every existing scene PNG to WebP. Iterates
+ * migrate-list, downloads each PNG via fetch, runs compressToWebP, uploads
+ * the WebP to storage, then calls migrate-replace to swap the row + delete
+ * the old PNG. Reports progress via onProgress callback.
+ */
+export const migrateScenePngsToWebp = async (
+  onProgress?: (done: number, total: number, current: { id: string; oldPath: string; status: 'ok' | 'error'; error?: string; oldBytes?: number; newBytes?: number }) => void,
+): Promise<{ ok: boolean; total: number; migrated: number; failed: number; error?: string }> => {
+  if (!isSupabaseConfigured) return { ok: false, total: 0, migrated: 0, failed: 0, error: 'Supabase is not configured' };
+  const { data: listData, error: listErr } = await supabase.functions.invoke('scene-generate', {
+    body: { action: 'migrate-list' },
+  });
+  if (listErr) return { ok: false, total: 0, migrated: 0, failed: 0, error: listErr.message };
+  if (!listData || listData.ok !== true) return { ok: false, total: 0, migrated: 0, failed: 0, error: listData?.error || 'migrate-list failed' };
+
+  const rows: any[] = Array.isArray(listData.rows) ? listData.rows : [];
+  const total = rows.length;
+  let migrated = 0;
+  let failed = 0;
+  let done = 0;
+
+  for (const row of rows) {
+    const id = String(row.id || '');
+    const oldPath = String(row.storagePath || '');
+    const publicUrl = String(row.publicUrl || '');
+    try {
+      // Download the existing PNG. Use fetch on the public URL; storage bucket
+      // is public so no auth headers needed.
+      const res = await fetch(publicUrl);
+      if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+      const pngBlob = await res.blob();
+      const oldBytes = pngBlob.size;
+      // Convert PNG blob → dataURL for compressToWebP.
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => reject(fr.error || new Error('FileReader failed'));
+        fr.readAsDataURL(pngBlob);
+      });
+      const webpBlob = await compressToWebP(dataUrl, 1024, 1024, 0.82);
+      const head = new Uint8Array(await webpBlob.slice(0, 12).arrayBuffer());
+      const isWebp = head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46
+        && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50;
+      if (!isWebp) throw new Error('Canvas produced non-WebP bytes');
+
+      // Upload WebP — path is identical except extension swap.
+      const webpStoragePath = oldPath.replace(/\.png$/i, '.webp');
+      const { error: ulErr } = await supabase.storage
+        .from(SCENE_BUCKET)
+        .upload(webpStoragePath, webpBlob, { contentType: 'image/webp', cacheControl: '31536000', upsert: true });
+      if (ulErr) throw new Error(`storage upload: ${ulErr.message}`);
+      const { data: urlData } = supabase.storage.from(SCENE_BUCKET).getPublicUrl(webpStoragePath);
+      const webpPublicUrl = urlData.publicUrl;
+
+      const { data: repData, error: repErr } = await supabase.functions.invoke('scene-generate', {
+        body: { action: 'migrate-replace', id, webpStoragePath, webpPublicUrl, fileSizeBytes: webpBlob.size },
+      });
+      if (repErr) throw new Error(`migrate-replace: ${repErr.message}`);
+      if (!repData || repData.ok !== true) throw new Error(`migrate-replace: ${repData?.error || 'unknown'}`);
+      migrated += 1;
+      onProgress?.(++done, total, { id, oldPath, status: 'ok', oldBytes, newBytes: webpBlob.size });
+    } catch (err) {
+      failed += 1;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[sceneGame] migrate ${id} (${oldPath}) failed:`, msg);
+      onProgress?.(++done, total, { id, oldPath, status: 'error', error: msg });
+    }
+  }
+  return { ok: failed === 0, total, migrated, failed };
 };
 
 // ----------------------------------------------------------------

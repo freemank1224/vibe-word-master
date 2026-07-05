@@ -713,9 +713,14 @@ export const parseSceneDesignWithDiagnostics = (
 
   const placeholderCount = countMascotPlaceholder(structuredPrompt);
 
-  // Storyboard hard-validation (§4 storyboard-first refactor). When invalid,
-  // downgrade the parse to a structured failure so the caller falls back to
-  // buildFusionResult — the fallback always ships storyboard + sentences.
+  // Storyboard soft-validation. The storyboard is connective prose; if it's
+  // malformed (wrong sentence count, missing words, etc.) we DROP the
+  // storyboard field but KEEP the rest of the design — the cloze sentences on
+  // elements[].sentence are what the UI actually needs, and we already validated
+  // each one above. The old behavior (reject the entire design when storyboard
+  // was present-but-invalid) was discarding director successes whenever the
+  // LLM's prose didn't perfectly match ⌈N/2⌉-N sentence count, forcing the
+  // useless "hidden in today's scene" fallback template.
   const storyboardRaw = typeof parsed.storyboard === 'string' ? parsed.storyboard : '';
   const storyboardParsed = parseStoryboard(storyboardRaw, words);
   const storyboardPresent = storyboardRaw.trim().length > 0;
@@ -726,14 +731,7 @@ export const parseSceneDesignWithDiagnostics = (
     wordCoverage: storyboardParsed.wordCoverage,
     violation: storyboardParsed.violation,
   };
-  if (storyboardPresent && storyboardParsed.violation !== null) {
-    return failDiagnostics('storyboard-invalid', originalRaw, {
-      think: thinkStripped,
-      fence: fenceStripped,
-      prose: jsonFromProse,
-    }, inputWordCount, storyboardStats);
-  }
-  if (storyboardPresent) {
+  if (storyboardPresent && storyboardParsed.violation === null) {
     design.storyboard = storyboardRaw.trim();
   }
 
@@ -921,6 +919,18 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     '   from the sentences — write sentences first, then derive the prompt.',
     ' • DO NOT add floating captions, subtitles, UI labels, or watermarks to the image.',
     ' • DO NOT describe the mascot\'s colors, shape, or features inside structuredPrompt.',
+    '',
+    'ANATOMY CONSTRAINTS (image models easily produce mutants — enforce these):',
+    ' • Every animal (dog, cat, horse, dinosaur, etc.) MUST have the species-correct',
+    '   number of body parts: exactly 2 eyes, 2 ears, the correct limb count for the',
+    '   species (4 for quadrupeds, 2 for birds, etc.), 1 nose, 1 mouth.',
+    ' • NO extra limbs, NO duplicated facial features, NO mutated anatomy, NO fingers',
+    '   growing from wrong joints. If unsure, err toward fewer features, not more.',
+    ' • The mascot is the only fantasy creature allowed, and even it must have exactly',
+    '   2 eyes, 2 arms, 2 legs, 1 mouth — symmetrical and anatomically believable.',
+    ' • When describing an animal in structuredPrompt, prefer a clear single pose',
+    '   (side profile or 3/4 view) over complex multi-angle compositions — single',
+    '   poses produce far fewer anatomy errors.',
   ].join('\n');
 };
 

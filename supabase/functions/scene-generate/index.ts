@@ -695,13 +695,16 @@ const persistScene = async (
     word_set_hash: params.wordSetHash,
     day_index: params.dayIndex,
     language: params.language,
-    words: JSON.stringify(params.words),
+    // NOTE: do NOT JSON.stringify these — supabase-js already JSON-encodes the
+    // body, so pre-stringifying produces a JSONB STRING ("[...]") instead of a
+    // JSONB ARRAY. Pass the raw arrays/objects and let PostgREST handle it.
+    words: params.words,
     storage_bucket: NEW_BUCKET,
     storage_path: storagePath,
     public_url: publicUrl,
     prompt: params.prompt,
-    regions: JSON.stringify(fullRegions),
-    scene_design: params.sceneDesign ? JSON.stringify(params.sceneDesign) : null,
+    regions: fullRegions,
+    scene_design: params.sceneDesign ?? null,
     model: params.model,
     status: params.status,
     error_message: params.errorMessage,
@@ -848,6 +851,11 @@ serve(async (req) => {
     const force = body?.force === true || body?.force === '1';
     // ③ vision on/off may be toggled from the Admin Console (non-sensitive).
     const visionEnabledBody = body?.visionEnabled === true;
+    // clientPersist=true → edge returns raw PNG dataUrl in the `done` event;
+    // client runs compressToWebP, uploads to storage, then calls finalize to
+    // write scene_assets. Mirrors image-generate@1eacefc client-persist pattern.
+    // Default ON (matches Pipeline A). Pass false to keep legacy server upload.
+    const clientPersist = body?.clientPersist !== false;
 
     // ---- probe: verify the director can actually produce cloze sentences ----
     // Old probe sent `max_tokens:1, content:'ping'` — that only checked API key
@@ -930,6 +938,181 @@ serve(async (req) => {
       } catch (err) {
         return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502, latencyMs: Date.now() - startedAt, model: cfg.model, baseUrl: masked }, 502);
       }
+    }
+
+    // ---- finalize: client finished browser-side WebP conversion + upload ----
+    // After `clientPersist:true` flow, the edge skipped persistScene. The client
+    // ran compressToWebP, uploaded to storage, and now calls finalize to write
+    // the scene_assets row. Server stays authoritative for the table schema.
+    if (action === 'finalize') {
+      const userId = await resolveUserId(req);
+      if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
+      const storagePath = typeof body?.storagePath === 'string' ? body.storagePath.trim() : '';
+      const publicUrl = typeof body?.publicUrl === 'string' ? body.publicUrl.trim() : '';
+      const wordSetHash = typeof body?.wordSetHash === 'string' ? body.wordSetHash.trim() : '';
+      const fiDayIndex = Number(body?.dayIndex);
+      const fiLanguage = typeof body?.language === 'string' ? body.language.trim() : 'en';
+      const fileSizeBytes = Number(body?.fileSizeBytes) || 0;
+      if (!storagePath || !publicUrl || !wordSetHash) {
+        return json({ ok: false, error: 'finalize requires storagePath, publicUrl, wordSetHash' }, 400);
+      }
+      if (!Number.isInteger(fiDayIndex) || fiDayIndex < 0 || fiDayIndex > 6) {
+        return json({ ok: false, error: 'Invalid dayIndex (0-6)' }, 400);
+      }
+      const fiWordsRaw = Array.isArray(body?.words) ? body.words : [];
+      const fiWords: SceneWordMetaInput[] = [];
+      for (const w of fiWordsRaw) {
+        if (!w || typeof w.text !== 'string') continue;
+        fiWords.push({
+          text: w.text.trim(),
+          pos: typeof w.pos === 'string' ? w.pos.trim().toLowerCase() : 'noun',
+          definitionCn: typeof w.definitionCn === 'string' ? w.definitionCn.trim() : '',
+        });
+      }
+      if (fiWords.length < 5 || fiWords.length > 10) return json({ ok: false, error: 'words must contain 5-10 entries' }, 400);
+      const fiRegions = Array.isArray(body?.regions) ? body.regions : [];
+      const fiPrompt = typeof body?.prompt === 'string' ? body.prompt : '';
+      const fiModel = typeof body?.model === 'string' ? body.model : '';
+      const fiVisionModel = typeof body?.visionModel === 'string' ? body.visionModel : '';
+      const fiSceneDesign = body?.sceneDesign ?? null;
+      const sb = getSupabaseClient();
+      const row = {
+        user_id: userId,
+        word_set_hash: wordSetHash,
+        day_index: fiDayIndex,
+        language: fiLanguage,
+        // Pass raw values — supabase-js handles JSON encoding for JSONB columns.
+        // Pre-stringifying would double-encode (see persistScene fix above).
+        words: fiWords,
+        storage_bucket: NEW_BUCKET,
+        storage_path: storagePath,
+        public_url: publicUrl,
+        prompt: fiPrompt,
+        regions: fiRegions,
+        scene_design: fiSceneDesign ?? null,
+        model: fiModel,
+        vision_model: fiVisionModel,
+        file_size_bytes: fileSizeBytes || null,
+        status: 'ready' as const,
+        error_message: null,
+      };
+      const { data: asset, error } = await sb
+        .from('scene_assets')
+        .upsert(row, { onConflict: 'user_id,word_set_hash,day_index,language' })
+        .select('*')
+        .maybeSingle();
+      if (error) return json({ ok: false, error: `scene_assets upsert failed: ${error.message}` }, 500);
+      console.log(`[scene-generate] finalize wrote scene_assets id=${asset?.id} path=${storagePath} size=${fileSizeBytes}`);
+      return json({ ok: true, asset });
+    }
+
+    // ---- migrate-list: enumerate all scene_assets rows whose storage_path is .png ----
+    // Client iterates this list, downloads each PNG, runs compressToWebP, uploads
+    // the WebP, then calls migrate-replace to swap the row + delete the old PNG.
+    if (action === 'migrate-list') {
+      const userId = await resolveUserId(req);
+      if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
+      const sb = getSupabaseClient();
+      const { data, error } = await sb
+        .from('scene_assets')
+        .select('id, word_set_hash, day_index, language, storage_path, public_url, user_id')
+        .filter('storage_path', 'ilike', '%.png');
+      if (error) return json({ ok: false, error: error.message }, 500);
+      const rows = (data || []).map((r: any) => ({
+        id: String(r.id),
+        wordSetHash: String(r.word_set_hash || ''),
+        dayIndex: Number(r.day_index ?? 0),
+        language: String(r.language || 'en'),
+        storagePath: String(r.storage_path || ''),
+        publicUrl: String(r.public_url || ''),
+        userId: String(r.user_id || ''),
+      }));
+      return json({ ok: true, count: rows.length, rows });
+    }
+
+    // ---- migrate-replace: client converted a PNG to WebP and asks us to swap ----
+    // Body: { id, webpStoragePath, webpPublicUrl, fileSizeBytes }
+    // Server updates the row and deletes the old .png from storage.
+    if (action === 'migrate-replace') {
+      const userId = await resolveUserId(req);
+      if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
+      const rowId = typeof body?.id === 'string' ? body.id.trim() : '';
+      const webpStoragePath = typeof body?.webpStoragePath === 'string' ? body.webpStoragePath.trim() : '';
+      const webpPublicUrl = typeof body?.webpPublicUrl === 'string' ? body.webpPublicUrl.trim() : '';
+      const fileSizeBytes = Number(body?.fileSizeBytes) || 0;
+      if (!rowId || !webpStoragePath || !webpPublicUrl) {
+        return json({ ok: false, error: 'migrate-replace requires id, webpStoragePath, webpPublicUrl' }, 400);
+      }
+      const sb = getSupabaseClient();
+      const { data: existing, error: selErr } = await sb
+        .from('scene_assets')
+        .select('id, user_id, storage_path')
+        .eq('id', rowId)
+        .maybeSingle();
+      if (selErr) return json({ ok: false, error: selErr.message }, 500);
+      if (!existing) return json({ ok: false, error: 'row not found' }, 404);
+      const oldPath = String(existing.storage_path || '');
+      const { error: updErr } = await sb
+        .from('scene_assets')
+        .update({
+          storage_path: webpStoragePath,
+          public_url: webpPublicUrl,
+          file_size_bytes: fileSizeBytes || null,
+        })
+        .eq('id', rowId);
+      if (updErr) return json({ ok: false, error: updErr.message }, 500);
+      // Delete the old PNG file from storage (best-effort — don't fail the
+      // whole migration if the storage delete is rate-limited or already gone).
+      if (oldPath && oldPath.toLowerCase().endsWith('.png') && oldPath !== webpStoragePath) {
+        const { error: delErr } = await sb.storage.from(NEW_BUCKET).remove([oldPath]);
+        if (delErr) console.warn(`[scene-generate] migrate-replace: storage.remove(${oldPath}) failed: ${delErr.message}`);
+      }
+      console.log(`[scene-generate] migrate-replace ${rowId}: ${oldPath} -> ${webpStoragePath} (${fileSizeBytes}B)`);
+      return json({ ok: true, id: rowId, oldPath, newPath: webpStoragePath });
+    }
+
+    // ---- orphan-cleanup: delete scene_assets rows that lack usable sentence info ----
+    // A row is "orphan" if scene_design IS NULL or has no elements with a sentence.
+    // Also deletes the corresponding PNG file from storage. body.onlyReturn=true
+    // does a dry-run (returns what would be deleted without touching anything).
+    if (action === 'orphan-cleanup') {
+      const userId = await resolveUserId(req);
+      if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
+      const dryRun = body?.onlyReturn === true || body?.dryRun === true;
+      const sb = getSupabaseClient();
+      const { data, error } = await sb.from('scene_assets').select('*');
+      if (error) return json({ ok: false, error: error.message }, 500);
+      const orphans: any[] = [];
+      for (const row of data || []) {
+        const design = row.scene_design;
+        let parsed: any = null;
+        try {
+          parsed = typeof design === 'string' ? JSON.parse(design) : design;
+        } catch { /* leave parsed null */ }
+        const elements = Array.isArray(parsed?.elements) ? parsed.elements : [];
+        const hasSentence = elements.some((e: any) => typeof e?.sentence === 'string' && e.sentence.trim());
+        if (!hasSentence) orphans.push(row);
+      }
+      if (dryRun) {
+        return json({ ok: true, dryRun: true, count: orphans.length, rows: orphans.map((r) => ({ id: r.id, storage_path: r.storage_path, public_url: r.public_url })) });
+      }
+      const deleted: string[] = [];
+      const storagePathsToDelete: string[] = [];
+      for (const row of orphans) {
+        const { error: delErr } = await sb.from('scene_assets').delete().eq('id', row.id);
+        if (delErr) {
+          console.warn(`[scene-generate] orphan-cleanup: row delete failed for ${row.id}: ${delErr.message}`);
+          continue;
+        }
+        deleted.push(String(row.id));
+        if (typeof row.storage_path === 'string' && row.storage_path) storagePathsToDelete.push(row.storage_path);
+      }
+      if (storagePathsToDelete.length > 0) {
+        const { error: sdErr } = await sb.storage.from(NEW_BUCKET).remove(storagePathsToDelete);
+        if (sdErr) console.warn(`[scene-generate] orphan-cleanup: storage.remove failed: ${sdErr.message}`);
+      }
+      console.log(`[scene-generate] orphan-cleanup deleted ${deleted.length} rows + ${storagePathsToDelete.length} files`);
+      return json({ ok: true, count: deleted.length, deletedIds: deleted });
     }
 
     if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) return json({ error: 'Invalid dayIndex (0-6)' }, 400);
@@ -1210,31 +1393,69 @@ serve(async (req) => {
         }
       }
 
-      // persistScene (upload + DB upsert)
+      // persistScene (upload + DB upsert) — server path, used when clientPersist=false
+      // OR client path: skip upload entirely, return raw PNG dataUrl in done event.
       let asset;
-      try {
-        asset = await persistScene(sb, {
-          userId,
-          wordSetHash,
-          dayIndex,
-          language,
-          words,
-          dataUrl: generated.dataUrl,
-          prompt,
-          model: generated.model,
-          regions,
-          sceneDesign: sceneDesignPayload,
-          status: 'ready',
-          errorMessage: null,
+      if (!clientPersist) {
+        try {
+          asset = await persistScene(sb, {
+            userId,
+            wordSetHash,
+            dayIndex,
+            language,
+            words,
+            dataUrl: generated.dataUrl,
+            prompt,
+            model: generated.model,
+            regions,
+            sceneDesign: sceneDesignPayload,
+            status: 'ready',
+            errorMessage: null,
+          });
+        } catch (err) {
+          send({ stage: 'error', failedStage: 'persisted', error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        // → emit persisted (real evidence: scene_assets row written, publicUrl non-empty)
+        send({ stage: 'persisted' });
+      }
+
+      console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'} img2img=${generated.img2Img} mascotSrc=${mascotFetch.source} clientPersist=${clientPersist}`);
+
+      if (clientPersist) {
+        // Client-side WebP conversion path. The edge skips persistScene; the
+        // client receives the raw PNG dataUrl + all metadata needed to call
+        // finalize after running compressToWebP + supabase.storage.upload.
+        send({
+          stage: 'done',
+          source: 'generated',
+          degraded: false,
+          clientPersist: true,
+          imageDataUrl: generated.dataUrl,
+          pendingAsset: {
+            wordSetHash,
+            dayIndex,
+            language,
+            words,
+            regions,
+            sceneDesign: sceneDesignPayload,
+            prompt,
+            model: generated.model,
+            visionModel: visionModelUsed || '',
+            userId,
+          },
+          diagnostics: designDiagnostics || undefined,
+          pipeline: {
+            design: design ? 'director' : 'fallback',
+            regions: regionsSource,
+            vision: visionEnabled ? (visionModelUsed || 'on') : 'off',
+            img2img: generated.img2Img,
+            mascot: mascotFetch.source,
+            placeholderReplacedCount: placeholderSubstitution?.replacedCount ?? 0,
+          },
         });
-      } catch (err) {
-        send({ stage: 'error', failedStage: 'persisted', error: err instanceof Error ? err.message : String(err) });
         return;
       }
-      // → emit persisted (real evidence: scene_assets row written, publicUrl non-empty)
-      send({ stage: 'persisted' });
-
-      console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'} img2img=${generated.img2Img} mascotSrc=${mascotFetch.source}`);
 
       // → emit done (final asset; client switches to MODE_SELECT)
       send({
