@@ -127,19 +127,25 @@ export interface PuzzleGameCardState {
 }
 
 // ================================================================
-// Scene Fusion Game Mode (看图拼写 / 大海捞针)
+// Scene Fusion Game Mode (完形填空 cloze)
 // ================================================================
 
 export type SceneGamePhase =
   | 'INTRO'
   | 'PREPARING'
-  | 'MODE_SELECT'
   | 'COUNTDOWN'
-  | 'PLAYING_SPELL'
-  | 'PLAYING_HAYSTACK'
+  | 'PLAYING'
   | 'RESULT';
 
-export type ScenePlayMode = 'spell' | 'haystack';
+/**
+ * As of the cloze-sentence refactor, only one gameplay style remains: a single
+ * picture + multiple cloze sentences shown side-by-side. The player navigates
+ * sentences with arrow keys / mouse and fills in the blank for each.
+ *
+ * The type is kept as a single-literal union (and stays a string) for DB
+ * backward-compat with the `scene_game_rounds.play_mode` column.
+ */
+export type ScenePlayMode = 'cloze';
 
 export interface SceneGameConfig {
   kind: 'SCENE';
@@ -161,6 +167,8 @@ export interface WordRegion {
   h: number;
   confidence: number;
   detectionFailed?: boolean;
+  /** Optional cloze-style description sentence containing `word` verbatim. */
+  sentence?: string;
 }
 
 /** A generated + cached fused scene image with per-word regions. */
@@ -177,6 +185,12 @@ export interface SceneAsset {
   visionModel: string;
   status: 'ready' | 'failed';
   createdAt: string;
+  /** Index of word (lowercase) → cloze sentence. Missing/empty = degraded UI mode. */
+  sentences?: Record<string, string>;
+  /** Optional AI-generated storyboard (the natural-language scene skeleton the
+   *  cloze sentences are derived from). Surfaced in the PREPARING stage so the
+   *  player can preview the scene idea before play. */
+  storyboard?: string;
 }
 
 export interface SceneCardResult {

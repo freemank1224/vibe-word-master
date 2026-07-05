@@ -17,6 +17,12 @@ interface SceneImageWithRegionsProps {
   onRegenerate?: () => void;
   /** When true (PLAYING mode), render at full container size with NO max-width cap. */
   fullSize?: boolean;
+  /**
+   * When false (new cloze-sentence gameplay), render the picture only — skip
+   * the bbox overlays, the blink animation, and the whole-image pulse. The
+   * cloze + spelling UI lives outside the picture now.
+   */
+  showOverlays?: boolean;
 }
 
 /**
@@ -27,6 +33,9 @@ interface SceneImageWithRegionsProps {
  *  - When a region's detection failed, the whole image pulses instead.
  *  - When the image itself fails to load (404, network, CORS), an explicit
  *    failure placeholder is shown instead of a silent black box.
+ *
+ * Pass `showOverlays={false}` for the cloze-sentence gameplay where the
+ * picture is shown alongside the sentence + spell input without any bbox.
  */
 export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   imageUrl,
@@ -37,6 +46,7 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   blinkNonce,
   onRegenerate,
   fullSize = false,
+  showOverlays = true,
 }) => {
   const activeRegion = activeWordIndex != null ? regions[activeWordIndex] : null;
   const activeFailed = Boolean(activeRegion?.detectionFailed);
@@ -44,14 +54,14 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   // Track whether the 3× blink is still running so the box stays highlighted (dim) afterwards.
   const [blinking, setBlinking] = useState(false);
   useEffect(() => {
-    if (activeWordIndex == null) {
+    if (!showOverlays || activeWordIndex == null) {
       setBlinking(false);
       return;
     }
     setBlinking(true);
     const t = window.setTimeout(() => setBlinking(false), 1500); // 3 × 0.45s + margin
     return () => window.clearTimeout(t);
-  }, [activeWordIndex, blinkNonce]);
+  }, [activeWordIndex, blinkNonce, showOverlays]);
 
   // Image load failure state. Reset whenever a new URL is supplied so a
   // successful regenerate doesn't inherit the previous error.
@@ -97,7 +107,7 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
         key={`img-scene`}
         style={{ aspectRatio: '1 / 1' }}
         className={`relative w-full overflow-hidden rounded-[28px] border border-mid-charcoal bg-black/40 ${
-          activeFailed && blinking ? 'scene-image-pulsing' : ''
+          showOverlays && activeFailed && blinking ? 'scene-image-pulsing' : ''
         }`}
       >
         {imgError ? (
@@ -136,8 +146,9 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
           </div>
         )}
 
-        {/* Per-word region overlays (skip when detectionFailed for the active word — image pulses instead) */}
-        {regions.map((region, index) => {
+        {/* Per-word region overlays (skip when detectionFailed for the active word — image pulses instead).
+            Cloze-sentence gameplay (showOverlays=false) renders the picture only. */}
+        {showOverlays && regions.map((region, index) => {
           if (region.detectionFailed) return null;
           const isActive = index === activeWordIndex;
           const isSolved = solvedWordIndices.includes(index);

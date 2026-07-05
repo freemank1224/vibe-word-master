@@ -2,6 +2,19 @@ import { adaptiveWordSelector } from './adaptiveWordSelector';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { getShanghaiDateString } from '../utils/timezone';
 import { SceneGameSettings } from './sceneGameSettings';
+// Re-exported from the pure parser module so unit tests can import the parser
+// without pulling in supabaseClient / adaptiveWordSelector (which depend on
+// `@/` path aliases that Node's native test runner cannot resolve).
+export {
+  normalizeAsset,
+  parseSceneGenerateNdjsonStream,
+} from './sceneStreamParser';
+export type {
+  SceneGenerationCallbacks,
+  SceneGenerationResult,
+  ScenePipelineStage,
+} from './sceneStreamParser';
+import { normalizeAsset, parseSceneGenerateNdjsonStream } from './sceneStreamParser';
 import {
   InputSession,
   PuzzleGameSelectionMode,
@@ -253,51 +266,6 @@ const SCENE_GENERATION_TIMEOUT_MS = 240_000; // ① director (up to 55s) + ② r
 const SUPABASE_URL: string = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY: string = process.env.SUPABASE_ANON_KEY || '';
 
-export interface SceneGenerationResult {
-  source: 'cache-hit' | 'generated';
-  asset: SceneAsset;
-  degraded: boolean;
-}
-
-/**
- * Pipeline stages surfaced to the UI as the edge function progresses.
- * - `designed`  : director LLM returned a structured prompt (or fallback built)
- * - `rendered`  : image provider returned image bytes (decoded to dataUrl)
- * - `persisted` : scene_assets row written + storage upload confirmed
- * - `done`      : final asset is ready; client switches to MODE_SELECT
- *
- * Errors do NOT appear here — they throw from the request function instead.
- */
-export type ScenePipelineStage = 'designed' | 'rendered' | 'persisted' | 'done';
-
-export interface SceneGenerationCallbacks {
-  onStage?: (stage: ScenePipelineStage, payload: any) => void;
-}
-
-/** Normalize a raw edge-function asset payload into a typed SceneAsset. */
-const normalizeAsset = (raw: any): SceneAsset => ({
-  id: String(raw?.id || ''),
-  wordSetHash: String(raw?.word_set_hash || raw?.wordSetHash || ''),
-  dayIndex: Number(raw?.day_index ?? raw?.dayIndex ?? 0),
-  language: String(raw?.language || 'en'),
-  imageUrl: String(raw?.public_url || raw?.imageUrl || raw?.publicUrl || ''),
-  storagePath: String(raw?.storage_path || raw?.storagePath || ''),
-  prompt: String(raw?.prompt || ''),
-  regions: (Array.isArray(raw?.regions) ? raw.regions : []).map((r: any) => ({
-    word: String(r?.word || ''),
-    x: Number(r?.x) || 0,
-    y: Number(r?.y) || 0,
-    w: Number(r?.w) || 0,
-    h: Number(r?.h) || 0,
-    confidence: Number(r?.confidence) || 0,
-    detectionFailed: Boolean(r?.detectionFailed),
-  })) as WordRegion[],
-  model: String(raw?.model || ''),
-  visionModel: String(raw?.vision_model || raw?.visionModel || ''),
-  status: raw?.status === 'failed' ? 'failed' : 'ready',
-  createdAt: String(raw?.created_at || raw?.createdAt || ''),
-});
-
 /**
  * Call scene-generate via raw fetch and parse the NDJSON event stream.
  *
@@ -380,74 +348,6 @@ const callSceneGenerate = async (
   return await Promise.race([fetchPromise, timeoutPromise]);
 };
 
-/**
- * Parse the NDJSON event stream returned by scene-generate. Exposed for unit
- * tests that want to verify stage ordering / error handling without spinning
- * up the edge function.
- *
- * Stages fired via callbacks.onStage:
- *   - 'designed'  : director returned a prompt
- *   - 'rendered'  : image provider returned bytes
- *   - 'persisted' : scene_assets row written
- *   - 'done'      : final asset is ready
- *
- * Throws on `error` events, malformed done events (missing asset / empty URL),
- * or if the stream ends without a `done` event.
- */
-export const parseSceneGenerateNdjsonStream = async (
-  stream: ReadableStream<Uint8Array>,
-  callbacks?: SceneGenerationCallbacks,
-): Promise<SceneGenerationResult> => {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finalAsset: SceneAsset | null = null;
-  let finalSource: 'cache-hit' | 'generated' = 'generated';
-  let finalDegraded = false;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newlineIdx: number;
-    while ((newlineIdx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newlineIdx).trim();
-      buffer = buffer.slice(newlineIdx + 1);
-      if (!line) continue;
-      let event: any;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        console.warn('[sceneGame] failed to parse NDJSON line:', line.substring(0, 120));
-        continue;
-      }
-      const stage = String(event?.stage || '');
-      console.log('[sceneGame] ndjson event', { stage, source: event?.source, fallbackReason: event?.fallbackReason || '', hasAsset: !!event?.asset, imageUrl: event?.asset?.imageUrl || event?.asset?.public_url || '' });
-      if (stage === 'designed' && event?.fallbackReason) {
-        console.warn('[sceneGame] director fallback reason:', event.fallbackReason);
-      }
-      if (stage === 'designed' || stage === 'rendered' || stage === 'persisted') {
-        callbacks?.onStage?.(stage as ScenePipelineStage, event);
-      } else if (stage === 'done') {
-        callbacks?.onStage?.('done', event);
-        if (!event.asset) throw new Error('scene-generate done event missing asset');
-        const asset = normalizeAsset(event.asset);
-        if (!asset.imageUrl) throw new Error('scene-generate returned empty imageUrl');
-        finalAsset = asset;
-        finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
-        finalDegraded = Boolean(event.degraded);
-      } else if (stage === 'error') {
-        const failedAt = event?.failedStage || 'unknown';
-        const message = event?.error || `scene-generate failed at ${failedAt}`;
-        throw new Error(String(message));
-      }
-    }
-  }
-
-  if (!finalAsset) throw new Error('scene-generate stream ended without done event');
-  return { source: finalSource, asset: finalAsset, degraded: finalDegraded };
-};
-
 export const requestSceneGeneration = async (
   words: SceneWordMeta[],
   dayIndex: number,
@@ -509,82 +409,7 @@ export const probeSceneDirector = async (): Promise<SceneDirectorProbeResult> =>
 };
 
 // ----------------------------------------------------------------
-// Haystack candidate selection (pure client, no LLM)
-// ----------------------------------------------------------------
-const normalizeDefinition = (value: string): string =>
-  value.trim().toLowerCase().replace(/[\s,，。.;；:：、()（）"''`']/g, '');
-
-const levenshtein = (a: string, b: string): number => {
-  if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  const prev = new Array(b.length + 1);
-  const curr = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
-  }
-  return prev[b.length];
-};
-
-/** Build 5 candidates (1 correct + 4 distractors). POS-matched + Chinese-
- *  definition dedup to avoid near-synonyms. Falls back to any-POS if needed. */
-export const buildHaystackCandidates = (
-  target: WordEntry,
-  library: WordEntry[],
-): { candidates: WordEntry[]; fallbackReason: string | null } => {
-  const targetPos = posOf(target);
-  const targetDef = normalizeDefinition(definitionCnOf(target));
-
-  const isUsable = (w: WordEntry) => !w.deleted && w.id !== target.id && w.text.trim().length > 0;
-
-  const dedupe = (pool: WordEntry[]): WordEntry[] => {
-    const seen = new Set<string>();
-    return pool.filter((w) => {
-      const def = normalizeDefinition(definitionCnOf(w));
-      // Exact same meaning as target -> drop (near-synonym).
-      if (targetDef && targetDef.length >= 2 && def === targetDef) return false;
-      // Very similar meaning (Levenshtein <= 2, len >= 3) -> drop.
-      if (targetDef.length >= 3 && def.length >= 3 && levenshtein(def, targetDef) <= 2) return false;
-      // Dedupe within the candidate set by definition too.
-      const dedKey = def || normalizeText(w.text);
-      if (seen.has(dedKey)) return false;
-      seen.add(dedKey);
-      return true;
-    });
-  };
-
-  const samePos = dedupe(library.filter((w) => isUsable(w) && posOf(w) === targetPos));
-  let pool = samePos;
-  let fallbackReason: string | null = null;
-
-  if (pool.length < 4) {
-    // Relax: keep only exact-match dedupe (drop Levenshtein).
-    const relaxed = library.filter((w) => isUsable(w) && posOf(w) === targetPos).filter((w) => {
-      const def = normalizeDefinition(definitionCnOf(w));
-      return !(targetDef && def === targetDef);
-    });
-    pool = relaxed;
-    fallbackReason = 'pos-dedup-relaxed';
-  }
-
-  if (pool.length < 4) {
-    // Fall back to any POS.
-    pool = dedupe(library.filter(isUsable));
-    fallbackReason = 'any-pos';
-  }
-
-  const distractors = shuffleWords(pool).slice(0, 4);
-  return { candidates: shuffleWords([target, ...distractors]).slice(0, 5), fallbackReason };
-};
-
-// ----------------------------------------------------------------
-// Scoring (mirrors puzzleGame factors, mode-aware totals)
+// Scoring
 // ----------------------------------------------------------------
 const getAttemptFactor = (attemptsUsed: number) => {
   if (attemptsUsed <= 1) return 1;
@@ -602,14 +427,19 @@ const getSpeedFactor = (activatedAtMs: number | null, solvedAtMs: number | null)
   return 0.7;
 };
 
-export const sceneDurationSeconds = (playMode: ScenePlayMode, wordCount: number) =>
-  wordCount * (playMode === 'spell' ? 30 : 15);
+/**
+ * Total round duration for the cloze gameplay.
+ *
+ * As of the single-mode refactor, the round is always 30s/word: picture +
+ * sentence clue + free navigation between rows. (The old spell/haystack
+ * split is gone.)
+ */
+export const sceneDurationSeconds = (wordCount: number): number => wordCount * 30;
 
 export const calculateSceneGameSummary = (params: {
   results: SceneCardResult[];
   elapsedMs: number;
   selectionMode: PuzzleGameSelectionMode;
-  playMode: ScenePlayMode;
   dayIndex: number;
   wordCount: number;
   overlapRate: number;
@@ -617,8 +447,9 @@ export const calculateSceneGameSummary = (params: {
   rankingIneligibleReason?: string | null;
   sceneAssetId?: string | null;
 }): SceneGameSummary => {
-  const { results, elapsedMs, selectionMode, playMode, dayIndex, wordCount, overlapRate, rankingEligible, rankingIneligibleReason, sceneAssetId } = params;
-  const totalDurationSeconds = sceneDurationSeconds(playMode, wordCount);
+  const { results, elapsedMs, selectionMode, dayIndex, wordCount, overlapRate, rankingEligible, rankingIneligibleReason, sceneAssetId } = params;
+  const playMode: ScenePlayMode = 'cloze';
+  const totalDurationSeconds = sceneDurationSeconds(wordCount);
   const wordsTotal = results.length || wordCount;
   const wordsCorrect = results.filter((r) => r.correct).length;
   const hintsUsed = results.filter((r) => r.hintUsed).length;
@@ -629,8 +460,7 @@ export const calculateSceneGameSummary = (params: {
 
   const rawQualityTotal = results.reduce((sum, r) => {
     if (!r.correct) return sum;
-    // Haystack: attempt factor is binary (1 if first-pick, else 0.85).
-    const attemptFactor = playMode === 'haystack' ? (r.attemptsUsed <= 1 ? 1 : 0.85) : getAttemptFactor(r.attemptsUsed);
+    const attemptFactor = getAttemptFactor(r.attemptsUsed);
     const hintFactor = r.hintUsed ? 0.8 : 1;
     const speedFactor = getSpeedFactor(r.activatedAtMs, r.solvedAtMs);
     return sum + 100 * attemptFactor * hintFactor * speedFactor;

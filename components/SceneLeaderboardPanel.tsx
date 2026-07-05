@@ -145,7 +145,7 @@ export const SceneLeaderboardPanel: React.FC<SceneLeaderboardPanelProps> = ({ sh
                   #{entry.rank_position} {entry.display_name || entry.email_masked || 'Player'}
                 </div>
                 <div className="mt-1 truncate font-mono text-[10px] text-text-dark">
-                  {entry.words_correct}/{entry.words_total} · {Math.round(entry.accuracy_rate * 100)}% · {entry.time_used_seconds}s · {entry.play_mode === 'spell' ? '拼写' : '捞针'}
+                  {entry.words_correct}/{entry.words_total} · {Math.round(entry.accuracy_rate * 100)}% · {entry.time_used_seconds}s · {entry.play_mode === 'cloze' ? '完形' : entry.play_mode === 'spell' ? '拼写' : '捞针'}
                 </div>
               </div>
               <div className="shrink-0 text-right font-mono text-xs text-purple-300">

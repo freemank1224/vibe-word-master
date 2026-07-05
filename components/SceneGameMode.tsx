@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { HoverTranslationText } from './HoverTranslationText';
 import { SceneImageWithRegions } from './SceneImageWithRegions';
 import { SceneLeaderboardPanel } from './SceneLeaderboardPanel';
+import { ClozeSentence, ClozeStatus } from './ClozeSentence';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { playBuzzer, playCheer, playDing } from '../utils/audioFeedback';
@@ -11,13 +12,11 @@ import {
   SceneCardResult,
   SceneGamePhase,
   SceneGameSummary,
-  ScenePlayMode,
   WordEntry,
 } from '../types';
 import {
   MAX_SCENE_WORDS,
   MIN_SCENE_WORDS,
-  buildHaystackCandidates,
   calculateSceneGameSummary,
   gatherWordMeta,
   getSceneCandidateWords,
@@ -49,7 +48,8 @@ interface WordState {
   activatedAtMs: number | null;
   solvedAtMs: number | null;
   revealed: boolean;
-  wrongPicks?: string[]; // haystack: distractor word ids already picked wrong
+  /** Live typed input value for this row (only meaningful for the active row). */
+  inputValue: string;
 }
 
 const createWordState = (): WordState => ({
@@ -59,7 +59,7 @@ const createWordState = (): WordState => ({
   activatedAtMs: null,
   solvedAtMs: null,
   revealed: false,
-  wrongPicks: [],
+  inputValue: '',
 });
 
 const MONSTER_NAMES = [
@@ -71,6 +71,23 @@ const MONSTER_NAMES = [
   { en: 'Friday · Party Pink Monster', zh: '周五 · 派对粉小怪兽' },
   { en: 'Saturday · Sloth Turquoise Monster', zh: '周六 · 树懒青小怪兽' },
 ];
+
+/**
+ * Resolve the cloze sentence for a single word from the asset.
+ * Falls back through:
+ *   1. asset.sentences[word.toLowerCase()]  (built by normalizeAsset)
+ *   2. asset.regions[word].sentence          (per-region field)
+ *   3. null — the row renders in "no clue" degraded mode.
+ */
+const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | null => {
+  if (!asset) return null;
+  const key = word.text.toLowerCase();
+  const fromIndex = asset.sentences?.[key];
+  if (fromIndex && fromIndex.trim()) return fromIndex;
+  const fromRegion = asset.regions.find((r) => r.word.toLowerCase() === key)?.sentence;
+  if (fromRegion && fromRegion.trim()) return fromRegion;
+  return null;
+};
 
 const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel }) => {
   const dayIndex = new Date().getDay();
@@ -93,42 +110,49 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   const [degraded, setDegraded] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [preparingElapsed, setPreparingElapsed] = useState(0);
-  // Pipeline stages surfaced to the user during PREPARING.
-  // 0 = selecting words, 1 = designing scene (LLM), 2 = rendering image, 3 = ready.
   const [preparingStage, setPreparingStage] = useState(0);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  /** Storyboard text surfaced during PREPARING so the player can preview the
+   *  scene idea before play. Mirrors the AI-authored `storyboard` field sent on
+   *  the `designed` event. Reset at the start of every run. */
+  const [storyboard, setStoryboard] = useState<string | null>(null);
 
-  const [playMode, setPlayMode] = useState<ScenePlayMode>('spell');
   const [countdownValue, setCountdownValue] = useState(3);
   const [timeLeft, setTimeLeft] = useState(0);
 
   const [wordStates, setWordStates] = useState<WordState[]>([]);
   const [activeWordIndex, setActiveWordIndex] = useState<number | null>(null);
-  const [blinkNonce, setBlinkNonce] = useState(0);
 
-  const [spellInput, setSpellInput] = useState('');
-  const [spellStatus, setSpellStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
+  /** Transient status (correct/wrong) for the active row, cleared on advance. */
+  const [flashStatus, setFlashStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
 
   const [result, setResult] = useState<SceneGameSummary | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  /** Local toggle for the PREPARING-stage storyboard card (expanded vs. collapsed). */
+  const [storyboardExpanded, setStoryboardExpanded] = useState(false);
 
   const gameStartTimeRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
   const finalizeGuardRef = useRef(false);
   const wordStatesRef = useRef<WordState[]>([]);
   const abortRef = useRef<AbortController | null>(null);
-  // Always-latest finishGame — call sites route through this ref to avoid
-  // stale closures (e.g. advance/timer capturing an outdated `asset`).
   const finishGameRef = useRef<(timedOut: boolean) => Promise<void>>(async () => {});
+  // Fix for the stale-closure bug: startPlay is invoked via setTimeout from
+  // inside runGeneration (memoized via useCallback). Without a ref, startPlay
+  // would capture the FIRST render's selectedWords (= []) and seed wordStates
+  // with an empty array, making the input permanently empty. Reading from
+  // selectedWordsRef always gives us the latest list.
+  const selectedWordsRef = useRef<WordEntry[]>([]);
 
   useEffect(() => { wordStatesRef.current = wordStates; }, [wordStates]);
+  useEffect(() => { selectedWordsRef.current = selectedWords; }, [selectedWords]);
 
   const candidateCount = useMemo(() => getSceneCandidateWords(allWords).length, [allWords]);
   const canPrepare = candidateCount >= MIN_SCENE_WORDS;
 
   const totalDuration = useMemo(
-    () => sceneDurationSeconds(playMode, selectedWords.length || wordCount),
-    [playMode, selectedWords.length, wordCount],
+    () => sceneDurationSeconds(selectedWords.length || wordCount),
+    [selectedWords.length, wordCount],
   );
 
   // ---------------------------------------------------------------
@@ -141,6 +165,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setPreparingStage(0);
     setAsset(null);
     setDegraded(false);
+    setStoryboard(null);
 
     const smart = typeof window !== 'undefined' && window.localStorage.getItem('vibe_ai_selection') === 'true';
     const selection = selectSceneWords(allWords, sessions, smart, n);
@@ -169,15 +194,15 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
         'en',
         controller.signal,
         {
-          // Real-evidence stage progression: each tick is gated by an actual
-          // event from the edge function, not a wall-clock guess.
-          //   stage 0 (selecting words) is set synchronously above
-          //   stage 1 (designing) only ticks when director LLM truly returns
-          //   stage 2 (rendering) only ticks when image bytes truly arrive
-          onStage: (stage) => {
+          onStage: (stage, payload) => {
             console.log('[SceneGameMode] onStage', stage);
-            if (stage === 'designed') setPreparingStage(1);
-            else if (stage === 'rendered') setPreparingStage(2);
+            if (stage === 'designed') {
+              setPreparingStage(1);
+              // Capture the AI-authored storyboard (or fallback storyboard) for
+              // the PREPARING stage preview card.
+              const sb = typeof payload?.storyboard === 'string' ? payload.storyboard.trim() : '';
+              if (sb) setStoryboard(sb);
+            } else if (stage === 'rendered') setPreparingStage(2);
           },
         },
       );
@@ -185,7 +210,20 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       console.log('[SceneGameMode] asset received', { source: res.source, imageUrl: res.asset.imageUrl, regionCount: res.asset.regions.length });
       setAsset(res.asset);
       setDegraded(res.degraded);
-      setPhase('MODE_SELECT');
+      // No MODE_SELECT any more — go straight to COUNTDOWN → PLAYING.
+      setPhase('COUNTDOWN');
+      setCountdownValue(3);
+      if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = window.setInterval(() => {
+        setCountdownValue((current) => {
+          if (current <= 1) {
+            if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
+            window.setTimeout(() => startPlay(), 250);
+            return 0;
+          }
+          return current - 1;
+        });
+      }, 900);
     } catch (err) {
       if (controller.signal.aborted) return;
       console.error('[SceneGameMode] generation failed', err);
@@ -194,9 +232,6 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }
   }, [allWords, sessions, dayIndex]);
 
-  // Preparing elapsed-time display ONLY (no longer drives stage progression —
-  // stage ticks come from real NDJSON events via requestSceneGeneration's
-  // onStage callback above).
   useEffect(() => {
     if (phase !== 'PREPARING') return;
     const start = Date.now();
@@ -219,65 +254,59 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setPhase('PREPARING');
     setPreparingElapsed(0);
     setPreparingStage(0);
+    setStoryboard(null);
     try {
       const meta = gatherWordMeta(selectedWords);
       const res = await requestSceneRegeneration(meta, dayIndex, 'en', undefined, {
-        onStage: (stage) => {
-          if (stage === 'designed') setPreparingStage(1);
-          else if (stage === 'rendered') setPreparingStage(2);
+        onStage: (stage, payload) => {
+          if (stage === 'designed') {
+            setPreparingStage(1);
+            const sb = typeof payload?.storyboard === 'string' ? payload.storyboard.trim() : '';
+            if (sb) setStoryboard(sb);
+          } else if (stage === 'rendered') setPreparingStage(2);
         },
       });
       setAsset(res.asset);
       setDegraded(res.degraded);
-      setPhase('MODE_SELECT');
+      // After regeneration, return to INTRO so the player can press LOAD SCENE
+      // again to start the round (no mode select any more).
+      setPhase('INTRO');
     } catch (err) {
       setGenError(err instanceof Error ? err.message : 'Regeneration failed.');
-      setPhase('MODE_SELECT');
+      setPhase('INTRO');
     } finally {
       setIsRegenerating(false);
     }
   };
 
   // ---------------------------------------------------------------
-  // MODE_SELECT → COUNTDOWN
+  // startPlay — called from COUNTDOWN completion
   // ---------------------------------------------------------------
-  const chooseMode = (mode: ScenePlayMode) => {
-    setPlayMode(mode);
-    setPhase('COUNTDOWN');
-    setCountdownValue(3);
-    if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
-    countdownTimerRef.current = window.setInterval(() => {
-      setCountdownValue((current) => {
-        if (current <= 1) {
-          if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
-          window.setTimeout(() => startPlay(mode), 250);
-          return 0;
-        }
-        return current - 1;
-      });
-    }, 900);
-  };
-
-  const startPlay = (mode: ScenePlayMode) => {
+  const startPlay = () => {
     finalizeGuardRef.current = false;
-    const states = selectedWords.map(createWordState);
-    states[0].activatedAtMs = 0;
+    // Read selectedWords from the ref, NOT the closure variable — this
+    // function is invoked via setTimeout from inside runGeneration
+    // (useCallback memoized), so the closure's `selectedWords` may be stale.
+    const words = selectedWordsRef.current;
+    const states = words.map((w, i) => {
+      const s = createWordState();
+      if (i === 0) s.activatedAtMs = 0;
+      return s;
+    });
     setWordStates(states);
     wordStatesRef.current = states;
     setActiveWordIndex(0);
-    setBlinkNonce((n) => n + 1);
-    setSpellInput('');
-    setSpellStatus('idle');
+    setFlashStatus('idle');
     gameStartTimeRef.current = Date.now();
-    setTimeLeft(sceneDurationSeconds(mode, selectedWords.length));
-    setPhase(mode === 'spell' ? 'PLAYING_SPELL' : 'PLAYING_HAYSTACK');
+    setTimeLeft(sceneDurationSeconds(words.length));
+    setPhase('PLAYING');
   };
 
   // ---------------------------------------------------------------
   // Game timer
   // ---------------------------------------------------------------
   useEffect(() => {
-    if (phase !== 'PLAYING_SPELL' && phase !== 'PLAYING_HAYSTACK') return;
+    if (phase !== 'PLAYING') return;
     const timer = window.setInterval(() => {
       if (gameStartTimeRef.current == null) return;
       const elapsedSeconds = Math.floor((Date.now() - gameStartTimeRef.current) / 1000);
@@ -293,47 +322,81 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   }, [phase, totalDuration]);
 
   // ---------------------------------------------------------------
-  // Advance to the next word
+  // Active-row input + submit
   // ---------------------------------------------------------------
-  const advance = () => {
+  const activeWord = activeWordIndex != null ? selectedWords[activeWordIndex] : null;
+  const activeInput = activeWordIndex != null ? wordStates[activeWordIndex]?.inputValue || '' : '';
+
+  const setActiveInput = useCallback((value: string) => {
     if (activeWordIndex == null) return;
-    const next = activeWordIndex + 1;
-    if (next >= selectedWords.length) {
-      void finishGameRef.current(false);
-      return;
-    }
-    // stamp activation time for the next word
-    const activatedAtMs = gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0;
     setWordStates((prev) => {
-      const copy = prev.map((s, i) => (i === next ? { ...s, activatedAtMs } : s));
+      const copy = prev.map((s, i) => (i === activeWordIndex ? { ...s, inputValue: value } : s));
+      wordStatesRef.current = copy;
+      return copy;
+    });
+  }, [activeWordIndex]);
+
+  // ---------------------------------------------------------------
+  // Move active row up / down
+  // ---------------------------------------------------------------
+  const moveToIndex = useCallback((next: number) => {
+    if (next < 0 || next >= selectedWords.length) return;
+    const now = gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0;
+    setWordStates((prev) => {
+      // Stamp activation time on the row we're leaving ONLY if it has none yet
+      // (so we don't reset its timer when re-entering).
+      const copy = prev.map((s, i) => {
+        if (i === next) return { ...s, activatedAtMs: s.activatedAtMs ?? now };
+        return s;
+      });
       wordStatesRef.current = copy;
       return copy;
     });
     setActiveWordIndex(next);
-    setBlinkNonce((n) => n + 1);
-    setSpellInput('');
-    setSpellStatus('idle');
-  };
+    setFlashStatus('idle');
+  }, [selectedWords.length]);
 
-  // ---------------------------------------------------------------
-  // SPELL submit
-  // ---------------------------------------------------------------
-  const submitSpell = () => {
-    if (activeWordIndex == null || phase !== 'PLAYING_SPELL') return;
-    const current = wordStates[activeWordIndex];
+  const advance = useCallback(() => {
+    if (activeWordIndex == null) return;
+    // Pick the next non-locked, non-solved row. If none, finish.
+    let next = -1;
+    for (let i = activeWordIndex + 1; i < selectedWords.length; i++) {
+      const s = wordStatesRef.current[i];
+      if (s && !s.solved && !s.locked) { next = i; break; }
+    }
+    if (next === -1) {
+      // Try from the beginning (some earlier row may still be playable).
+      for (let i = 0; i < activeWordIndex; i++) {
+        const s = wordStatesRef.current[i];
+        if (s && !s.solved && !s.locked) { next = i; break; }
+      }
+    }
+    if (next === -1) {
+      void finishGameRef.current(false);
+      return;
+    }
+    moveToIndex(next);
+  }, [activeWordIndex, selectedWords.length, moveToIndex]);
+
+  const submitActive = useCallback(() => {
+    if (activeWordIndex == null || phase !== 'PLAYING') return;
+    const current = wordStatesRef.current[activeWordIndex];
     if (!current || current.solved || current.locked || timeLeft <= 0) return;
 
-    const guess = spellInput.trim().toLowerCase().replace(/\s+/g, ' ');
+    const guess = current.inputValue.trim().toLowerCase().replace(/\s+/g, ' ');
     const answer = selectedWords[activeWordIndex].text.trim().toLowerCase().replace(/\s+/g, ' ');
     const nextAttempts = current.attemptsUsed + 1;
     const now = gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0;
 
     if (guess === answer) {
       playDing();
-      setSpellStatus('correct');
-      setSpellInput(selectedWords[activeWordIndex].text);
+      setFlashStatus('correct');
+      // Reflect the canonical answer in the input so the slots display the
+      // correct letters before we advance.
       setWordStates((prev) => {
-        const copy = prev.map((s, i) => (i === activeWordIndex ? { ...s, solved: true, locked: true, attemptsUsed: nextAttempts, solvedAtMs: now } : s));
+        const copy = prev.map((s, i) => (i === activeWordIndex
+          ? { ...s, solved: true, locked: true, attemptsUsed: nextAttempts, solvedAtMs: now, inputValue: selectedWords[activeWordIndex].text }
+          : s));
         wordStatesRef.current = copy;
         return copy;
       });
@@ -342,67 +405,57 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }
 
     playBuzzer();
-    setSpellStatus('wrong');
+    setFlashStatus('wrong');
+    const willLock = nextAttempts >= 3;
     setWordStates((prev) => {
-      const willLock = nextAttempts >= 3;
-      const copy = prev.map((s, i) => (i === activeWordIndex ? { ...s, attemptsUsed: nextAttempts, locked: willLock } : s));
+      const copy = prev.map((s, i) => (i === activeWordIndex
+        ? { ...s, attemptsUsed: nextAttempts, locked: willLock, revealed: willLock }
+        : s));
       wordStatesRef.current = copy;
       return copy;
     });
     window.setTimeout(() => {
-      setSpellInput('');
-      setSpellStatus('idle');
-      if (nextAttempts >= 3) advance();
+      // Clear input only if the row is still active (i.e. not locked).
+      if (!willLock) {
+        setWordStates((prev) => {
+          const copy = prev.map((s, i) => (i === activeWordIndex ? { ...s, inputValue: '' } : s));
+          wordStatesRef.current = copy;
+          return copy;
+        });
+      }
+      setFlashStatus('idle');
+      if (willLock) advance();
     }, 600);
-  };
+  }, [activeWordIndex, phase, timeLeft, selectedWords, advance]);
 
   // ---------------------------------------------------------------
-  // HAYSTACK pick
+  // Global keyboard handler — ONLY for ArrowUp/ArrowDown navigation.
+  // All letter / Backspace / Enter input is handled natively by the
+  // LargeWordInput's real <input> element (so focus, mobile keyboards,
+  // IME, etc. all work). We only intercept the arrow keys to switch the
+  // active row.
   // ---------------------------------------------------------------
-  const haystackCandidates = useMemo(() => {
-    if (phase !== 'PLAYING_HAYSTACK' || activeWordIndex == null) return null;
-    return buildHaystackCandidates(selectedWords[activeWordIndex], allWords);
-  }, [phase, activeWordIndex, selectedWords, allWords]);
-
-  const pickHaystack = (word: WordEntry) => {
-    if (activeWordIndex == null || phase !== 'PLAYING_HAYSTACK') return;
-    const current = wordStates[activeWordIndex];
-    if (!current || current.solved || current.locked || timeLeft <= 0) return;
-    if (current.wrongPicks?.includes(word.id)) return;
-
-    const isCorrect = word.id === selectedWords[activeWordIndex].id;
-    const now = gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0;
-    const nextAttempts = current.attemptsUsed + 1;
-
-    if (isCorrect) {
-      playDing();
-      setWordStates((prev) => {
-        const copy = prev.map((s, i) => (i === activeWordIndex ? { ...s, solved: true, locked: true, attemptsUsed: nextAttempts, solvedAtMs: now } : s));
-        wordStatesRef.current = copy;
-        return copy;
-      });
-      window.setTimeout(advance, 700);
-      return;
-    }
-
-    playBuzzer();
-    const willReveal = nextAttempts >= 3;
-    setWordStates((prev) => {
-      const copy = prev.map((s, i) => {
-        if (i !== activeWordIndex) return s;
-        return {
-          ...s,
-          attemptsUsed: nextAttempts,
-          wrongPicks: [...(s.wrongPicks || []), word.id],
-          locked: willReveal,
-          revealed: willReveal, // reveal the word text in the region (NOT solved — no ✅)
-        };
-      });
-      wordStatesRef.current = copy;
-      return copy;
-    });
-    if (willReveal) window.setTimeout(advance, 900);
-  };
+  useEffect(() => {
+    if (phase !== 'PLAYING') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      if (activeWordIndex == null) return;
+      e.preventDefault();
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      // Find next playable row in this direction (skip solved/locked).
+      let idx = activeWordIndex + dir;
+      while (idx >= 0 && idx < selectedWords.length) {
+        const s = wordStatesRef.current[idx];
+        if (s && !s.solved && !s.locked) {
+          moveToIndex(idx);
+          return;
+        }
+        idx += dir;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase, activeWordIndex, selectedWords.length, moveToIndex]);
 
   // ---------------------------------------------------------------
   // finishGame
@@ -417,7 +470,6 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
     const results: SceneCardResult[] = selectedWords.map((word, i) => {
       const s = states[i] || createWordState();
-      // Words never reached count as incorrect + revealed on timeout.
       const isRevealed = timedOut && !s.solved;
       return {
         wordId: word.id,
@@ -434,7 +486,6 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       results,
       elapsedMs,
       selectionMode,
-      playMode,
       dayIndex,
       wordCount: selectedWords.length,
       overlapRate,
@@ -443,7 +494,6 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       sceneAssetId: asset?.id || null,
     });
 
-    // Reveal any unsolved words in the UI.
     setWordStates((prev) => prev.map((s) => (s.solved ? s : { ...s, revealed: true })));
 
     const allCorrect = results.every((r) => r.correct);
@@ -457,14 +507,13 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedWords, selectionMode, playMode, dayIndex, overlapRate, rankingEligible, rankingIneligibleReason, asset, totalDuration, timeLeft, onComplete]);
+  }, [selectedWords, selectionMode, dayIndex, overlapRate, rankingEligible, rankingIneligibleReason, asset, totalDuration, timeLeft, onComplete]);
 
-  // Keep finishGameRef in sync every render so advance/timer call the latest.
   useEffect(() => { finishGameRef.current = finishGame; });
 
-  // All words resolved → finish (non-timeout).
+  // Auto-finish when every row is solved or locked.
   useEffect(() => {
-    if (phase !== 'PLAYING_SPELL' && phase !== 'PLAYING_HAYSTACK') return;
+    if (phase !== 'PLAYING') return;
     if (!wordStates.length) return;
     if (wordStates.every((s) => s.solved || s.locked)) {
       void finishGameRef.current(false);
@@ -477,27 +526,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     abortRef.current?.abort();
   }, []);
 
-  const playOtherMode = () => {
-    setResult(null);
-    setWordStates([]);
-    wordStatesRef.current = [];
-    setActiveWordIndex(null);
-    setSpellInput('');
-    setSpellStatus('idle');
-    finalizeGuardRef.current = false;
-    setPhase('MODE_SELECT');
-  };
-
-  const solvedIndices = useMemo(
-    () => wordStates.map((s, i) => (s.solved ? i : -1)).filter((i) => i >= 0),
-    [wordStates],
-  );
-  const revealedIndices = useMemo(
-    () => wordStates.map((s, i) => (s.revealed && !s.solved ? i : -1)).filter((i) => i >= 0),
-    [wordStates],
-  );
-
-  const activeWord = activeWordIndex != null ? selectedWords[activeWordIndex] : null;
+  const solvedCount = useMemo(() => wordStates.filter((s) => s.solved).length, [wordStates]);
 
   const summaryCards = result
     ? [
@@ -508,16 +537,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       ]
     : [];
 
-  const otherModeLabel = playMode === 'spell'
-    ? { en: 'Play 大海捞针 (Haystack) with this image', zh: '用这张图玩「大海捞针」' }
-    : { en: 'Play 看图拼写 (Picture-Spell) with this image', zh: '用这张图玩「看图拼写」' };
-
   return (
     <div className="fixed inset-0 z-[90] overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(168,85,247,0.14),_transparent_30%),linear-gradient(180deg,_rgba(9,12,16,0.96),_rgba(12,14,18,1))]">
       <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(180deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:26px_26px] opacity-30" />
 
       {phase === 'RESULT' && result && (
-        <Confetti variant="purple" title="Scene Complete" subtitle={playMode === 'spell' ? '看图拼写完成' : '大海捞针完成'} />
+        <Confetti variant="purple" title="Scene Complete" subtitle="完形填空完成" />
       )}
 
       <div className="relative flex h-[100dvh] flex-col px-4 pb-4 pt-20 md:px-8 md:pb-6 md:pt-24">
@@ -544,8 +569,8 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 <div className="space-y-5">
                   <p className="max-w-2xl text-sm leading-7 text-text-light md:text-base">
                     <HoverTranslationText
-                      text="Pick 5-10 words. AI fuses them into ONE isometric cartoon scene that also includes today's monster. Then choose: watch a region blink and spell the word, or pick the right word from 5 candidates."
-                      translation="挑选 5-10 个单词，AI 把它们融合成一张等轴透视卡通场景图，图中还包含当日主题小怪兽。随后选择玩法：看区域闪烁拼写单词，或从 5 个候选词中挑出正确的那个。"
+                      text="Pick 5-10 words. AI fuses them into ONE isometric cartoon scene with today's monster and writes a cloze sentence per word. All sentences appear on the right — use ↑/↓ or click to switch. Fill the blank for each one."
+                      translation="挑选 5-10 个单词，AI 把它们融合成一张等轴透视卡通场景图（含当日小怪兽），并为每个单词生成一句填空描述。右侧会显示全部句子，用 ↑/↓ 键或点击切换。把每个句子中挖空的词填出来。"
                     />
                   </p>
 
@@ -573,14 +598,14 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     </div>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-3xl border border-mid-charcoal bg-light-charcoal/30 p-4">
-                      <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Spell Mode" translation="看图拼写" /></div>
-                      <div className="mt-2 font-headline text-xl text-white">{wordCount}×30s</div>
-                    </div>
-                    <div className="rounded-3xl border border-mid-charcoal bg-light-charcoal/30 p-4">
-                      <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Haystack Mode" translation="大海捞针" /></div>
-                      <div className="mt-2 font-headline text-xl text-white">{wordCount}×15s</div>
+                  <div className="rounded-3xl border border-mid-charcoal bg-light-charcoal/30 p-4">
+                    <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Cloze Round" translation="完形填空" /></div>
+                    <div className="mt-2 font-headline text-xl text-white">{wordCount}×30s</div>
+                    <div className="mt-1 text-[11px] text-text-dark">
+                      <HoverTranslationText
+                        text="One picture + N sentences. Switch rows with ↑/↓, click, or just type."
+                        translation="一张图 + N 个句子。用 ↑/↓ 键、鼠标点击或直接输入切换句子。"
+                      />
                     </div>
                   </div>
                 </div>
@@ -672,6 +697,32 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 })}
               </div>
 
+              {/* Storyboard preview — surfaces the AI-authored scene skeleton
+                  once the director stage completes. Collapsed by default to
+                  avoid spoiling the cloze answers in the PLAYING phase. */}
+              {storyboard && (
+                <div className="mx-auto mt-5 max-w-md text-left">
+                  <button
+                    type="button"
+                    onClick={() => setStoryboardExpanded((v) => !v)}
+                    aria-expanded={storyboardExpanded}
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-purple-400/20 bg-purple-500/5 px-4 py-2 text-left transition-colors hover:border-purple-400/40 hover:bg-purple-500/10"
+                  >
+                    <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-purple-300">
+                      <HoverTranslationText text="AI Scene Idea" translation="场景构思" />
+                    </span>
+                    <span className="material-symbols-outlined text-base text-purple-300">
+                      {storyboardExpanded ? 'expand_less' : 'expand_more'}
+                    </span>
+                  </button>
+                  {storyboardExpanded && (
+                    <div className="mt-2 max-h-44 overflow-y-auto rounded-2xl border border-purple-400/20 bg-dark-charcoal/70 p-3 text-[12px] leading-6 text-text-light">
+                      {storyboard}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="mt-6 flex items-center justify-center gap-3 text-text-dark">
                 <span className="font-mono text-sm tracking-widest text-purple-300">{preparingElapsed}s</span>
                 <span className="text-[11px] text-text-dark">
@@ -689,74 +740,6 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
           </div>
         )}
 
-        {/* ---------------- MODE_SELECT ---------------- */}
-        {phase === 'MODE_SELECT' && asset && (
-          <div className="flex flex-1 items-center justify-center overflow-y-auto py-2">
-            <div className="w-full max-w-5xl rounded-[32px] border border-mid-charcoal bg-dark-charcoal/80 p-6 shadow-2xl backdrop-blur-md md:p-8">
-              <div className="grid gap-6 md:grid-cols-[1fr_0.9fr] md:items-center">
-                <div className="flex flex-col items-center">
-                  <SceneImageWithRegions
-                    imageUrl={asset.imageUrl}
-                    regions={asset.regions}
-                    activeWordIndex={null}
-                    solvedWordIndices={[]}
-                    revealedWordIndices={[]}
-                    blinkNonce={0}
-                    onRegenerate={regenerateImage}
-                  />
-                  <div className="mt-4 flex items-center gap-2 rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-2">
-                    <img src={monsterImg} alt="monster" className="h-7 w-7 rounded-lg object-cover" />
-                    <span className="text-xs text-text-light"><HoverTranslationText text={monsterName.en} translation={monsterName.zh} /></span>
-                  </div>
-                  {degraded && (
-                    <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
-                      <HoverTranslationText text="Some word regions were unclear; affected words will pulse the whole image." translation="部分单词区域未能识别，这些词将以整图脉冲提示。" />
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-3">
-                  <h3 className="font-headline text-2xl text-white md:text-3xl">
-                    <HoverTranslationText text="Choose how to play" translation="选择玩法" />
-                  </h3>
-                  <button
-                    onClick={() => chooseMode('spell')}
-                    className="w-full rounded-2xl border border-purple-400/30 bg-purple-500/10 p-5 text-left transition-all hover:-translate-y-0.5 hover:bg-purple-500/20"
-                  >
-                    <div className="font-headline text-xl text-white"><HoverTranslationText text="看图拼写 · Picture-Spell" translation="看图拼写" /></div>
-                    <div className="mt-1 text-xs text-text-light"><HoverTranslationText text={`Region blinks 3×, spell it with a letter-count hint. ${wordCount}×30s.`} translation={`区域闪烁 3 次，根据字母数提示拼写。${wordCount}×30 秒。`} /></div>
-                  </button>
-                  <button
-                    onClick={() => chooseMode('haystack')}
-                    className="w-full rounded-2xl border border-purple-400/30 bg-purple-500/10 p-5 text-left transition-all hover:-translate-y-0.5 hover:bg-purple-500/20"
-                  >
-                    <div className="font-headline text-xl text-white"><HoverTranslationText text="大海捞针 · Needle-in-Haystack" translation="大海捞针" /></div>
-                    <div className="mt-1 text-xs text-text-light"><HoverTranslationText text={`Pick the right word from 5 candidates. ${wordCount}×15s.`} translation={`从 5 个候选词中挑出正确的。${wordCount}×15 秒。`} /></div>
-                  </button>
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={regenerateImage}
-                      disabled={isRegenerating}
-                      className="flex-1 rounded-xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-text-light transition-colors hover:border-purple-400/50 disabled:opacity-50"
-                    >
-                      <HoverTranslationText text="Regenerate image" translation="重新生成图片" />
-                    </button>
-                    <button
-                      onClick={() => { setAsset(null); setSelectedWords([]); setPhase('INTRO'); }}
-                      className="flex-1 rounded-xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-text-light transition-colors hover:border-purple-400/50"
-                    >
-                      <HoverTranslationText text="Reroll words" translation="重新选词" />
-                    </button>
-                  </div>
-                  {genError && (
-                    <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">{genError}</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ---------------- COUNTDOWN ---------------- */}
         {phase === 'COUNTDOWN' && (
           <div className="flex flex-1 items-center justify-center">
@@ -766,86 +749,110 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 {countdownValue > 0 ? countdownValue : 'GO!'}
               </div>
               <div className="mt-4 text-sm text-text-light">
-                {playMode === 'spell' ? <HoverTranslationText text="Picture-Spell" translation="看图拼写" /> : <HoverTranslationText text="Needle-in-Haystack" translation="大海捞针" />}
+                <HoverTranslationText text="Cloze Round" translation="完形填空" />
               </div>
             </div>
           </div>
         )}
 
-        {/* ---------------- PLAYING (shared header) ---------------- */}
-        {(phase === 'PLAYING_SPELL' || phase === 'PLAYING_HAYSTACK') && (
+        {/* ---------------- PLAYING ---------------- */}
+        {phase === 'PLAYING' && (
           <div className="grid min-h-0 flex-1 gap-4 overflow-hidden" style={{ gridTemplateRows: 'auto minmax(0, 1fr)' }}>
+            {/* Header: clock + progress */}
             <div className="grid shrink-0 gap-3 rounded-[30px] border border-mid-charcoal bg-dark-charcoal/70 p-4 md:grid-cols-[1fr_auto_auto] md:items-center">
               <div>
                 <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark">
-                  {playMode === 'spell' ? <HoverTranslationText text="Spell Clock" translation="拼写计时" /> : <HoverTranslationText text="Haystack Clock" translation="捞针计时" />}
+                  <HoverTranslationText text="Cloze Clock" translation="完形计时" />
                 </div>
                 <div className={`mt-1 font-headline text-4xl ${timeLeft <= 5 ? 'text-red-400' : 'text-white'}`}>{formatClock(timeLeft)}</div>
               </div>
               <div className="rounded-2xl border border-mid-charcoal bg-light-charcoal/30 px-4 py-3 text-center">
-                <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Word" translation="单词" /></div>
+                <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Active" translation="当前" /></div>
                 <div className="mt-1 font-headline text-2xl text-purple-300">
                   {(activeWordIndex ?? 0) + 1}/{selectedWords.length}
                 </div>
               </div>
               <div className="rounded-2xl border border-mid-charcoal bg-light-charcoal/30 px-4 py-3 text-center">
                 <div className="font-mono text-xs uppercase tracking-[0.3em] text-text-dark"><HoverTranslationText text="Solved" translation="已答对" /></div>
-                <div className="mt-1 font-headline text-2xl text-electric-green">{solvedIndices.length}/{selectedWords.length}</div>
+                <div className="mt-1 font-headline text-2xl text-electric-green">{solvedCount}/{selectedWords.length}</div>
               </div>
             </div>
 
-            <div className="grid min-h-0 gap-4 overflow-y-auto md:grid-cols-[1.1fr_0.9fr] md:overflow-hidden">
-              {/* Image with regions */}
+            {/* Body: image | (sentence list + input) */}
+            <div className="grid min-h-0 gap-4 md:grid-cols-[1.05fr_0.95fr] md:overflow-hidden">
+              {/* Left: picture */}
               <div className="flex min-h-0 items-center justify-center">
                 <SceneImageWithRegions
                   imageUrl={asset?.imageUrl || ''}
                   regions={asset?.regions || []}
-                  activeWordIndex={activeWordIndex}
-                  solvedWordIndices={solvedIndices}
-                  revealedWordIndices={revealedIndices}
-                  blinkNonce={blinkNonce}
+                  activeWordIndex={null}
+                  solvedWordIndices={[]}
+                  revealedWordIndices={[]}
+                  blinkNonce={0}
                   fullSize
+                  showOverlays={false}
                 />
               </div>
 
-              {/* Input / candidates */}
-              <div className="flex min-h-0 flex-col justify-center">
-                {phase === 'PLAYING_SPELL' && activeWord && (
-                  <LargeWordInput
-                    value={spellInput}
-                    onChange={setSpellInput}
-                    onEnter={submitSpell}
-                    disabled={!!(activeWordIndex != null && (wordStates[activeWordIndex]?.solved || wordStates[activeWordIndex]?.locked)) || timeLeft <= 0}
-                    status={spellStatus}
-                    showWordBlocks
-                    targetWord={activeWord.text}
-                    placeholder="spell here"
-                  />
-                )}
-                {phase === 'PLAYING_HAYSTACK' && haystackCandidates && activeWord && (
-                  <div className="space-y-3">
-                    <div className="text-center text-xs text-text-light">
-                      <HoverTranslationText text="Which word matches the highlighted region?" translation="哪个单词对应高亮的区域？" />
+              {/* Right: sentence list + LargeWordInput (CLASSIC-style input) */}
+              <div className="flex min-h-0 flex-col gap-3 md:overflow-hidden">
+                {/* Sentence list — scrollable */}
+                <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-[28px] border border-mid-charcoal bg-dark-charcoal/50 p-3 md:p-4">
+                  <div className="flex items-center justify-between px-1 pb-1">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-text-dark">
+                      <HoverTranslationText text="Sentences" translation="句子列表" />
                     </div>
-                    <div className="grid gap-2.5">
-                      {haystackCandidates.candidates.map((cand) => {
-                        const wrong = wordStates[activeWordIndex ?? -1]?.wrongPicks?.includes(cand.id);
-                        return (
-                          <button
-                            key={cand.id}
-                            onClick={() => pickHaystack(cand)}
-                            disabled={wrong || timeLeft <= 0}
-                            className={`w-full rounded-2xl border px-4 py-3.5 text-left font-headline text-lg transition-all ${
-                              wrong
-                                ? 'cursor-not-allowed border-red-500/40 bg-red-500/10 text-red-300/60 line-through'
-                                : 'border-mid-charcoal bg-light-charcoal/30 text-white hover:-translate-y-0.5 hover:border-purple-400/50 hover:bg-purple-500/10'
-                            }`}
-                          >
-                            {cand.text}
-                          </button>
-                        );
-                      })}
+                    <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-text-dark">
+                      <HoverTranslationText text="↑/↓ switch · Enter submit" translation="↑/↓ 切换 · Enter 提交" />
                     </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {selectedWords.map((word, i) => {
+                      const s = wordStates[i] || createWordState();
+                      const isActive = i === activeWordIndex;
+                      const sentence = sentenceForWord(word, asset);
+
+                      let status: ClozeStatus = 'idle';
+                      if (s.solved) status = 'correct';
+                      else if (isActive) status = flashStatus === 'correct' ? 'correct' : flashStatus === 'wrong' ? 'wrong' : 'active';
+                      else if (s.revealed) status = 'revealed';
+
+                      // When the backend hasn't returned a sentence (e.g. old edge
+                      // function deployed), show a graceful placeholder instead of
+                      // the raw "(no cloze clue for ...)" template string.
+                      const displaySentence = sentence || `Picture only — guess word #${i + 1}.`;
+
+                      return (
+                        <ClozeSentence
+                          key={word.id}
+                          sentence={displaySentence}
+                          targetWord={word.text}
+                          status={status}
+                          revealed={s.revealed && !s.solved}
+                          isActive={isActive}
+                          onSelect={() => {
+                            if (!s.solved && !s.locked) moveToIndex(i);
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Input — the standard LargeWordInput from CLASSIC mode */}
+                {activeWord && (
+                  <div className="shrink-0 rounded-[28px] border border-mid-charcoal bg-dark-charcoal/70 p-2">
+                    <LargeWordInput
+                      key={`input-${activeWord.id}-${activeWordIndex}`}
+                      value={activeInput}
+                      onChange={setActiveInput}
+                      onEnter={submitActive}
+                      disabled={!!(activeWordIndex != null && (wordStates[activeWordIndex]?.solved || wordStates[activeWordIndex]?.locked)) || timeLeft <= 0}
+                      status={flashStatus}
+                      showWordBlocks
+                      targetWord={activeWord.text}
+                      placeholder="spell here"
+                    />
                   </div>
                 )}
               </div>
@@ -863,7 +870,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     <HoverTranslationText text="Round Complete" translation="本局完成" />
                   </div>
                   <h3 className="mt-3 font-headline text-3xl text-white md:text-4xl">
-                    {playMode === 'spell' ? <HoverTranslationText text="Picture-Spell archived." translation="看图拼写成绩已归档。" /> : <HoverTranslationText text="Haystack archived." translation="大海捞针成绩已归档。" />}
+                    <HoverTranslationText text="Cloze round archived." translation="完形填空成绩已归档。" />
                   </h3>
                   <div className="mt-6 grid gap-3 sm:grid-cols-2">
                     {summaryCards.map((item) => (
@@ -882,10 +889,17 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button
-                      onClick={playOtherMode}
+                      onClick={() => {
+                        setResult(null);
+                        setWordStates([]);
+                        wordStatesRef.current = [];
+                        setActiveWordIndex(null);
+                        finalizeGuardRef.current = false;
+                        setPhase('INTRO');
+                      }}
                       className="rounded-2xl bg-purple-500 px-4 py-3 font-headline text-sm uppercase tracking-[0.25em] text-white transition-transform hover:-translate-y-1"
                     >
-                      <HoverTranslationText text={otherModeLabel.en} translation={otherModeLabel.zh} />
+                      <HoverTranslationText text="Play another round" translation="再来一局" />
                     </button>
                     <button
                       onClick={onCancel}
@@ -897,7 +911,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 </div>
 
                 <div className="min-h-[280px]">
-                  <SceneLeaderboardPanel playMode={playMode} />
+                  <SceneLeaderboardPanel playMode="cloze" />
                 </div>
               </div>
             </div>

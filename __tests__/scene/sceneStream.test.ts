@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSceneGenerateNdjsonStream } from '../../services/sceneGame.ts';
+import { parseSceneGenerateNdjsonStream } from '../../services/sceneStreamParser.ts';
 
 // ----------------------------------------------------------------
 // Helpers
@@ -207,4 +207,112 @@ test('onStage callback receives the full event payload, not just the stage name'
   assert.equal(received[0].payload.sceneTitle, 'Kitchen');
   assert.equal(received[1].stage, 'rendered');
   assert.equal(received[1].payload.providerId, 'letsmakesail');
+});
+
+// ----------------------------------------------------------------
+// Cloze-sentence passthrough (v2 director pipeline)
+// ----------------------------------------------------------------
+test('done event carries per-region sentence + asset.sentences index after normalizeAsset', async () => {
+  const assetWithSentences = {
+    ...VALID_ASSET,
+    regions: [
+      { word: 'apple', x: 0.05, y: 0.05, w: 0.28, h: 0.28, confidence: 0.85, source: 'zone', sentence: 'A glossy red apple sits on the wooden kitchen counter.' },
+      { word: 'moon', x: 0.67, y: 0.05, w: 0.28, h: 0.28, confidence: 0.85, source: 'zone', sentence: 'A pale crescent moon glows faintly above the rooftop.' },
+    ],
+    scene_design: {
+      structuredPrompt: 'isometric scene',
+      elements: [
+        { word: 'apple', positionZone: 'top-left', sentence: 'A glossy red apple sits on the wooden kitchen counter.' },
+        { word: 'moon', positionZone: 'top-right', sentence: 'A pale crescent moon glows faintly above the rooftop.' },
+      ],
+    },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetWithSentences }),
+  ]);
+  assert.equal(result.asset.regions.length, 2);
+  assert.equal(result.asset.regions[0].sentence, 'A glossy red apple sits on the wooden kitchen counter.');
+  assert.equal(result.asset.regions[1].sentence, 'A pale crescent moon glows faintly above the rooftop.');
+  assert.equal(result.asset.sentences?.apple, 'A glossy red apple sits on the wooden kitchen counter.');
+  assert.equal(result.asset.sentences?.moon, 'A pale crescent moon glows faintly above the rooftop.');
+});
+
+test('normalizeAsset falls back to scene_design.elements when region has no sentence', async () => {
+  const assetFallback = {
+    ...VALID_ASSET,
+    regions: [{ word: 'apple', x: 0.05, y: 0.05, w: 0.28, h: 0.28, confidence: 0.85 }],
+    scene_design: {
+      structuredPrompt: 'isometric scene',
+      elements: [
+        { word: 'apple', sentence: 'Fallback sentence from scene_design.elements.' },
+      ],
+    },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetFallback }),
+  ]);
+  assert.equal(result.asset.regions[0].sentence, undefined);
+  assert.equal(result.asset.sentences?.apple, 'Fallback sentence from scene_design.elements.');
+});
+
+test('asset with no sentences anywhere yields no sentences index', async () => {
+  const assetNoSentences = {
+    ...VALID_ASSET,
+    regions: [{ word: 'apple', x: 0.05, y: 0.05, w: 0.28, h: 0.28, confidence: 0.85 }],
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetNoSentences }),
+  ]);
+  assert.equal(result.asset.sentences, undefined);
+});
+
+// ----------------------------------------------------------------
+// Storyboard passthrough (storyboard-first director pipeline, v3)
+// ----------------------------------------------------------------
+test('normalizeAsset forwards sceneDesign.storyboard when present (camelCase key)', async () => {
+  const storyboardText =
+    'A glossy red apple sits on the wooden kitchen counter. ' +
+    'The angry chef slams his wooden spoon onto the stove.';
+  const assetWithStoryboard = {
+    ...VALID_ASSET,
+    sceneDesign: { storyboard: storyboardText, structuredPrompt: 'isometric scene' },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetWithStoryboard }),
+  ]);
+  assert.equal(result.asset.storyboard, storyboardText);
+});
+
+test('normalizeAsset forwards scene_design.storyboard when present (snake_case key)', async () => {
+  const storyboardText = 'A small house sits on a misty mountain.';
+  const assetWithStoryboard = {
+    ...VALID_ASSET,
+    scene_design: { storyboard: storyboardText, structured_prompt: 'isometric scene' },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetWithStoryboard }),
+  ]);
+  assert.equal(result.asset.storyboard, storyboardText);
+});
+
+test('normalizeAsset leaves storyboard undefined when scene_design has none', async () => {
+  const assetNoStoryboard = {
+    ...VALID_ASSET,
+    sceneDesign: { structuredPrompt: 'isometric scene' },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: assetNoStoryboard }),
+  ]);
+  assert.equal(result.asset.storyboard, undefined);
+});
+
+test('normalizeAsset ignores whitespace-only storyboard (treated as absent)', async () => {
+  const asset = {
+    ...VALID_ASSET,
+    sceneDesign: { storyboard: '   \n  ' },
+  };
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset }),
+  ]);
+  assert.equal(result.asset.storyboard, undefined);
 });

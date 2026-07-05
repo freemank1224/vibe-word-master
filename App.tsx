@@ -2369,8 +2369,8 @@ const App: React.FC = () => {
                             <span className="text-xl font-headline"><HoverTranslationText text="SCENE FUSION GAME" translation="场景融合游戏" /></span>
                             <span className="text-xs opacity-50 font-body group-hover:text-white/70">
                               <HoverTranslationText
-                                text={`AI fuses 5-10 words into one isometric scene with today's monster. Two modes share one image. Available words: ${visibleWords.filter(w => !w.deleted).length}.`}
-                                translation={`AI 把 5-10 个单词融合成一张等轴场景图，含当日小怪兽。看图拼写 / 大海捞针共享同一张图。当前可用单词：${visibleWords.filter(w => !w.deleted).length}。`}
+                                text={`AI fuses 5-10 words into one isometric scene with today's monster and writes a cloze sentence per word. Fill the blank for each. Available words: ${visibleWords.filter(w => !w.deleted).length}.`}
+                                translation={`AI 把 5-10 个单词融合成一张等轴场景图（含当日小怪兽），并为每个单词生成一句填空描述。把挖空的词填出来。当前可用单词：${visibleWords.filter(w => !w.deleted).length}。`}
                               />
                             </span>
                           </button>

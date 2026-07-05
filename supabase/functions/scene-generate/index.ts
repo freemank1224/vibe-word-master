@@ -4,8 +4,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   buildSceneDirectorSystemPrompt,
   buildSceneDirectorUserPayload,
+  buildFusionResult,
   deriveRegionsFromElements,
   parseSceneDesign,
+  parseSceneDesignWithDiagnostics,
+  replaceMascotPlaceholder,
+  MASCOT_PLACEHOLDER,
   zoneToBbox,
   DEFAULT_ZONE,
 } from './sceneDesign.ts';
@@ -58,6 +62,89 @@ const MASCOT_DESCRIPTIONS: Record<number, string> = {
   4: 'A calm, reliable, purple monster for Thursday, symbolizing wisdom and anticipation. It has a magical aura.',
   5: 'A fun-loving, pink, party-ready monster for Friday, representing excitement for the weekend. It has confetti-like spots.',
   6: 'A partially lazy, sloth-like turquoise monster for Saturday, representing leisure and play. It is holding a pillow or toy.',
+};
+
+/**
+ * SHORT fallback description used to substitute [TODAYS_MASCOT] inside the
+ * structuredPrompt when the image-generation provider does NOT support
+ * reference images. We intentionally keep this brief and noun-phrase-style so
+ * it slots into the LLM's natural-language sentence without breaking grammar.
+ */
+const MASCOT_SHORT_DESCRIPTION: Record<number, string> = {
+  0: 'a round red-orange warm monster with soft fur and a friendly smile',
+  1: 'a small electric-blue monster with lightning-bolt antennae',
+  2: 'a focused green-leaf-patterned monster wearing glasses',
+  3: 'a cheerful floating yellow bubble-like monster glowing softly',
+  4: 'a calm purple monster with a magical aura',
+  5: 'a fun-loving pink party-ready monster with confetti-like spots',
+  6: 'a sloth-like turquoise monster holding a pillow',
+};
+
+const MASCOT_STORAGE_PATH = (dayIndex: number) => `mascots/M${dayIndex}.webp`;
+
+/**
+ * Fetch the canonical mascot image for the given day as a data URL.
+ *
+ * Source: Supabase Storage `word-images/mascots/M{0-6}.webp` (uploaded once
+ * via scripts/upload-mascots.mjs). Reads from the public URL when the bucket
+ * is public; falls back to a signed-url fetch with the service role key
+ * otherwise. Result is cached in-memory per process for the lifetime of the
+ * edge function instance.
+ *
+ * Returns null on any failure — callers MUST handle gracefully by falling
+ * back to text-only image generation with MASCOT_SHORT_DESCRIPTION.
+ */
+const mascotCache = new Map<number, { dataUrl: string | null; fetchedAt: number }>();
+const MASCOT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const fetchMascotDataUrl = async (dayIndex: number): Promise<{ dataUrl: string | null; source: string }> => {
+  const cached = mascotCache.get(dayIndex);
+  if (cached && Date.now() - cached.fetchedAt < MASCOT_CACHE_TTL_MS && cached.dataUrl) {
+    return { dataUrl: cached.dataUrl, source: 'cache' };
+  }
+  const objectPath = MASCOT_STORAGE_PATH(dayIndex);
+  // Prefer public URL (works when bucket is public).
+  const publicUrl = `${supabaseUrl}/storage/v1/object/public/${NEW_BUCKET}/${objectPath}`;
+  try {
+    const res = await fetch(publicUrl, { method: 'GET' });
+    if (res.ok) {
+      const contentType = res.headers.get('content-type') || 'image/webp';
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const b64 = encodeBase64(buf);
+      const dataUrl = `data:${contentType};base64,${b64}`;
+      mascotCache.set(dayIndex, { dataUrl, fetchedAt: Date.now() });
+      console.log(`[scene-generate] mascot loaded from public URL (day=${dayIndex}, ${buf.length} bytes)`);
+      return { dataUrl, source: 'public-url' };
+    }
+    console.warn(`[scene-generate] mascot public fetch returned ${res.status}`);
+  } catch (err) {
+    console.warn(`[scene-generate] mascot public fetch threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Fallback: signed URL via service role client.
+  try {
+    const sb = getSupabaseClient();
+    const { data, error } = await sb.storage.from(NEW_BUCKET).createSignedUrl(objectPath, 60);
+    if (error || !data?.signedUrl) {
+      console.warn(`[scene-generate] mascot signed URL failed: ${error?.message || 'no signedUrl'}`);
+    } else {
+      const res = await fetch(data.signedUrl, { method: 'GET' });
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || 'image/webp';
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const b64 = encodeBase64(buf);
+        const dataUrl = `data:${contentType};base64,${b64}`;
+        mascotCache.set(dayIndex, { dataUrl, fetchedAt: Date.now() });
+        console.log(`[scene-generate] mascot loaded via signed URL (day=${dayIndex}, ${buf.length} bytes)`);
+        return { dataUrl, source: 'signed-url' };
+      }
+    }
+  } catch (err) {
+    console.warn(`[scene-generate] mascot signed fetch threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  mascotCache.set(dayIndex, { dataUrl: null, fetchedAt: Date.now() });
+  return { dataUrl: null, source: 'missing' };
 };
 
 // ----------------------------------------------------------------
@@ -113,6 +200,44 @@ const getImageGenerationUrls = (baseUrl: string): string[] => {
   return [`${s}/v1/images/generations`, `${s}/images/generations`];
 };
 
+/**
+ * Build the corresponding `/v1/images/edits` endpoint URL(s) for a given
+ * provider base URL. Used when we have a reference image (the day's mascot)
+ * and want true image-to-image generation rather than text-only.
+ */
+const getImageEditsUrls = (baseUrl: string): string[] => {
+  const s = normalizeUrl(baseUrl);
+  if (!s) return [];
+  if (s.endsWith('/images/generations')) {
+    return [s.replace(/\/images\/generations$/, '/images/edits')];
+  }
+  if (s.endsWith('/images/edits')) return [s];
+  return [`${s}/v1/images/edits`, `${s}/images/edits`];
+};
+
+/**
+ * Convert a `data:<mime>;base64,...` URL into a Blob suitable for multipart
+ * form upload. Returns null on malformed input.
+ */
+const dataUrlToBlob = (dataUrl: string): Blob | null => {
+  const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!m) return null;
+  const contentType = m[1] || 'application/octet-stream';
+  const binaryString = atob(m[2]);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+  return new Blob([bytes], { type: contentType });
+};
+
+/**
+ * Decide whether to attempt img2img (`/v1/images/edits`) for this run.
+ *
+ * Opt-out via `SCENE_IMG2IMG_DISABLED=true` for providers / gateways that
+ * reject multipart. Default: enabled.
+ */
+const isImg2ImgEnabled = (): boolean =>
+  (Deno.env.get('SCENE_IMG2IMG_DISABLED') || '').toLowerCase() !== 'true';
+
 const getProviderConfigs = (): ProviderConfig[] => {
   const primaryBaseUrl = Deno.env.get('PRIMARY_IMAGE_GEN_BASE_URL') || Deno.env.get('IMAGE_GEN_ENDPOINT') || '';
   const primaryApiKey = Deno.env.get('PRIMARY_IMAGE_GEN_API_KEY') || Deno.env.get('IMAGE_GEN_API_KEY') || '';
@@ -151,9 +276,68 @@ const tryGenerateByProvider = async (
   provider: ProviderConfig,
   prompt: string,
   isPrimary: boolean,
-): Promise<{ dataUrl: string; providerId: ProviderId; model: string; attemptedUrl: string } | { error: ProviderAttemptFailure }> => {
+  options?: {
+    /** Optional reference image (data URL) for img2img via /v1/images/edits. */
+    referenceImage?: { dataUrl: string; label?: string } | null;
+  },
+): Promise<{ dataUrl: string; providerId: ProviderId; model: string; attemptedUrl: string; img2Img: boolean } | { error: ProviderAttemptFailure }> => {
   const urls = getImageGenerationUrls(provider.baseUrl);
   if (urls.length === 0) return { error: { providerId: provider.id, url: provider.baseUrl, message: 'Invalid provider base URL' } };
+
+  // When a reference image is supplied AND img2img isn't disabled, FIRST try
+  // /v1/images/edits (multipart). On any failure (4xx / network / endpoint
+  // not present), fall back to the text-only generations call below — this
+  // keeps the pipeline robust against gateways that don't proxy edits.
+  if (options?.referenceImage && isImg2ImgEnabled()) {
+    const blob = dataUrlToBlob(options.referenceImage.dataUrl);
+    const editUrls = getImageEditsUrls(provider.baseUrl);
+    if (blob && editUrls.length > 0) {
+      for (const url of editUrls) {
+        try {
+          const timeoutMs = isPrimary ? 115000 : 80000;
+          const form = new FormData();
+          // Some OpenAI-compatible gateways expect "image", others "image[]".
+          // We attach under both names is rejected by strict servers, so we
+          // try "image" first (OpenAI canonical).
+          form.append('image', blob, `${options.referenceImage.label || 'mascot'}.webp`);
+          form.append('prompt', prompt);
+          form.append('n', '1');
+          form.append('size', '1024x1024');
+          form.append('response_format', 'b64_json');
+          // Include the model field — most gateways require it.
+          form.append('model', provider.model);
+          console.log(`[scene-generate] image ${provider.id} (img2img) @ ${url} timeout=${timeoutMs}ms`);
+          const response = await withTimeout(
+            fetch(url, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${provider.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
+              body: form,
+            }),
+            timeoutMs,
+            `Provider ${provider.id} img2img timeout after ${timeoutMs}ms`,
+          );
+          const data = await parseResponseJson(response);
+          if (response.ok) {
+            const b64 = data?.data?.[0]?.b64_json;
+            if (typeof b64 === 'string' && b64.length > 0) {
+              return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true };
+            }
+            const imageUrl = data?.data?.[0]?.url;
+            if (typeof imageUrl === 'string' && imageUrl.length > 0) {
+              const dataUrl = await convertImageUrlToDataUrl(imageUrl);
+              if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true };
+            }
+            console.warn(`[scene-generate] img2img @ ${url} OK but no image; falling back to text-only`);
+          } else {
+            console.warn(`[scene-generate] img2img @ ${url} HTTP ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}; falling back to text-only`);
+          }
+        } catch (error) {
+          const isTimeout = error instanceof Error && error.message.includes('timeout');
+          console.warn(`[scene-generate] img2img @ ${url} threw: ${isTimeout ? 'timeout' : (error instanceof Error ? error.message : String(error))}; falling back to text-only`);
+        }
+      }
+    }
+  }
 
   let lastFailure: ProviderAttemptFailure | null = null;
   for (const url of urls) {
@@ -179,12 +363,12 @@ const tryGenerateByProvider = async (
 
       const b64 = data?.data?.[0]?.b64_json;
       if (typeof b64 === 'string' && b64.length > 0) {
-        return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url };
+        return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false };
       }
       const imageUrl = data?.data?.[0]?.url;
       if (typeof imageUrl === 'string' && imageUrl.length > 0) {
         const dataUrl = await convertImageUrlToDataUrl(imageUrl);
-        if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url };
+        if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false };
       }
       lastFailure = { providerId: provider.id, url, message: 'response has no b64_json/url' };
     } catch (error) {
@@ -196,30 +380,14 @@ const tryGenerateByProvider = async (
 };
 
 // ----------------------------------------------------------------
-// Fusion prompt builder (deterministic FALLBACK when ① fails — §3.3)
-// Emphasizes ONE coherent scene, NOT a grid of isolated items.
+// ① Scene director (text LLM) — §4 contract
+//
+// NOTE: the deterministic fallback (storyboard-first refactor) lives in
+// sceneDesign.ts as `buildFusionResult`, which returns BOTH the image prompt
+// AND a storyboard + per-word cloze sentences so the cloze UI is never
+// degraded to "Picture only" just because the director failed.
 // ----------------------------------------------------------------
 interface SceneWordMetaInput { text: string; pos: string; definitionCn: string; }
-
-const buildFusionPrompt = (words: SceneWordMetaInput[], dayIndex: number): string => {
-  const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
-  const wordList = words.map((w) => w.text).join(', ');
-  const wordDetails = words.map((w) => `${w.text} (${w.definitionCn || '—'})`).join(', ');
-
-  return [
-    `Create a cartoon-style isometric-perspective illustration of ONE coherent, meaningful scene that naturally incorporates all of the following elements: ${wordDetails}.`,
-    `Also include this character as part of the scene: ${mascot}`,
-    `Design a single unified scene — NOT a grid, NOT separate boxes or panels — where all these elements coexist naturally and tell a visual story. For example: if the words include "fountain", "truck", and "mountain", depict a mountain landscape with a fountain in a town square and a truck driving through — all in one illustration.`,
-    `Each element must be clearly visible and identifiable within the scene, but they should interact with each other naturally as part of a cohesive environment, not float in separate cells.`,
-    `Isometric perspective, HD, highly detailed, vibrant saturated colors, clean studio lighting, 1:1 square composition.`,
-    `Do NOT add floating captions, subtitles, UI labels, watermarks, or text spelling out the words.`,
-    `The scene MUST contain these exact ${words.length} elements: ${wordList}.`,
-  ].join(' ');
-};
-
-// ----------------------------------------------------------------
-// ① Scene director (text LLM) — §4 contract
-// ----------------------------------------------------------------
 interface DesignLLMConfig { baseUrl: string; apiKey: string; model: string; }
 
 const chatCompletionsUrl = (baseUrl: string): string => {
@@ -232,10 +400,10 @@ const designScene = async (
   words: SceneWordMetaInput[],
   dayIndex: number,
   cfg: DesignLLMConfig,
-): Promise<{ design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; failReason: string | null; httpStatus?: number; rawHead?: string }> => {
+): Promise<{ design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; diagnostics: any | null; failReason: string | null; httpStatus?: number; rawHead?: string }> => {
   if (!cfg.apiKey || !cfg.baseUrl) {
     console.warn('[scene-generate] design skipped: no design LLM key/endpoint');
-    return { design: null, failReason: 'no-key-or-endpoint' };
+    return { design: null, diagnostics: null, failReason: 'no-key-or-endpoint' };
   }
 
   const mascot = MASCOT_DESCRIPTIONS[dayIndex] || MASCOT_DESCRIPTIONS[0];
@@ -252,10 +420,12 @@ const designScene = async (
     if (!url) return '';
     const userContent = JSON.stringify(userPayload) +
       '\n\nRespond with a SINGLE JSON object only. No markdown fences, no prose before/after. ' +
-      'The object MUST contain keys: sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array).';
+      'The object MUST contain keys: storyboard (string), sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array). ' +
+      `The structuredPrompt MUST contain EXACTLY ONE ${MASCOT_PLACEHOLDER} token. ` +
+      `The storyboard MUST contain ⌈N/2⌉–N sentences; every sentence must include 1–2 of the input target words verbatim, and every input word must appear at least once across the storyboard.`;
     const body: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: 1500,
+      max_tokens: 1800,
       temperature: 0.7,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -300,14 +470,14 @@ const designScene = async (
   // so we never burn the full timeout budget on a broken response.
   const wantsJsonMode = (Deno.env.get('SCENE_DESIGN_JSON_MODE') || '').toLowerCase() === 'true';
   let content = await call(wantsJsonMode);
-  let design = content && content.trim().length >= 40 ? parseSceneDesign(content, words) : null;
-  if (!design && wantsJsonMode) {
+  let parsed = content && content.trim().length >= 40 ? parseSceneDesignWithDiagnostics(content, words) : { design: null, diagnostics: null };
+  if (!parsed.design && wantsJsonMode) {
     // opted-in json mode failed -> one retry without it.
     console.log('[scene-generate] design retry (json_mode -> plain JSON)');
     content = await call(false);
-    design = content && content.trim().length >= 40 ? parseSceneDesign(content, words) : null;
+    parsed = content && content.trim().length >= 40 ? parseSceneDesignWithDiagnostics(content, words) : { design: null, diagnostics: null };
   }
-  if (!design) {
+  if (!parsed.design) {
     let failReason: string;
     if (lastException) {
       failReason = `exception: ${lastException}`;
@@ -320,12 +490,18 @@ const designScene = async (
     } else {
       failReason = `unparseable JSON: ${lastRawHead || content.substring(0, 80)}`;
     }
-    console.warn(`[scene-generate] design failed (${failReason}) -> buildFusionPrompt fallback`);
-    return { design: null, failReason, httpStatus: lastHttpStatus, rawHead: lastRawHead };
+    console.warn(`[scene-generate] design failed (${failReason}) -> buildFusionResult fallback`);
+    if (parsed.diagnostics) {
+      console.log(`[scene-generate] design diagnostics: ${JSON.stringify(parsed.diagnostics)}`);
+    }
+    return { design: null, diagnostics: parsed.diagnostics, failReason, httpStatus: lastHttpStatus, rawHead: lastRawHead };
   }
 
-  console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements zoned, title="${(design.sceneTitle || '').substring(0, 40)}"`);
-  return { design, failReason: null };
+  const design = parsed.design;
+  const diagnostics = parsed.diagnostics;
+  console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements, ${diagnostics.zonesAssigned} zones, ${diagnostics.validSentences}/${diagnostics.inputWordCount} sentences valid, mascotPlaceholder=${diagnostics.mascotPlaceholder.count}, title="${(design.sceneTitle || '').substring(0, 40)}"`);
+  console.log(`[scene-generate] design diagnostics: ${JSON.stringify(diagnostics)}`);
+  return { design, diagnostics, failReason: null };
 };
 
 // ----------------------------------------------------------------
@@ -483,13 +659,18 @@ const persistScene = async (
   if (!publicUrl) throw new Error('storage getPublicUrl returned empty');
 
   // regions always carry one entry per word (zone/default/vision); keep source for debugging.
+  // Carry through `sentence` when present (added by the v2 director pipeline).
   const fullRegions = params.words.map((w) => {
     const found = params.regions.find((r) => r.word && r.word.toLowerCase() === w.text.toLowerCase());
+    const sentence = found && typeof found.sentence === 'string' && found.sentence.trim()
+      ? found.sentence.trim()
+      : null;
     if (!found) {
       const c = zoneToBbox(DEFAULT_ZONE);
-      return { word: w.text, x: c.x, y: c.y, w: c.w, h: c.h, confidence: 0.5, source: 'default' };
+      const base = { word: w.text, x: c.x, y: c.y, w: c.w, h: c.h, confidence: 0.5, source: 'default' };
+      return sentence ? { ...base, sentence } : base;
     }
-    return {
+    const base = {
       word: w.text,
       x: found.x,
       y: found.y,
@@ -498,6 +679,7 @@ const persistScene = async (
       confidence: found.confidence,
       source: found.source || 'zone',
     };
+    return sentence ? { ...base, sentence } : base;
   });
 
   const row = {
@@ -711,8 +893,14 @@ serve(async (req) => {
     const userId = await resolveUserId(req);
     if (!userId) return json({ error: 'Authentication required' }, 401);
 
+    // SCENE_HASH_VERSION prefixes the word-set hash to invalidate cached scene
+    // assets when the data contract changes (e.g. adding the `sentence` field).
+    // Bump this whenever you need every user to regenerate fresh scenes.
+    // v3 (storyboard-first refactor): scene_assets now carries scene_design.storyboard
+    // and a guaranteed sentence per element (via buildFusionResult fallback path).
+    const SCENE_HASH_VERSION = 'v3';
     const normalizedWords = words.map((w) => normalizeWord(w.text)).sort();
-    const wordSetHash = (await sha1Hex(normalizedWords.join('|'))).slice(0, 16);
+    const wordSetHash = `${SCENE_HASH_VERSION}-${(await sha1Hex(normalizedWords.join('|'))).slice(0, 12)}`;
 
     const sb = getSupabaseClient();
 
@@ -764,7 +952,7 @@ serve(async (req) => {
 
       // ① Scene director
       const designCfg = resolveDesignConfig();
-      let designResult: { design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; failReason: string | null; httpStatus?: number; rawHead?: string } = { design: null, failReason: 'not-called' };
+      let designResult: { design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; diagnostics: any | null; failReason: string | null; httpStatus?: number; rawHead?: string } = { design: null, diagnostics: null, failReason: 'not-called' };
       try {
         designResult = await designScene(words, dayIndex, designCfg);
       } catch (err) {
@@ -772,31 +960,89 @@ serve(async (req) => {
         return;
       }
       const design = designResult.design;
+      const designDiagnostics = designResult.diagnostics;
+
+      // Fetch the canonical mascot image (data URL or null) up-front. We need
+      // it both for [TODAYS_MASCOT] text-substitution diagnostics AND for the
+      // img2img reference-image path.
+      const mascotFetch = await fetchMascotDataUrl(dayIndex);
+      const mascotDataUrl = mascotFetch.dataUrl;
+      const mascotShortText = MASCOT_SHORT_DESCRIPTION[dayIndex] || MASCOT_SHORT_DESCRIPTION[0];
 
       let prompt: string;
+      let structuredPromptRaw: string | null = null; // pre-substitution form, stored on scene_design
+      let placeholderSubstitution: { replacedCount: number; usingTextFallback: boolean } | null = null;
       let sceneDesignPayload: any = null;
       let fellBack = false;
+      let fallbackResult: ReturnType<typeof buildFusionResult> | null = null;
       if (design) {
-        prompt = design.structuredPrompt;
+        structuredPromptRaw = design.structuredPrompt;
+        // Replace the [TODAYS_MASCOT] placeholder. When we have a real mascot
+        // image AND img2img is enabled, we still replace it with the short text
+        // description so the text-only fallback path (and any image-gen provider
+        // that ends up not supporting edits) still has a coherent sentence.
+        // The actual reference image is sent alongside via multipart.
+        const substitution = replaceMascotPlaceholder(design.structuredPrompt, mascotShortText);
+        prompt = substitution.prompt;
+        placeholderSubstitution = {
+          replacedCount: substitution.replacedCount,
+          usingTextFallback: !mascotDataUrl,
+        };
+        if (designDiagnostics) {
+          designDiagnostics.mascotPlaceholder.replacedInStructuredPrompt = substitution.replacedCount > 0;
+        }
         sceneDesignPayload = {
           sceneTitle: design.sceneTitle || null,
           sceneConcept: design.sceneConcept || null,
-          structuredPrompt: design.structuredPrompt,
+          // Storyboard-first: forward the LLM-authored storyboard so the
+          // PREPARING stage UI can preview the scene idea and the DB schema
+          // carries the same contract as the fallback path.
+          storyboard: design.storyboard || null,
+          structuredPrompt: design.structuredPrompt, // preserve original (with placeholder) for reproducibility
           elements: design.elements,
           source: 'director',
         };
       } else {
-        prompt = buildFusionPrompt(words, dayIndex);
+        // buildFusionResult always emits a valid storyboard + one sentence per
+        // word (verified by parseStoryboard), so the cloze UI never degrades to
+        // "Picture only" when the director fails.
+        fallbackResult = buildFusionResult(words, dayIndex);
+        prompt = fallbackResult.prompt;
         fellBack = true;
-        console.log(`[scene-generate] director failed/absent -> buildFusionPrompt fallback (reason: ${designResult.failReason})`);
+        console.log(`[scene-generate] director failed/absent -> buildFusionResult fallback (reason: ${designResult.failReason})`);
+        sceneDesignPayload = {
+          sceneTitle: null,
+          sceneConcept: null,
+          storyboard: fallbackResult.storyboard,
+          structuredPrompt: null,
+          elements: fallbackResult.sentences.map((s) => ({
+            word: s.word,
+            sentence: s.sentence,
+            positionZone: null,
+          })),
+          sentences: fallbackResult.sentences,
+          source: 'fallback',
+        };
       }
       // → emit designed (real evidence: prompt string exists)
       // When fell back, include the failure reason so the client can surface it.
+      const storyboardForEvent =
+        (design?.storyboard && design.storyboard.trim()) ||
+        (fellBack ? fallbackResult?.storyboard : null) ||
+        null;
       send({
         stage: 'designed',
         prompt,
         source: fellBack ? 'fallback' : 'director',
         sceneTitle: design?.sceneTitle || null,
+        storyboard: storyboardForEvent,
+        diagnostics: designDiagnostics || undefined,
+        mascot: {
+          referenceImageAvailable: !!mascotDataUrl,
+          source: mascotFetch.source,
+          placeholderReplacedCount: placeholderSubstitution?.replacedCount ?? 0,
+          usingTextFallback: placeholderSubstitution?.usingTextFallback ?? false,
+        },
         ...(fellBack && designResult.failReason ? { fallbackReason: designResult.failReason } : {}),
       });
 
@@ -807,12 +1053,16 @@ serve(async (req) => {
         return;
       }
 
+      const referenceImage = mascotDataUrl
+        ? { dataUrl: mascotDataUrl, label: `mascot-day-${dayIndex}` }
+        : null;
+
       const failures: ProviderAttemptFailure[] = [];
-      let generated: { dataUrl: string; providerId: ProviderId; model: string } | null = null;
+      let generated: { dataUrl: string; providerId: ProviderId; model: string; img2Img: boolean } | null = null;
       for (let i = 0; i < providers.length; i++) {
-        const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0);
+        const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0, { referenceImage });
         if ('error' in result) { failures.push(result.error); continue; }
-        generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model };
+        generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model, img2Img: result.img2Img };
         break;
       }
       if (!generated) {
@@ -820,13 +1070,25 @@ serve(async (req) => {
         return;
       }
       // → emit rendered (real evidence: image dataUrl exists)
-      send({ stage: 'rendered', providerId: generated.providerId });
+      send({ stage: 'rendered', providerId: generated.providerId, img2Img: generated.img2Img });
 
       // Regions — DEFAULT path: derive from director zones (no extra model call).
       let regions = deriveRegionsFromElements(
         design ? { structuredPrompt: design.structuredPrompt, elements: design.elements } : { structuredPrompt: '', elements: [] },
         words,
       );
+      // Fallback path: no director elements → inject the deterministic fallback
+      // sentences so each region carries its cloze sentence just like the
+      // director path does.
+      if (fellBack && fallbackResult) {
+        const fallbackByWord = new Map(
+          fallbackResult.sentences.map((s) => [s.word.toLowerCase(), s.sentence]),
+        );
+        regions = regions.map((r) => {
+          const sentence = fallbackByWord.get(r.word.toLowerCase());
+          return sentence ? { ...r, sentence } : r;
+        });
+      }
       let regionsSource: string = fellBack ? 'default' : 'zone';
 
       // ③ Optional vision refinement (only when enabled)
@@ -887,7 +1149,7 @@ serve(async (req) => {
       // → emit persisted (real evidence: scene_assets row written, publicUrl non-empty)
       send({ stage: 'persisted' });
 
-      console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'}`);
+      console.log(`[scene-generate] generated ${wordSetHash} day=${dayIndex} user=${userId.substring(0, 8)} design=${design ? 'director' : 'fallback'} regions=${regionsSource} vision=${visionEnabled ? 'on' : 'off'} img2img=${generated.img2Img} mascotSrc=${mascotFetch.source}`);
 
       // → emit done (final asset; client switches to MODE_SELECT)
       send({
@@ -895,7 +1157,15 @@ serve(async (req) => {
         source: 'generated',
         degraded: false,
         asset,
-        pipeline: { design: design ? 'director' : 'fallback', regions: regionsSource, vision: visionEnabled ? (visionModelUsed || 'on') : 'off' },
+        diagnostics: designDiagnostics || undefined,
+        pipeline: {
+          design: design ? 'director' : 'fallback',
+          regions: regionsSource,
+          vision: visionEnabled ? (visionModelUsed || 'on') : 'off',
+          img2img: generated.img2Img,
+          mascot: mascotFetch.source,
+          placeholderReplacedCount: placeholderSubstitution?.replacedCount ?? 0,
+        },
       });
     });
   } catch (error) {
