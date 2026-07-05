@@ -420,12 +420,20 @@ const designScene = async (
     if (!url) return '';
     const userContent = JSON.stringify(userPayload) +
       '\n\nRespond with a SINGLE JSON object only. No markdown fences, no prose before/after. ' +
+      'Do NOT emit <think> tags or any chain-of-thought preamble — output the JSON object directly. ' +
       'The object MUST contain keys: storyboard (string), sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array). ' +
+      'EVERY entry in elements[] MUST include a non-empty "sentence" string — this is the cloze clue shown to the learner and there is no fallback inside the element. ' +
       `The structuredPrompt MUST contain EXACTLY ONE ${MASCOT_PLACEHOLDER} token. ` +
       `The storyboard MUST contain ⌈N/2⌉–N sentences; every sentence must include 1–2 of the input target words verbatim, and every input word must appear at least once across the storyboard.`;
     const body: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: 1800,
+      // Reasoning-style models (DeepSeek-R1, MiniMax-M1, Qwen-QwQ, etc.)
+      // emit a <think>...</think> block BEFORE the JSON answer, and that
+      // block counts toward max_tokens. With max_tokens=1800 the response
+      // was being truncated MID-reasoning, so the JSON never emerged and
+      // the parser saw unparseable prose. 4000 leaves comfortable room for
+      // both reasoning (~2-3k tokens) and the JSON payload (~1-1.5k).
+      max_tokens: 4000,
       temperature: 0.7,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -841,7 +849,13 @@ serve(async (req) => {
     // ③ vision on/off may be toggled from the Admin Console (non-sensitive).
     const visionEnabledBody = body?.visionEnabled === true;
 
-    // ---- probe: verify SCENE_DESIGN_* secret without any image/DB work ----
+    // ---- probe: verify the director can actually produce cloze sentences ----
+    // Old probe sent `max_tokens:1, content:'ping'` — that only checked API key
+    // validity, which gave false-positive "ok" on directors that were silently
+    // dropping the `sentence` field. The new probe sends a real 3-word design
+    // request, parses the response, and reports whether elements[0].sentence
+    // came back. This makes the Admin Console button reflect real director
+    // health, not just gateway connectivity.
     if (action === 'probe') {
       const userId = await resolveUserId(req);
       if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
@@ -851,29 +865,70 @@ serve(async (req) => {
       }
       const url = chatCompletionsUrl(cfg.baseUrl);
       const startedAt = Date.now();
+      const masked = cfg.baseUrl.length > 24 ? `${cfg.baseUrl.slice(0, 12)}…${cfg.baseUrl.slice(-8)}` : cfg.baseUrl;
       try {
+        const testWords: SceneWordMetaInput[] = [
+          { text: 'apple', pos: 'noun', definitionCn: '苹果' },
+          { text: 'run', pos: 'verb', definitionCn: '跑' },
+          { text: 'moon', pos: 'noun', definitionCn: '月亮' },
+        ];
+        const mascot = MASCOT_DESCRIPTIONS[0];
+        const sysPrompt = buildSceneDirectorSystemPrompt();
+        const userPayload = JSON.stringify(buildSceneDirectorUserPayload(testWords, 0, mascot)) +
+          '\n\nRespond with a SINGLE JSON object only. EVERY element MUST include "sentence".';
         const response = await withTimeout(
           fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
             body: JSON.stringify({
               model: cfg.model,
-              max_tokens: 1,
-              messages: [{ role: 'user', content: 'ping' }],
+              max_tokens: 800,
+              temperature: 0.7,
+              messages: [
+                { role: 'system', content: sysPrompt },
+                { role: 'user', content: userPayload },
+              ],
             }),
           }),
-          20000,
-          'probe timeout after 20s',
+          30000,
+          'probe timeout after 30s',
         );
         const latencyMs = Date.now() - startedAt;
         if (!response.ok) {
           const data = await parseResponseJson(response);
-          return json({ ok: false, error: data?.error?.message || `director HTTP ${response.status}`, status: 502 }, 502);
+          return json({ ok: false, error: data?.error?.message || `director HTTP ${response.status}`, status: 502, latencyMs, model: cfg.model, baseUrl: masked }, 502);
         }
-        const masked = cfg.baseUrl.length > 24 ? `${cfg.baseUrl.slice(0, 12)}…${cfg.baseUrl.slice(-8)}` : cfg.baseUrl;
-        return json({ ok: true, probe: 'design', model: cfg.model, latencyMs, baseUrl: masked });
+        const data = await parseResponseJson(response);
+        const content = typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+        if (content.trim().length < 40) {
+          return json({
+            ok: false,
+            error: `director returned short response (len=${content.length}): ${content.slice(0, 120)}`,
+            latencyMs, model: cfg.model, baseUrl: masked,
+          }, 502);
+        }
+        const parsed = parseSceneDesignWithDiagnostics(content, testWords);
+        const design = parsed.design;
+        const diag = parsed.diagnostics;
+        const sentencesProduced = design ? design.elements.filter((e: any) => typeof e.sentence === 'string' && e.sentence.trim().length > 0).length : 0;
+        const sampleSentence = design?.elements?.[0]?.sentence || '';
+        return json({
+          ok: !!design && sentencesProduced >= 1,
+          probe: 'design',
+          model: cfg.model,
+          latencyMs,
+          baseUrl: masked,
+          parsed: !!design,
+          hasStoryboard: !!diag?.storyboardPresent,
+          storyboardViolation: diag?.storyboardViolation || null,
+          elementCount: design?.elements?.length || 0,
+          sentencesProduced,
+          failReason: diag?.failReason || null,
+          rawContentHead: diag?.rawContentHead || content.slice(0, 200),
+          sampleSentence,
+        });
       } catch (err) {
-        return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502 }, 502);
+        return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502, latencyMs: Date.now() - startedAt, model: cfg.model, baseUrl: masked }, 502);
       }
     }
 
@@ -898,7 +953,16 @@ serve(async (req) => {
     // Bump this whenever you need every user to regenerate fresh scenes.
     // v3 (storyboard-first refactor): scene_assets now carries scene_design.storyboard
     // and a guaranteed sentence per element (via buildFusionResult fallback path).
-    const SCENE_HASH_VERSION = 'v3';
+    // v4 (sentence-first prompt + diagnostics): prompt restructured so cloze
+    // sentences are the PRIMARY deliverable, fallback no longer emits Chinese
+    // translation, diagnostics persisted in scene_design on fallback for
+    // debuggability. Bumps cache because old rows carry the broken fallback.
+    // v5 (reasoning-model fix): max_tokens 1800->4000 + explicit "no <think>"
+    // directive in user payload. Reasoning models (DeepSeek-R1, MiniMax-M1)
+    // were eating the whole budget on chain-of-thought and getting truncated
+    // before emitting any JSON. Bumps cache because v4 records all hit the
+    // reasoning-truncation fallback.
+    const SCENE_HASH_VERSION = 'v5';
     const normalizedWords = words.map((w) => normalizeWord(w.text)).sort();
     const wordSetHash = `${SCENE_HASH_VERSION}-${(await sha1Hex(normalizedWords.join('|'))).slice(0, 12)}`;
 
@@ -1010,6 +1074,11 @@ serve(async (req) => {
         prompt = fallbackResult.prompt;
         fellBack = true;
         console.log(`[scene-generate] director failed/absent -> buildFusionResult fallback (reason: ${designResult.failReason})`);
+        // Persist the diagnostics so the next failure is debuggable from the DB
+        // alone (no need to grep edge-function console logs). `rawContentHead`
+        // is the first ~200 chars of what the LLM actually returned — this is
+        // the evidence trail that was missing before.
+        const fbDiagnostics = designResult.diagnostics;
         sceneDesignPayload = {
           sceneTitle: null,
           sceneConcept: null,
@@ -1022,6 +1091,22 @@ serve(async (req) => {
           })),
           sentences: fallbackResult.sentences,
           source: 'fallback',
+          fallbackReason: designResult.failReason,
+          diagnostics: fbDiagnostics
+            ? {
+                failReason: fbDiagnostics.failReason,
+                rawContentLength: fbDiagnostics.rawContentLength,
+                rawContentHead: fbDiagnostics.rawContentHead,
+                thinkBlockStripped: fbDiagnostics.thinkBlockStripped,
+                fenceBlockStripped: fbDiagnostics.fenceBlockStripped,
+                jsonExtractedFromProse: fbDiagnostics.jsonExtractedFromProse,
+                storyboardPresent: fbDiagnostics.storyboardPresent,
+                storyboardViolation: fbDiagnostics.storyboardViolation,
+                validSentences: fbDiagnostics.validSentences,
+                droppedSentences: fbDiagnostics.droppedSentences,
+                missingSentenceFields: fbDiagnostics.missingSentenceFields,
+              }
+            : { failReason: designResult.failReason },
         };
       }
       // → emit designed (real evidence: prompt string exists)
