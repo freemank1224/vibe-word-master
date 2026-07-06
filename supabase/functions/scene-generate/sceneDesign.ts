@@ -383,23 +383,28 @@ export const validateSentence = (
 };
 
 /**
- * Scrub the [TODAYS_MASCOT] / [TODAY_MOSCOT] placeholder (and any whitespace
- * around it) from a cloze sentence or storyboard. The placeholder is an
- * image-prompt-only token — when it leaks into learner-facing text it shows
- * up verbatim as "[TODAYS_MASCOT]" which is ugly and confusing.
+ * Scrub the [TODAYS_MASCOT] / [TODAY_MOSCOT] placeholder AND the standalone
+ * word "mascot" (which is too academic for language learners) from a cloze
+ * sentence or storyboard. The placeholder is an image-prompt-only token; the
+ * word "mascot" is rejected because the product owner wants learners to see
+ * the everyday English word "monster" instead.
  *
- * Replace with `replacement` (default: "monster") so the sentence still reads
- * naturally. Trims double spaces left behind.
+ * Replace with `replacement` (default: "monster"). Trims double spaces.
  */
 export const scrubMascotPlaceholder = (
   text: string,
   replacement: string = 'monster',
 ): string => {
   if (typeof text !== 'string' || text.length === 0) return text;
-  // Match the placeholder with any common typo (MOSCOT vs MASCOT) and
-  // optional surrounding whitespace.
-  const re = /\s*\[\s*(?:TODAYS?_MASCOT|TODAY_MOSCOT|TODAYS_MOSCOT)\s*\]\s*/gi;
-  return text.replace(re, ` ${replacement} `).replace(/\s{2,}/g, ' ').trim();
+  let out = text;
+  // 1) The placeholder token, with common typos (MOSCOT vs MASCOT) and
+  //    optional surrounding whitespace.
+  out = out.replace(/\s*\[\s*(?:TODAYS?_MASCOT|TODAY_MOSCOT|TODAYS_MOSCOT)\s*\]\s*/gi, ` ${replacement} `);
+  // 2) The standalone word "mascot" / "mascots" as a whole word (case-
+  //    insensitive). The adjective form is preserved when prefix-matched
+  //    ("mascot-shaped" → "monster-shaped") by replacing the head noun.
+  out = out.replace(/\bmascots?\b/gi, replacement);
+  return out.replace(/\s{2,}/g, ' ').trim();
 };
 
 // ----------------------------------------------------------------
@@ -914,8 +919,12 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     'the mascot appears. This token is ONLY for the image model — we will inject the',
     'canonical reference image at that position. NEVER use [TODAYS_MASCOT] in the',
     'storyboard or in elements[].sentence — those are shown to learners and must',
-    'use plain English like "monster" / "the mascot" / "creature".',
-    'Do NOT describe the mascot\'s colors or shape in structuredPrompt — we will',
+    'use plain English. When you refer to the mascot in those learner-facing strings,',
+    'you MUST use the single word "monster" (e.g. "the little monster", "a friendly',
+    'monster"). NEVER use the word "mascot", "creature", "beast", "animal", or any',
+    'other synonym — those are too obscure or academic for language learners. Always',
+    '"monster".',
+    'Do NOT describe the monster\'s colors or shape in structuredPrompt — we will',
     'inject the canonical reference image.',
     '',
     '═══════════════════════════════════════════════════════════════════',
