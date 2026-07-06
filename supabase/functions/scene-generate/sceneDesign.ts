@@ -382,6 +382,26 @@ export const validateSentence = (
   return null;
 };
 
+/**
+ * Scrub the [TODAYS_MASCOT] / [TODAY_MOSCOT] placeholder (and any whitespace
+ * around it) from a cloze sentence or storyboard. The placeholder is an
+ * image-prompt-only token — when it leaks into learner-facing text it shows
+ * up verbatim as "[TODAYS_MASCOT]" which is ugly and confusing.
+ *
+ * Replace with `replacement` (default: "monster") so the sentence still reads
+ * naturally. Trims double spaces left behind.
+ */
+export const scrubMascotPlaceholder = (
+  text: string,
+  replacement: string = 'monster',
+): string => {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  // Match the placeholder with any common typo (MOSCOT vs MASCOT) and
+  // optional surrounding whitespace.
+  const re = /\s*\[\s*(?:TODAYS?_MASCOT|TODAY_MOSCOT|TODAYS_MOSCOT)\s*\]\s*/gi;
+  return text.replace(re, ` ${replacement} `).replace(/\s{2,}/g, ' ').trim();
+};
+
 // ----------------------------------------------------------------
 // Storyboard parsing & word-to-sentence mapping (§4 storyboard-first refactor)
 // ----------------------------------------------------------------
@@ -696,9 +716,14 @@ export const parseSceneDesignWithDiagnostics = (
     }
     // Validate the cloze sentence; if it fails, drop ONLY the sentence field,
     // not the whole element (so the design still works in fallback mode for that word).
-    const sentenceReason = validateSentence(rawEl.sentence, canonical);
+    // Also scrub the [TODAYS_MASCOT] placeholder if the LLM leaked it into a sentence
+    // (it's an image-prompt-only token — learner-facing text must say "monster").
+    const scrubbedSentence = typeof rawEl.sentence === 'string'
+      ? scrubMascotPlaceholder(rawEl.sentence)
+      : rawEl.sentence;
+    const sentenceReason = validateSentence(scrubbedSentence, canonical);
     if (sentenceReason === null) {
-      el.sentence = (rawEl.sentence as string).trim();
+      el.sentence = (scrubbedSentence as string).trim();
       validSentences += 1;
     } else {
       dropReasons[reasonKey[sentenceReason]] += 1;
@@ -721,7 +746,9 @@ export const parseSceneDesignWithDiagnostics = (
   // was present-but-invalid) was discarding director successes whenever the
   // LLM's prose didn't perfectly match ⌈N/2⌉-N sentence count, forcing the
   // useless "hidden in today's scene" fallback template.
-  const storyboardRaw = typeof parsed.storyboard === 'string' ? parsed.storyboard : '';
+  // Also scrub any [TODAYS_MASCOT] that leaked into the storyboard.
+  const storyboardRawRaw = typeof parsed.storyboard === 'string' ? parsed.storyboard : '';
+  const storyboardRaw = scrubMascotPlaceholder(storyboardRawRaw);
   const storyboardParsed = parseStoryboard(storyboardRaw, words);
   const storyboardPresent = storyboardRaw.trim().length > 0;
   const storyboardStats = {
@@ -884,7 +911,11 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     'so the learner can match each sentence to something visible.',
     '',
     'For the mascot, insert the literal token [TODAYS_MASCOT] EXACTLY ONE time where',
-    'the mascot appears. Do NOT describe the mascot\'s colors or shape — we will',
+    'the mascot appears. This token is ONLY for the image model — we will inject the',
+    'canonical reference image at that position. NEVER use [TODAYS_MASCOT] in the',
+    'storyboard or in elements[].sentence — those are shown to learners and must',
+    'use plain English like "monster" / "the mascot" / "creature".',
+    'Do NOT describe the mascot\'s colors or shape in structuredPrompt — we will',
     'inject the canonical reference image.',
     '',
     '═══════════════════════════════════════════════════════════════════',
