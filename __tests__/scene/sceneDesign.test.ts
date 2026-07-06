@@ -278,8 +278,13 @@ test('parseSceneDesign keeps only elements whose word matches an input word (cas
   const design = parseSceneDesign(payload, WORDS);
   assert.ok(design);
   const words = design!.elements.map((e) => e.word);
-  assert.deepEqual(words.sort(), ['angry', 'apple', 'run']);
+  // Backfill behavior: every input word (apple, angry, run, quickly, moon)
+  // gets an element — the 3 LLM-provided ones + 2 backfilled for quickly/moon.
+  assert.deepEqual(words.sort(), ['angry', 'apple', 'moon', 'quickly', 'run']);
   assert.equal(design!.elements.find((e) => e.word === 'run')!.positionZone, 'bottom-center');
+  // Backfilled elements must carry a fallback sentence so UI never shows "Picture only".
+  assert.ok(design!.elements.find((e) => e.word === 'moon')!.sentence);
+  assert.ok(design!.elements.find((e) => e.word === 'quickly')!.sentence);
 });
 
 test('parseSceneDesign normalizes each element positionZone to a canonical key or null', () => {
@@ -306,7 +311,11 @@ test('parseSceneDesign tolerates elements being objects that omit word (dropped)
   });
   const design = parseSceneDesign(payload, WORDS);
   assert.ok(design);
-  assert.equal(design!.elements.length, 1);
+  // The hallucinated element without a word is dropped, but the parser
+  // backfills elements for all input words that were missing. Input WORDS
+  // has 5 entries; only "apple" was supplied, so 4 are backfilled.
+  assert.equal(design!.elements.length, WORDS.length);
+  assert.ok(design!.elements.find((e) => e.word === 'apple'));
   assert.equal(design!.elements[0].word, 'apple');
 });
 
@@ -441,25 +450,26 @@ test('parseSceneDesign accepts a valid cloze sentence per element', () => {
   assert.equal(design.elements[0].sentence, 'A glossy red apple sits on the wooden kitchen counter.');
 });
 
-test('parseSceneDesign drops only the sentence field when it does not contain the word', () => {
+test('parseSceneDesign backfills fallback sentence when it does not contain the word', () => {
   const payload = JSON.stringify({
     structuredPrompt: 'ok',
     elements: [
-      // "horse" does not appear in the sentence → sentence dropped, element kept
+      // "horse" does not appear in the sentence → invalid; parser backfills
+      // a fallback sentence so the element still has a clue to display.
       { word: 'apple', positionZone: 'top-left', sentence: 'A horse gallops across the field.' },
-      // valid sentence → kept
+      // valid sentence → kept as-is
       { word: 'angry', positionZone: 'center', sentence: 'The angry chef slams his spoon down.' },
     ],
   });
   const design = parseSceneDesign(payload, WORDS)!;
-  assert.equal(design.elements.length, 2);
   const apple = design.elements.find((e) => e.word === 'apple')!;
-  assert.equal(apple.sentence, undefined, 'apple.sentence must be dropped');
+  assert.ok(apple.sentence, 'apple.sentence must be backfilled (not undefined)');
+  assert.ok(apple.sentence!.includes('apple'), 'backfilled sentence must contain the word');
   const angry = design.elements.find((e) => e.word === 'angry')!;
   assert.equal(angry.sentence, 'The angry chef slams his spoon down.');
 });
 
-test('parseSceneDesign drops "The word is X" templated sentences', () => {
+test('parseSceneDesign backfills fallback sentence for "The word is X" templated sentences', () => {
   const payload = JSON.stringify({
     structuredPrompt: 'ok',
     elements: [
@@ -468,8 +478,12 @@ test('parseSceneDesign drops "The word is X" templated sentences', () => {
     ],
   });
   const design = parseSceneDesign(payload, WORDS)!;
-  assert.equal(design.elements.find((e) => e.word === 'apple')!.sentence, undefined);
-  assert.equal(design.elements.find((e) => e.word === 'angry')!.sentence, undefined);
+  // Both LLM sentences are rejected (lazyTemplate / meansOpener), but the parser
+  // BACKFILLS a fallback sentence so the UI never shows "Picture only".
+  const apple = design.elements.find((e) => e.word === 'apple')!;
+  assert.ok(apple.sentence && apple.sentence.includes('apple'), 'apple backfilled with valid sentence');
+  const angry = design.elements.find((e) => e.word === 'angry')!;
+  assert.ok(angry.sentence && angry.sentence.includes('angry'), 'angry backfilled with valid sentence');
 });
 
 test('parseSceneDesign matches the word case-insensitively when validating sentence', () => {
@@ -483,7 +497,7 @@ test('parseSceneDesign matches the word case-insensitively when validating sente
   assert.equal(design.elements[0].sentence, 'An APPLE rests on the counter.');
 });
 
-test('parseSceneDesign handles missing sentence gracefully (no field = no error)', () => {
+test('parseSceneDesign backfills fallback sentence when sentence field is missing', () => {
   const payload = JSON.stringify({
     structuredPrompt: 'ok',
     elements: [
@@ -491,8 +505,10 @@ test('parseSceneDesign handles missing sentence gracefully (no field = no error)
     ],
   });
   const design = parseSceneDesign(payload, WORDS)!;
-  assert.equal(design.elements.length, 1);
-  assert.equal(design.elements[0].sentence, undefined);
+  // Element kept AND backfilled with a fallback sentence containing 'apple'.
+  // Old behavior (sentence=undefined) would have produced "Picture only" in the UI.
+  const apple = design.elements.find((e) => e.word === 'apple')!;
+  assert.ok(apple.sentence && apple.sentence.includes('apple'), 'apple must have backfilled sentence');
 });
 
 // ----------------------------------------------------------------
@@ -506,7 +522,7 @@ test('deriveRegionsFromElements carries the element sentence through to the regi
   assert.equal(byWord['moon'].sentence, 'A pale crescent moon glows faintly above the rooftop.');
 });
 
-test('deriveRegionsFromElements omits sentence on regions whose element lacks one', () => {
+test('deriveRegionsFromElements carries backfilled sentence through to region', () => {
   const design = parseSceneDesign(
     JSON.stringify({
       structuredPrompt: 'ok',
@@ -515,12 +531,18 @@ test('deriveRegionsFromElements omits sentence on regions whose element lacks on
     WORDS,
   )!;
   const regions = deriveRegionsFromElements(design, WORDS);
+  // After parser backfill, every element (including the backfilled ones for
+  // angry/run/quickly/moon) carries a fallback sentence — so every region
+  // also carries one. UI never sees "Picture only".
+  for (const r of regions) {
+    assert.ok(r.sentence, `${r.word} region must carry a sentence`);
+  }
   const apple = regions.find((r) => r.word === 'apple')!;
-  assert.equal(apple.sentence, undefined);
-  // word without an element → falls back to center, no sentence
+  assert.equal(apple.source, 'zone');
+  // word without an element → falls back to center, sentence backfilled
   const angry = regions.find((r) => r.word === 'angry')!;
   assert.equal(angry.source, 'default');
-  assert.equal(angry.sentence, undefined);
+  assert.ok(angry.sentence && angry.sentence.includes('angry'), 'angry region carries backfilled sentence');
 });
 
 // ----------------------------------------------------------------
@@ -655,8 +677,9 @@ test('parseSceneDesignWithDiagnostics counts zonesAssigned only for valid zones'
   });
   const { diagnostics } = parseSceneDesignWithDiagnostics(payload, WORDS);
   assert.equal(diagnostics.parsedSuccessfully, true);
-  assert.equal(diagnostics.totalElements, 3);
-  assert.equal(diagnostics.zonesAssigned, 1); // only apple
+  // 3 LLM-provided elements + 2 backfilled (quickly, moon) for missing input words.
+  assert.equal(diagnostics.totalElements, WORDS.length);
+  assert.equal(diagnostics.zonesAssigned, 1); // only apple has a valid zone
 });
 
 test('parseSceneDesignWithDiagnostics tracks mascot placeholder count in prompt', () => {

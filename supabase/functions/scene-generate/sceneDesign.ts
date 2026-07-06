@@ -719,10 +719,9 @@ export const parseSceneDesignWithDiagnostics = (
       el.positionZone = zone;
       zonesAssigned += 1;
     }
-    // Validate the cloze sentence; if it fails, drop ONLY the sentence field,
-    // not the whole element (so the design still works in fallback mode for that word).
-    // Also scrub the [TODAYS_MASCOT] placeholder if the LLM leaked it into a sentence
-    // (it's an image-prompt-only token — learner-facing text must say "monster").
+    // Validate the cloze sentence; if it fails, BACKFILL a fallback sentence so
+    // the user NEVER sees "Picture only" — every word gets a playable clue.
+    // Also scrub the [TODAYS_MASCOT] placeholder if the LLM leaked it.
     const scrubbedSentence = typeof rawEl.sentence === 'string'
       ? scrubMascotPlaceholder(rawEl.sentence)
       : rawEl.sentence;
@@ -733,8 +732,27 @@ export const parseSceneDesignWithDiagnostics = (
     } else {
       dropReasons[reasonKey[sentenceReason]] += 1;
       missingSentenceFields.push(canonical);
+      // BACKFILL: do not leave the element sentence-less. The fallback sentence
+      // contains the word verbatim and passes validateSentence. This guarantees
+      // every region has a sentence to display in the UI.
+      const wordInput = words.find((w) => normalizeWordKey(w.text) === key);
+      if (wordInput) {
+        el.sentence = buildFallbackClozeSentence(wordInput);
+      }
     }
     elements.push(el);
+  }
+  // Defensive sweep: any input word that has NO element at all (LLM dropped it
+  // entirely) also gets a fallback element so the UI never renders "Picture only".
+  for (const w of words) {
+    const key = normalizeWordKey(w.text);
+    if (!elements.some((e) => normalizeWordKey(e.word) === key)) {
+      elements.push({
+        word: w.text,
+        sentence: buildFallbackClozeSentence(w),
+      });
+      missingSentenceFields.push(w.text);
+    }
   }
 
   const design: SceneDesign = { structuredPrompt, elements };
