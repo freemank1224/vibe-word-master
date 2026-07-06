@@ -52,32 +52,42 @@ const getSupabaseClient = () =>
   });
 
 // ----------------------------------------------------------------
-// Day-of-week monster prose (kept in sync with utils/mascotDescriptions.ts)
-// ----------------------------------------------------------------
+// Day-of-week mascot context for the director LLM.
+//
+// IMPORTANT: the actual per-day visual identity (color, accessory, belly text)
+// is NOT described in text — it comes from the M{dayIndex}.webp reference image
+// attached via multipart during img2img generation. The text only needs to give
+// the director LLM a generic noun to write natural scene actions around.
+//
+// The 7 mascots are the same species (a "round plush cartoon monster" —
+// think 7 brothers with different colors). One description fits all days.
+const MASCOT_GENERIC_DESCRIPTION = 'a small round plush cartoon monster with a soft chubby body and a friendly expression';
 const MASCOT_DESCRIPTIONS: Record<number, string> = {
-  0: 'A cute, round, red-orange warm monster tailored for Sunday, embodying relaxation and sun warmth. It has soft fur and a friendly smile.',
-  1: 'A small, energetic, electric-blue monster for Monday, symbolizing a fresh start and energy. It has lightning-bolt shaped antennae.',
-  2: 'A focused, green-leaf patterned monster for Tuesday, representing growth and steady progress. It wears glasses and looks smart.',
-  3: 'A cheerful, yellow bubble-like monster for Wednesday, representing the peak of the week. It is floating and glowing softly.',
-  4: 'A calm, reliable, purple monster for Thursday, symbolizing wisdom and anticipation. It has a magical aura.',
-  5: 'A fun-loving, pink, party-ready monster for Friday, representing excitement for the weekend. It has confetti-like spots.',
-  6: 'A partially lazy, sloth-like turquoise monster for Saturday, representing leisure and play. It is holding a pillow or toy.',
+  0: MASCOT_GENERIC_DESCRIPTION,
+  1: MASCOT_GENERIC_DESCRIPTION,
+  2: MASCOT_GENERIC_DESCRIPTION,
+  3: MASCOT_GENERIC_DESCRIPTION,
+  4: MASCOT_GENERIC_DESCRIPTION,
+  5: MASCOT_GENERIC_DESCRIPTION,
+  6: MASCOT_GENERIC_DESCRIPTION,
 };
 
 /**
- * SHORT fallback description used to substitute [TODAYS_MASCOT] inside the
- * structuredPrompt when the image-generation provider does NOT support
- * reference images. We intentionally keep this brief and noun-phrase-style so
- * it slots into the LLM's natural-language sentence without breaking grammar.
+ * SHORT phrase that replaces the `[TODAYS_MASCOT]` token inside the
+ * structuredPrompt before sending it to the image model. Same for all 7 days
+ * — the day-specific visual identity comes from the M{dayIndex}.webp
+ * reference image attached via multipart, not from this text. The phrase just
+ * gives the image model a grammatical noun so the prompt reads naturally.
  */
+const MASCOT_SHORT_PHRASE = 'a small round plush monster';
 const MASCOT_SHORT_DESCRIPTION: Record<number, string> = {
-  0: 'a round red-orange warm monster with soft fur and a friendly smile',
-  1: 'a small electric-blue monster with lightning-bolt antennae',
-  2: 'a focused green-leaf-patterned monster wearing glasses',
-  3: 'a cheerful floating yellow bubble-like monster glowing softly',
-  4: 'a calm purple monster with a magical aura',
-  5: 'a fun-loving pink party-ready monster with confetti-like spots',
-  6: 'a sloth-like turquoise monster holding a pillow',
+  0: MASCOT_SHORT_PHRASE,
+  1: MASCOT_SHORT_PHRASE,
+  2: MASCOT_SHORT_PHRASE,
+  3: MASCOT_SHORT_PHRASE,
+  4: MASCOT_SHORT_PHRASE,
+  5: MASCOT_SHORT_PHRASE,
+  6: MASCOT_SHORT_PHRASE,
 };
 
 const MASCOT_STORAGE_PATH = (dayIndex: number) => `mascots/M${dayIndex}.webp`;

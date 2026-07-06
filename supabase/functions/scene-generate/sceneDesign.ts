@@ -1046,17 +1046,20 @@ const buildFallbackClozeSentence = (w: SceneWordInput): string => {
 
 /**
  * Mirror of the MASCOT_DESCRIPTIONS table in index.ts, kept here so this
- * module stays dependency-free. Kept terse on purpose — this is the
- * text-only image-prompt fallback, not the rich reference-image path.
+ * module stays dependency-free. Kept generic on purpose — the day-specific
+ * visual identity comes from the M{dayIndex}.webp reference image attached
+ * via img2img multipart, NOT from this text. Used only on the rare fallback
+ * path when img2img is unavailable; even then we don't try to describe colors
+ * because we can't know which reference image is "correct" for the day.
  */
 const MASCOT_FALLBACK_DESCRIPTIONS: Record<number, string> = {
-  0: 'A cute, round, red-orange warm monster with soft fur.',
-  1: 'A small, energetic, electric-blue monster with lightning-bolt antennae.',
-  2: 'A focused, green-leaf patterned monster wearing glasses.',
-  3: 'A cheerful, yellow bubble-like monster glowing softly.',
-  4: 'A calm, reliable, purple monster with a magical aura.',
-  5: 'A fun-loving, pink, party-ready monster with confetti-like spots.',
-  6: 'A partially lazy, sloth-like turquoise monster holding a pillow.',
+  0: 'A small round plush cartoon monster.',
+  1: 'A small round plush cartoon monster.',
+  2: 'A small round plush cartoon monster.',
+  3: 'A small round plush cartoon monster.',
+  4: 'A small round plush cartoon monster.',
+  5: 'A small round plush cartoon monster.',
+  6: 'A small round plush cartoon monster.',
 };
 
 /**
