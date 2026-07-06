@@ -778,10 +778,10 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               </div>
             </div>
 
-            {/* Body: image | (sentence list + input) */}
-            <div className="grid min-h-0 gap-4 md:grid-cols-[1.05fr_0.95fr] md:overflow-hidden">
-              {/* Left: picture */}
-              <div className="flex min-h-0 items-center justify-center">
+            {/* Body: image | (sentence list + input) — both flex-1 fill page width */}
+            <div className="flex min-h-0 gap-4 md:overflow-hidden">
+              {/* Left: picture — flex-1 so it shares width evenly with the right column */}
+              <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center">
                 <SceneImageWithRegions
                   imageUrl={asset?.imageUrl || ''}
                   regions={asset?.regions || []}
@@ -794,8 +794,8 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 />
               </div>
 
-              {/* Right: sentence list + LargeWordInput (CLASSIC-style input) */}
-              <div className="flex min-h-0 flex-col gap-3 md:overflow-hidden">
+              {/* Right: sentence list + LargeWordInput — flex-1 shares width evenly */}
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 md:overflow-hidden">
                 {/* Sentence list — scrollable */}
                 <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-[28px] border border-mid-charcoal bg-dark-charcoal/50 p-3 md:p-4">
                   <div className="flex items-center justify-between px-1 pb-1">
