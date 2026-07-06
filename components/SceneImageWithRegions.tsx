@@ -75,7 +75,10 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   console.log('[SceneImage] render', { hasImageUrl: !!imageUrl, imageUrlHead: imageUrl ? imageUrl.substring(0, 50) : '(empty)', imgError, regionCount: regions.length });
 
   return (
-    <div className={`relative mx-auto flex items-center justify-center ${fullSize ? 'h-full w-full' : 'w-full max-w-[min(70vh,560px)]'}`}>
+    <div
+      className={`relative flex items-center justify-center ${fullSize ? 'h-full' : 'mx-auto w-full max-w-[min(70vh,560px)]'}`}
+      style={fullSize ? { aspectRatio: '1 / 1' } : undefined}
+    >
       <style>{`
         @keyframes scene-region-blink {
           0%, 100% { opacity: 1; box-shadow: 0 0 0 4px rgba(163,255,0,0.95), 0 0 22px rgba(163,255,0,0.45); }
@@ -105,10 +108,9 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
           only the region overlays (rendered as siblings inside) change position. */}
       <div
         key={`img-scene`}
-        style={{ aspectRatio: '1 / 1', maxWidth: '100%', maxHeight: '100%' }}
-        className={`relative overflow-hidden rounded-[28px] border border-mid-charcoal bg-black/40 ${
-          fullSize ? 'h-full' : 'w-full'
-        } ${showOverlays && activeFailed && blinking ? 'scene-image-pulsing' : ''}`}
+        className={`relative h-full w-full overflow-hidden rounded-[28px] border border-mid-charcoal bg-black/40 ${
+          showOverlays && activeFailed && blinking ? 'scene-image-pulsing' : ''
+        }`}
       >
         {imgError ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">

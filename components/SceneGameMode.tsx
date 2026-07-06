@@ -778,10 +778,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               </div>
             </div>
 
-            {/* Body: image | (sentence list + input) — both flex-1 fill page width */}
+            {/* Body: image gets its natural size (height-limited, 1:1), cloze takes ALL remaining width */}
             <div className="flex min-h-0 gap-4 md:overflow-hidden">
-              {/* Left: picture — flex-1 so it shares width evenly with the right column */}
-              <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center">
+              {/* Left: picture — flex-none so it takes only its natural width
+                  (driven by available height since the image is 1:1). The cloze
+                  area on the right gets all remaining width via flex-1. */}
+              <div className="flex min-h-0 shrink-0 items-center justify-center">
                 <SceneImageWithRegions
                   imageUrl={asset?.imageUrl || ''}
                   regions={asset?.regions || []}
@@ -794,7 +796,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 />
               </div>
 
-              {/* Right: sentence list + LargeWordInput — flex-1 shares width evenly */}
+              {/* Right: sentence list + LargeWordInput — flex-1 takes ALL remaining width */}
               <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 md:overflow-hidden">
                 {/* Sentence list — scrollable */}
                 <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-[28px] border border-mid-charcoal bg-dark-charcoal/50 p-3 md:p-4">
