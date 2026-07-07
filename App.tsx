@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -2122,6 +2122,24 @@ const App: React.FC = () => {
                 }
 
                 try {
+                  // Sync per-word stats (error_count / consecutive_correct /
+                  // last_tested) so the adaptive selector sees Puzzle results
+                  // just like CLASSIC results. Must run BEFORE recordPuzzleGameRound
+                  // so a stats failure doesn't block round recording.
+                  try {
+                    await syncGameResultsToWordStats(
+                      summary.results.map(r => ({
+                        wordId: r.wordId,
+                        correct: r.correct,
+                        hintUsed: r.hintUsed,
+                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
+                          ? r.solvedAtMs - r.activatedAtMs
+                          : null,
+                      })),
+                    );
+                  } catch (statsErr) {
+                    console.error('[PuzzleGameMode] word stats sync failed (non-blocking):', statsErr);
+                  }
                   await recordPuzzleGameRound(summary);
                   showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
                 } catch (error) {
@@ -2141,6 +2159,24 @@ const App: React.FC = () => {
                   return;
                 }
                 try {
+                  // Sync per-word stats so the adaptive selector sees Scene
+                  // results just like CLASSIC results. Must run BEFORE
+                  // recordSceneGameRound so a stats failure doesn't block
+                  // round recording.
+                  try {
+                    await syncGameResultsToWordStats(
+                      summary.results.map(r => ({
+                        wordId: r.wordId,
+                        correct: r.correct,
+                        hintUsed: r.hintUsed,
+                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
+                          ? r.solvedAtMs - r.activatedAtMs
+                          : null,
+                      })),
+                    );
+                  } catch (statsErr) {
+                    console.error('[SceneGameMode] word stats sync failed (non-blocking):', statsErr);
+                  }
                   await recordSceneGameRound(summary);
                   showNotification(`🎬 场景成绩已记录：${summary.totalScore} 分`, 'success');
                 } catch (error) {

@@ -961,6 +961,67 @@ export const updateWordStatusV2 = async (
   // Individual word updates no longer trigger immediate stats sync.
 };
 
+/**
+ * Single row from any game mode's per-word results. Used by
+ * syncGameResultsToWordStats to feed the same word-stats pipeline that
+ * CLASSIC mode uses (error_count, consecutive_correct, last_tested),
+ * so the adaptive word selector sees consistent data across ALL modes.
+ */
+export interface GameWordResult {
+  wordId: string;
+  correct: boolean;
+  hintUsed: boolean;
+  /** Solved duration in ms (used to update best_time_ms). Optional. */
+  durationMs?: number | null;
+}
+
+/**
+ * Sync per-word results from a game mode (Scene / Puzzle / future modes)
+ * into the words table, triggering the SAME error-decay + consecutive_correct
+ * + last_tested updates that CLASSIC mode performs via updateWordStatusV2.
+ *
+ * Why this exists: before this helper, only CLASSIC mode wrote word stats.
+ * Scene and Puzzle just recorded round-level scores to their leaderboard
+ * tables, so the adaptive word selector kept picking the same high-error
+ * words forever — answering them right in a game mode never lowered their
+ * weight. This helper fixes that by giving every game mode a single line
+ * to call: `await syncGameResultsToWordStats(summary.results.map(...))`.
+ *
+ * Contract for new game modes:
+ *   1. Build your per-word result with { wordId, correct, hintUsed }
+ *   2. Call this helper inside your `onComplete` BEFORE recording the round
+ *   3. Don't call updateWordStatusV2 directly — go through this helper so
+ *      the scoring rules (score=3 on correct, +1 error_count on wrong)
+ *      stay uniform across modes.
+ *
+ * Errors are logged but non-fatal — a failed word-stats sync must not block
+ * the round from being recorded.
+ */
+export const syncGameResultsToWordStats = async (results: GameWordResult[]): Promise<void> => {
+  // Serial loop because updateWordStatusV2 does a read-then-write
+  // (SELECT current error_count → compute new → UPDATE). Parallel calls
+  // on the same user's words can race and lose increments.
+  for (const r of results) {
+    if (!r.wordId) continue;
+    try {
+      await updateWordStatusV2(r.wordId, {
+        correct: r.correct,
+        // Score 3 mirrors CLASSIC's "direct correct (no hint)" path, which
+        // is the threshold for triggering error decay. Game modes today
+        // don't expose a "hint" path that maps cleanly to score=2.4, so we
+        // treat all correct answers as full-score. hintUsed still blocks
+        // decay because hasUsedHint short-circuits it inside updateWordStatusV2.
+        score: r.correct ? 3 : 0,
+        error_count_increment: r.correct ? 0 : 1,
+        hasUsedHint: r.hintUsed,
+        best_time_ms: r.correct && r.durationMs ? r.durationMs : undefined,
+      });
+    } catch (err) {
+      console.error('[syncGameResultsToWordStats] word sync failed:', r.wordId, err);
+    }
+  }
+};
+
 export const updateWordImage = async (wordId: string, imagePath: string) => {
   const { error } = await supabase
     .from('words')
