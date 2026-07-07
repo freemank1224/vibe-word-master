@@ -31,3 +31,4 @@ dist-ssr
 
 # Archive directory - keep locally but don't commit to git
 archive/
+scene-*.png

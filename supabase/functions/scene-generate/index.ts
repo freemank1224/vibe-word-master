@@ -433,6 +433,7 @@ const designScene = async (
       'Do NOT emit <think> tags or any chain-of-thought preamble — output the JSON object directly. ' +
       'The object MUST contain keys: storyboard (string), sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array). ' +
       'EVERY entry in elements[] MUST include a non-empty "sentence" string — this is the cloze clue shown to the learner and there is no fallback inside the element. ' +
+      'Every sentence MUST use ONLY common CEFR A1–A2 English words (except the target word), be 6–12 words long, and use simple Subject-Verb-Object grammar. ' +
       `The structuredPrompt MUST contain EXACTLY ONE ${MASCOT_PLACEHOLDER} token. ` +
       `The storyboard MUST contain ⌈N/2⌉–N sentences; every sentence must include 1–2 of the input target words verbatim, and every input word must appear at least once across the storyboard.`;
     const body: Record<string, unknown> = {
@@ -1308,12 +1309,24 @@ serve(async (req) => {
         (design?.storyboard && design.storyboard.trim()) ||
         (fellBack ? fallbackResult?.storyboard : null) ||
         null;
+      // Forward per-element {word, sentence} so the client can prefetch TTS
+      // audio in parallel with image rendering. Only `word` + `sentence` are
+      // forwarded — no zones, prompts, or other metadata (keep payload small,
+      // avoid spoiling image prompt in client logs).
+      const elementsForEvent: { word: string; sentence: string }[] = ((
+        design?.elements
+        || fallbackResult?.sentences.map((s) => ({ word: s.word, sentence: s.sentence }))
+        || []
+      ) as any[])
+        .map((e: any) => ({ word: String(e.word || ''), sentence: String(e.sentence || '').trim() }))
+        .filter((e: { word: string; sentence: string }) => e.word && e.sentence);
       send({
         stage: 'designed',
         prompt,
         source: fellBack ? 'fallback' : 'director',
         sceneTitle: design?.sceneTitle || null,
         storyboard: storyboardForEvent,
+        elements: elementsForEvent,
         diagnostics: designDiagnostics || undefined,
         mascot: {
           referenceImageAvailable: !!mascotDataUrl,

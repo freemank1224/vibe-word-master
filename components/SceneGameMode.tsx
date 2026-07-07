@@ -25,6 +25,7 @@ import {
   sceneDurationSeconds,
   selectSceneWords,
 } from '../services/sceneGame';
+import { fetchSceneTts } from '../services/sceneTts';
 
 interface SceneGameModeProps {
   allWords: WordEntry[];
@@ -89,6 +90,12 @@ const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | nu
   return null;
 };
 
+// ----------------------------------------------------------------
+// REVIEW phase renders the SAME ClozeSentence component used in PLAYING
+// (with status='revealed') so the user sees the exact same wording they
+// tried to answer. No separate ReviewCard — keeps content + styling 1:1.
+// ----------------------------------------------------------------
+
 const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel }) => {
   const dayIndex = new Date().getDay();
   const monsterImg = `/monsterImages/M${dayIndex}.webp`;
@@ -131,6 +138,22 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   /** Local toggle for the PREPARING-stage storyboard card (expanded vs. collapsed). */
   const [storyboardExpanded, setStoryboardExpanded] = useState(false);
 
+  /** Map of lowercase word → blob URL for that word's sentence TTS audio.
+   *  Populated during PREPARING (parallel with image render). Empty entries
+   *  mean TTS failed for that word after one retry — the speaker icon is
+   *  simply hidden for that row. */
+  const [sentenceAudios, setSentenceAudios] = useState<Record<string, string>>({});
+  /** Progress for the "Generating audio" row in the PREPARING stage. */
+  const [audioProgress, setAudioProgress] = useState<{ done: number; total: number; failed: number }>({ done: 0, total: 0, failed: 0 });
+  /** Tracks every blob URL we create so we can revoke on unmount / new round. */
+  const blobUrlsRef = useRef<string[]>([]);
+
+  /** Shared <audio> element for sentence playback — owned here so it can also
+   *  be triggered from the Enter key (via submitActive), not just the speaker
+   *  button. Lowercase word key → "currently playing this word's audio". */
+  const sharedAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingWord, setPlayingWord] = useState<string | null>(null);
+
   const gameStartTimeRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
   const finalizeGuardRef = useRef(false);
@@ -156,6 +179,89 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   );
 
   // ---------------------------------------------------------------
+  // TTS prefetch — fired as soon as the `designed` event arrives with the
+  // per-element sentences. Runs in parallel with the (slow) image render.
+  // Never throws; failures are recorded in audioProgress.failed and the
+  // speaker icon simply stays hidden for that row.
+  // ---------------------------------------------------------------
+  /**
+   * Try once; on any failure wait 300 ms and try once more; if the retry also
+   * fails, throw. Per the user's decision — one retry, then skip.
+   */
+  const fetchSceneTtsWithRetry = async (sentence: string): Promise<Blob> => {
+    try {
+      return await fetchSceneTts(sentence);
+    } catch (err) {
+      console.warn('[SceneGameMode] TTS first attempt failed, retrying once:', err);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return await fetchSceneTts(sentence);
+    }
+  };
+
+  const prefetchSentenceAudios = useCallback(async (sentences: { word: string; sentence: string }[]) => {
+    // Reset progress tracker for this round.
+    setAudioProgress({ done: 0, total: sentences.length, failed: 0 });
+    const results = await Promise.allSettled(
+      sentences.map(({ sentence }) => fetchSceneTtsWithRetry(sentence)),
+    );
+    const next: Record<string, string> = {};
+    let done = 0;
+    let failed = 0;
+    results.forEach((r, i) => {
+      const { word } = sentences[i];
+      if (r.status === 'fulfilled') {
+        try {
+          const url = URL.createObjectURL(r.value);
+          blobUrlsRef.current.push(url);
+          next[word] = url;
+        } catch (err) {
+          // createObjectURL can throw on weird environments — treat as failure.
+          console.warn('[SceneGameMode] blob URL creation failed', err);
+          failed += 1;
+        }
+      } else {
+        failed += 1;
+      }
+      done += 1;
+    });
+    setSentenceAudios(next);
+    setAudioProgress({ done, total: sentences.length, failed });
+  }, []);
+
+  /**
+   * Play (or pause) the TTS audio for `word` via the shared <audio> element.
+   *
+   * - Same word + currently playing → pause.
+   * - Otherwise → rewind to 0 and play (switches src if needed).
+   *
+   * Centralized here so BOTH the speaker button (per-row) AND the Enter key
+   * (via submitActive) can trigger playback through the same element.
+   */
+  const playSentenceAudio = useCallback((word: string) => {
+    const el = sharedAudioRef.current;
+    if (!el) return;
+    const key = word.toLowerCase();
+    const url = sentenceAudios[key];
+    if (!url) return;
+    // Toggle pause if clicking the same row that's already playing.
+    if (playingWord === key && !el.paused) {
+      el.pause();
+      return;
+    }
+    // Switch source when playing a different row.
+    if (el.getAttribute('src') !== url) {
+      el.src = url;
+    }
+    try { el.currentTime = 0; } catch { /* not loaded yet */ }
+    const p = el.play();
+    if (p && typeof p.then === 'function') {
+      p.then(() => setPlayingWord(key)).catch(() => setPlayingWord(null));
+    } else {
+      setPlayingWord(key);
+    }
+  }, [sentenceAudios, playingWord]);
+
+  // ---------------------------------------------------------------
   // PREPARING: select words + request scene generation
   // ---------------------------------------------------------------
   const runGeneration = useCallback(async (n: number, force: boolean) => {
@@ -166,6 +272,19 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setAsset(null);
     setDegraded(false);
     setStoryboard(null);
+    // Reset TTS state for the new round and revoke any stale blob URLs.
+    setSentenceAudios({});
+    setAudioProgress({ done: 0, total: 0, failed: 0 });
+    for (const url of blobUrlsRef.current) {
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+    }
+    blobUrlsRef.current = [];
+
+    // Tracked outside the useCallback deps so the closure can mutate it
+    // without triggering a re-render. The `designed` event handler kicks off
+    // TTS prefetch in parallel with the image render; we then await this
+    // promise before transitioning to COUNTDOWN.
+    let ttsPromise: Promise<void> | null = null;
 
     const smart = typeof window !== 'undefined' && window.localStorage.getItem('vibe_ai_selection') === 'true';
     const selection = selectSceneWords(allWords, sessions, smart, n);
@@ -202,6 +321,18 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               // the PREPARING stage preview card.
               const sb = typeof payload?.storyboard === 'string' ? payload.storyboard.trim() : '';
               if (sb) setStoryboard(sb);
+              // Kick off parallel TTS prefetch as soon as we have sentences.
+              // The image render (stage 'rendered' → 'done') is slow, so TTS
+              // usually finishes first; we still await ttsPromise below
+              // before transitioning to COUNTDOWN.
+              const sentences = Array.isArray(payload?.elements)
+                ? (payload.elements as any[])
+                    .map((e) => ({ word: String(e.word || '').toLowerCase(), sentence: String(e.sentence || '').trim() }))
+                    .filter((x) => x.word && x.sentence)
+                : [];
+              if (sentences.length) {
+                ttsPromise = prefetchSentenceAudios(sentences);
+              }
             } else if (stage === 'rendered') setPreparingStage(2);
           },
         },
@@ -210,6 +341,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       console.log('[SceneGameMode] asset received', { source: res.source, imageUrl: res.asset.imageUrl, regionCount: res.asset.regions.length });
       setAsset(res.asset);
       setDegraded(res.degraded);
+      // Wait for TTS to finish before COUNTDOWN. Usually already done since
+      // image gen is the slow leg — but never block gameplay on TTS failure
+      // (prefetchSentenceAudios never throws).
+      if (ttsPromise) {
+        try { await ttsPromise; } catch { /* unreachable — prefetch never throws */ }
+      }
       // No MODE_SELECT any more — go straight to COUNTDOWN → PLAYING.
       setPhase('COUNTDOWN');
       setCountdownValue(3);
@@ -230,7 +367,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       setGenError(err instanceof Error ? err.message : 'Scene generation failed. Please try again.');
       setPhase('INTRO');
     }
-  }, [allWords, sessions, dayIndex]);
+  }, [allWords, sessions, dayIndex, prefetchSentenceAudios]);
 
   useEffect(() => {
     if (phase !== 'PREPARING') return;
@@ -429,15 +566,24 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   }, [activeWordIndex, phase, timeLeft, selectedWords, advance]);
 
   // ---------------------------------------------------------------
-  // Global keyboard handler — ONLY for ArrowUp/ArrowDown navigation.
-  // All letter / Backspace / Enter input is handled natively by the
-  // LargeWordInput's real <input> element (so focus, mobile keyboards,
-  // IME, etc. all work). We only intercept the arrow keys to switch the
-  // active row.
+  // Global keyboard handler — ArrowUp/ArrowDown for row navigation,
+  // Space for "play active sentence audio". Letter/Backspace/Enter
+  // input is handled natively by LargeWordInput's <input> (so focus,
+  // mobile keyboards, IME, etc. all work).
   // ---------------------------------------------------------------
   useEffect(() => {
     if (phase !== 'PLAYING') return;
     const onKey = (e: KeyboardEvent) => {
+      // Space → play active sentence audio (prevents typing a literal space
+      // into the input, since target words in this game are single tokens).
+      if (e.key === ' ' || e.code === 'Space') {
+        if (activeWordIndex == null) return;
+        const word = selectedWords[activeWordIndex];
+        if (!word) return;
+        e.preventDefault();
+        playSentenceAudio(word.text);
+        return;
+      }
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       if (activeWordIndex == null) return;
       e.preventDefault();
@@ -455,7 +601,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [phase, activeWordIndex, selectedWords.length, moveToIndex]);
+  }, [phase, activeWordIndex, selectedWords, moveToIndex, playSentenceAudio]);
 
   // ---------------------------------------------------------------
   // finishGame
@@ -496,18 +642,25 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
     setWordStates((prev) => prev.map((s) => (s.solved ? s : { ...s, revealed: true })));
 
-    const allCorrect = results.every((r) => r.correct);
+    // Always go to REVIEW first — the user wants to recap every round, whether
+    // all-correct or not. Score is recorded only when the user advances from
+    // REVIEW → RESULT via proceedToResult (avoids a spoiler notification
+    // during the recap).
     setResult(summary);
-    setPhase('RESULT');
-    if (allCorrect) playCheer();
+    setPhase('REVIEW');
+  }, [selectedWords, selectionMode, dayIndex, overlapRate, rankingEligible, rankingIneligibleReason, asset, totalDuration, timeLeft, onComplete]);
 
+  /** Advance from REVIEW → RESULT and record the score. */
+  const proceedToResult = async () => {
+    if (!result) return;
+    setPhase('RESULT');
     setIsSubmitting(true);
     try {
-      await onComplete(summary);
+      await onComplete(result);
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedWords, selectionMode, dayIndex, overlapRate, rankingEligible, rankingIneligibleReason, asset, totalDuration, timeLeft, onComplete]);
+  };
 
   useEffect(() => { finishGameRef.current = finishGame; });
 
@@ -524,6 +677,11 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   useEffect(() => () => {
     if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
     abortRef.current?.abort();
+    // Revoke any blob URLs we created so the browser can free the memory.
+    for (const url of blobUrlsRef.current) {
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+    }
+    blobUrlsRef.current = [];
   }, []);
 
   const solvedCount = useMemo(() => wordStates.filter((s) => s.solved).length, [wordStates]);
@@ -544,6 +702,18 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       {phase === 'RESULT' && result && (
         <Confetti variant="purple" title="Scene Complete" subtitle="完形填空完成" />
       )}
+
+      {/* Shared <audio> element for sentence TTS playback. Owned here so the
+          speaker button (per-row) and the Space key (in PLAYING) both drive
+          the same element, and the icon state stays in sync. */}
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <audio
+        ref={sharedAudioRef}
+        preload="auto"
+        onEnded={() => setPlayingWord(null)}
+        onPause={() => setPlayingWord(null)}
+        onPlay={() => { /* playingWord set by playSentenceAudio for correctness */ }}
+      />
 
       <div className="relative flex h-[100dvh] flex-col px-4 pb-4 pt-20 md:px-8 md:pb-6 md:pt-24">
         <div className="sticky top-16 z-30 mb-4 flex shrink-0 items-start justify-between gap-4 bg-[linear-gradient(180deg,rgba(12,14,18,0.94),rgba(12,14,18,0.72),transparent)] pb-3 backdrop-blur-sm">
@@ -697,6 +867,31 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 })}
               </div>
 
+              {/* Audio generation progress — runs in parallel with the image
+                  render, so it appears after the director stage completes and
+                  usually finishes well before image render. Hidden until the
+                  first `designed` event kicks off the TTS batch. */}
+              {audioProgress.total > 0 && (
+                <div className="mx-auto mt-3 flex max-w-md items-center gap-3 rounded-2xl border border-purple-400/20 bg-purple-500/5 px-4 py-2 text-left">
+                  <span className="material-symbols-outlined text-lg text-purple-300">
+                    campaign
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-text-light">
+                      <HoverTranslationText text="Generating audio" translation="合成语音" />
+                    </div>
+                  </div>
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-purple-300">
+                    {audioProgress.done}/{audioProgress.total}
+                  </span>
+                  {audioProgress.failed > 0 && (
+                    <span className="font-mono text-[11px] text-amber-300">
+                      ({audioProgress.failed} failed)
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* Storyboard preview — surfaces the AI-authored scene skeleton
                   once the director stage completes. Collapsed by default to
                   avoid spoiling the cloze answers in the PLAYING phase. */}
@@ -805,7 +1000,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                       <HoverTranslationText text="Sentences" translation="句子列表" />
                     </div>
                     <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-text-dark">
-                      <HoverTranslationText text="↑/↓ switch · Enter submit" translation="↑/↓ 切换 · Enter 提交" />
+                      <HoverTranslationText text="↑/↓ switch · Space play · Enter submit" translation="↑/↓ 切换 · 空格 听音 · Enter 提交" />
                     </div>
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -832,6 +1027,9 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                           status={status}
                           revealed={s.revealed && !s.solved}
                           isActive={isActive}
+                          audioUrl={sentenceAudios[word.text.toLowerCase()] || null}
+                          isAudioPlaying={playingWord === word.text.toLowerCase()}
+                          onPlayAudio={() => playSentenceAudio(word.text)}
                           onSelect={() => {
                             if (!s.solved && !s.locked) moveToIndex(i);
                           }}
@@ -857,6 +1055,83 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     />
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---------------- REVIEW (error review before RESULT) ---------------- */}
+        {phase === 'REVIEW' && result && (
+          <div className="flex flex-1 items-center justify-center overflow-y-auto py-2">
+            <div className="w-full max-w-3xl rounded-[32px] border border-mid-charcoal bg-dark-charcoal/85 p-8 shadow-2xl backdrop-blur-md md:p-10">
+              <div className="font-mono text-xs uppercase tracking-[0.35em] text-purple-400/80">
+                <HoverTranslationText text="Review Your Answers" translation="复习错题" />
+              </div>
+              <h3 className="mt-3 font-headline text-3xl text-white md:text-4xl">
+                <HoverTranslationText text="Take a look — then see your score." translation="先看看错题，再查看得分。" />
+              </h3>
+
+              <div className="mt-6 space-y-2">
+                {selectedWords.map((word, i) => {
+                  const s = wordStates[i];
+                  if (!s) return null;
+                  // Show EVERY sentence (not just wrong ones) so REVIEW is
+                  // meaningful even when the user aces the round. Correct rows
+                  // get the green treatment; wrong/locked rows get the gray
+                  // reveal. Both reuse the exact ClozeSentence component the
+                  // player saw during PLAYING.
+                  const wasCorrect = !!result.results[i]?.correct;
+                  const sentence = sentenceForWord(word, asset) || `Picture only — guess word #${i + 1}.`;
+                  const audioUrl = sentenceAudios[word.text.toLowerCase()] || null;
+                  const attemptLabel = wasCorrect
+                    ? (s.attemptsUsed === 1 ? 'solved first try' : `solved in ${s.attemptsUsed}`)
+                    : s.locked
+                      ? (s.attemptsUsed > 0 ? `${s.attemptsUsed} wrong attempt${s.attemptsUsed === 1 ? '' : 's'}` : 'not answered')
+                      : 'time ran out';
+                  return (
+                    <div
+                      key={word.id}
+                      className={`rounded-2xl border p-2 ${
+                        wasCorrect
+                          ? 'border-electric-green/30 bg-electric-green/5'
+                          : 'border-mid-charcoal bg-light-charcoal/20'
+                      }`}
+                    >
+                      <ClozeSentence
+                        sentence={sentence}
+                        targetWord={word.text}
+                        status={wasCorrect ? 'correct' : 'revealed'}
+                        revealed
+                        isActive={false}
+                        audioUrl={audioUrl}
+                        isAudioPlaying={playingWord === word.text.toLowerCase()}
+                        onPlayAudio={() => playSentenceAudio(word.text)}
+                      />
+                      <div className={`px-3 pb-1 text-right font-mono text-[10px] uppercase tracking-widest ${
+                        wasCorrect ? 'text-electric-green/80' : 'text-red-300/80'
+                      }`}>
+                        {attemptLabel}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                <button
+                  onClick={() => { void proceedToResult(); }}
+                  disabled={isSubmitting}
+                  className="rounded-2xl bg-purple-500 px-5 py-3 font-headline text-sm uppercase tracking-[0.25em] text-white transition-transform hover:-translate-y-1 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <HoverTranslationText text="Next Step" translation="下一步" />
+                </button>
+                <button
+                  onClick={onCancel}
+                  disabled={isSubmitting}
+                  className="rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-4 py-3 font-headline text-sm uppercase tracking-[0.25em] text-text-light transition-colors hover:border-white hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <HoverTranslationText text="Exit" translation="退出" />
+                </button>
               </div>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { memo, useMemo } from 'react';
 
 export type ClozeStatus = 'idle' | 'active' | 'correct' | 'wrong' | 'revealed';
 
@@ -13,6 +13,13 @@ interface ClozeSentenceProps {
   isActive?: boolean;
   /** Click handler — wired by the parent to focus this row. */
   onSelect?: () => void;
+  /** Optional blob URL for the sentence's TTS audio. When present, a speaker
+   *  icon is rendered at the end of the row. */
+  audioUrl?: string | null;
+  /** Whether this row's audio is currently playing (controls icon + label). */
+  isAudioPlaying?: boolean;
+  /** Click handler for the speaker button. Parent owns the <audio> element. */
+  onPlayAudio?: () => void;
 }
 
 /**
@@ -44,14 +51,21 @@ const findWordSpan = (sentence: string, targetWord: string): [number, number] | 
  *
  * NOTE: This is a DISPLAY-only component. The player types in a separate
  * LargeWordInput below the sentence list (mirrors CLASSIC test style).
+ *
+ * AUDIO: Audio playback is owned by the parent (so it can also be triggered
+ * from keyboard shortcuts like Enter). This component only renders the speaker
+ * button + reflects isAudioPlaying state.
  */
-export const ClozeSentence: React.FC<ClozeSentenceProps> = ({
+const ClozeSentenceImpl: React.FC<ClozeSentenceProps> = ({
   sentence,
   targetWord,
   status = 'idle',
   revealed = false,
   isActive = false,
   onSelect,
+  audioUrl,
+  isAudioPlaying = false,
+  onPlayAudio,
 }) => {
   const parts = useMemo<{ prefix: string; matched: string; suffix: string }>(() => {
     const span = findWordSpan(sentence, targetWord);
@@ -65,9 +79,9 @@ export const ClozeSentence: React.FC<ClozeSentenceProps> = ({
     };
   }, [sentence, targetWord]);
 
-  // Mixed-case body font (Lexend). Avoid font-headline (Bebas Neue) which
-  // renders ALL glyphs as capitals.
-  const fontSize = isActive ? '1.15rem' : '0.95rem';
+  // Mixed-case body font (Lexend). Active row is ~50% larger than inactive so
+  // the player can easily spot which sentence they're currently answering.
+  const fontSize = isActive ? '1.4rem' : '0.95rem';
   const opacity = isActive ? 1 : 0.5;
 
   // Outer row container — clickable + accent background on active.
@@ -103,13 +117,13 @@ export const ClozeSentence: React.FC<ClozeSentenceProps> = ({
   return (
     <div
       onClick={onSelect}
-      className={`rounded-2xl px-3 py-2 transition-all duration-200 ${rowBgClass}`}
+      className={`flex items-center gap-2 rounded-2xl px-3 py-2 transition-all duration-200 ${rowBgClass}`}
       style={{
         cursor: onSelect ? 'pointer' : 'default',
       }}
     >
       <p
-        className="font-body text-text-light"
+        className="flex-1 font-body text-text-light"
         style={{
           fontSize,
           opacity,
@@ -136,8 +150,20 @@ export const ClozeSentence: React.FC<ClozeSentenceProps> = ({
         )}
         {parts.suffix}
       </p>
+      {audioUrl && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onPlayAudio?.(); }}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-mid-charcoal bg-light-charcoal/40 text-text-light transition-colors hover:border-purple-400/60 hover:text-purple-300"
+          aria-label={isAudioPlaying ? 'Pause sentence audio' : 'Play sentence audio'}
+        >
+          <span className="material-symbols-outlined text-base">{isAudioPlaying ? 'pause' : 'volume_up'}</span>
+        </button>
+      )}
     </div>
   );
 };
+
+export const ClozeSentence = memo(ClozeSentenceImpl);
 
 export default ClozeSentence;

@@ -135,6 +135,7 @@ export type SceneGamePhase =
   | 'PREPARING'
   | 'COUNTDOWN'
   | 'PLAYING'
+  | 'REVIEW'
   | 'RESULT';
 
 /**
