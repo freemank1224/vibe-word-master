@@ -74,19 +74,44 @@ const MONSTER_NAMES = [
 ];
 
 /**
+ * Detect the legacy fallback template `The word "X" is hidden in today's
+ * scene — guess it from the picture.`
+ *
+ * Old scene_assets rows (generated before the sceneDesign.ts refactor that
+ * removed `buildFallbackClozeSentence`) carry this meaningless template as
+ * the sentence for words where the LLM director failed to produce a real
+ * cloze. We treat such sentences as "no sentence" so:
+ *   - they are NOT sent to TTS (no wasted API calls)
+ *   - REVIEW shows just the word itself, not the template
+ *   - PLAYING shows the "Picture only — guess word #N." placeholder
+ *
+ * The regex is intentionally loose (any quote style, any casing) so it
+ * catches minor variations the LLM might have produced.
+ */
+const FALLBACK_SENTENCE_RE = /the word\s+['"]?.+['"]?\s+is hidden in today'?s scene/i;
+
+const isFallbackSentence = (s: string | null | undefined): boolean => {
+  if (!s || !s.trim()) return false;
+  return FALLBACK_SENTENCE_RE.test(s.trim());
+};
+
+/**
  * Resolve the cloze sentence for a single word from the asset.
  * Falls back through:
  *   1. asset.sentences[word.toLowerCase()]  (built by normalizeAsset)
  *   2. asset.regions[word].sentence          (per-region field)
  *   3. null — the row renders in "no clue" degraded mode.
+ *
+ * Also returns null when the sentence is the legacy fallback template
+ * (see isFallbackSentence) — those rows are treated as "picture only".
  */
 const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | null => {
   if (!asset) return null;
   const key = word.text.toLowerCase();
   const fromIndex = asset.sentences?.[key];
-  if (fromIndex && fromIndex.trim()) return fromIndex;
+  if (fromIndex && fromIndex.trim() && !isFallbackSentence(fromIndex)) return fromIndex;
   const fromRegion = asset.regions.find((r) => r.word.toLowerCase() === key)?.sentence;
-  if (fromRegion && fromRegion.trim()) return fromRegion;
+  if (fromRegion && fromRegion.trim() && !isFallbackSentence(fromRegion)) return fromRegion;
   return null;
 };
 
@@ -662,6 +687,54 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }
   };
 
+  /**
+   * Replay the SAME scene (same asset, same words, same cached TTS audio).
+   *
+   * - Keeps: `asset`, `selectedWords`, `sentenceAudios` (blob URLs still valid)
+   * - Resets: `wordStates`, `activeWordIndex`, `result`, `flashStatus`,
+   *   `finalizeGuardRef`
+   * - Skips PREPARING entirely (asset is already loaded) → COUNTDOWN → PLAYING
+   *
+   * The current round's score is NOT recorded — if the user is in REVIEW,
+   * proceeding to RESULT never happened, so `onComplete` was never called.
+   * If the user is in RESULT, the score was already recorded; the replay
+   * will record a NEW score when the user eventually advances from REVIEW →
+   * RESULT again. This is the "score keeps refreshing" behavior: each replay
+   * is a fresh attempt at the same scene, and each completed attempt writes
+   * a new row to the leaderboard.
+   */
+  const replaySameScene = () => {
+    // Stop any audio that's currently playing.
+    if (sharedAudioRef.current) {
+      sharedAudioRef.current.pause();
+      try { sharedAudioRef.current.currentTime = 0; } catch { /* not loaded */ }
+    }
+    setPlayingWord(null);
+
+    // Reset round state — but keep asset, selectedWords, and sentenceAudios.
+    setResult(null);
+    setWordStates([]);
+    wordStatesRef.current = [];
+    setActiveWordIndex(null);
+    setFlashStatus('idle');
+    finalizeGuardRef.current = false;
+
+    // Jump straight to COUNTDOWN — no PREPARING since the asset is already loaded.
+    setPhase('COUNTDOWN');
+    setCountdownValue(3);
+    if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = window.setInterval(() => {
+      setCountdownValue((current) => {
+        if (current <= 1) {
+          if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
+          window.setTimeout(() => startPlay(), 250);
+          return 0;
+        }
+        return current - 1;
+      });
+    }, 900);
+  };
+
   useEffect(() => { finishGameRef.current = finishGame; });
 
   // Auto-finish when every row is solved or locked.
@@ -1014,9 +1087,11 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                       else if (isActive) status = flashStatus === 'correct' ? 'correct' : flashStatus === 'wrong' ? 'wrong' : 'active';
                       else if (s.revealed) status = 'revealed';
 
-                      // When the backend hasn't returned a sentence (e.g. old edge
-                      // function deployed), show a graceful placeholder instead of
-                      // the raw "(no cloze clue for ...)" template string.
+                      // When the backend hasn't returned a sentence (or the
+                      // sentence is the legacy fallback template), show a
+                      // graceful placeholder instead. TTS audio is NOT
+                      // attached for these rows — no speaker icon, no
+                      // wasted blob URL.
                       const displaySentence = sentence || `Picture only — guess word #${i + 1}.`;
 
                       return (
@@ -1027,7 +1102,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                           status={status}
                           revealed={s.revealed && !s.solved}
                           isActive={isActive}
-                          audioUrl={sentenceAudios[word.text.toLowerCase()] || null}
+                          audioUrl={sentence ? (sentenceAudios[word.text.toLowerCase()] || null) : null}
                           isAudioPlaying={playingWord === word.text.toLowerCase()}
                           onPlayAudio={() => playSentenceAudio(word.text)}
                           onSelect={() => {
@@ -1079,23 +1154,51 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   // meaningful even when the user aces the round. Correct rows
                   // get the green treatment; wrong/locked rows get the gray
                   // reveal. Both reuse the exact ClozeSentence component the
-                  // player saw during PLAYING.
+                  // player saw during PLAYING — UNLESS there is no real
+                  // sentence (picture-only / legacy fallback template), in
+                  // which case we show just the word itself.
                   const wasCorrect = !!result.results[i]?.correct;
-                  const sentence = sentenceForWord(word, asset) || `Picture only — guess word #${i + 1}.`;
-                  const audioUrl = sentenceAudios[word.text.toLowerCase()] || null;
+                  const sentence = sentenceForWord(word, asset);
+                  const audioUrl = sentence ? (sentenceAudios[word.text.toLowerCase()] || null) : null;
                   const attemptLabel = wasCorrect
                     ? (s.attemptsUsed === 1 ? 'solved first try' : `solved in ${s.attemptsUsed}`)
                     : s.locked
                       ? (s.attemptsUsed > 0 ? `${s.attemptsUsed} wrong attempt${s.attemptsUsed === 1 ? '' : 's'}` : 'not answered')
                       : 'time ran out';
+                  const cardBorder = wasCorrect
+                    ? 'border-electric-green/30 bg-electric-green/5'
+                    : 'border-mid-charcoal bg-light-charcoal/20';
+
+                  if (!sentence) {
+                    // No real sentence — show just the word. No ClozeSentence,
+                    // no speaker icon, no fallback template text. This is the
+                    // "picture only" case: the learner guessed from the image.
+                    return (
+                      <div
+                        key={word.id}
+                        className={`rounded-2xl border p-3 ${cardBorder}`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`font-headline text-xl ${wasCorrect ? 'text-electric-green' : 'text-text-light'}`}>
+                            {word.text}
+                          </span>
+                          <span className="font-mono text-[10px] uppercase tracking-widest text-text-dark">
+                            <HoverTranslationText text="picture only" translation="仅看图" />
+                          </span>
+                        </div>
+                        <div className={`mt-1 text-right font-mono text-[10px] uppercase tracking-widest ${
+                          wasCorrect ? 'text-electric-green/80' : 'text-red-300/80'
+                        }`}>
+                          {attemptLabel}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={word.id}
-                      className={`rounded-2xl border p-2 ${
-                        wasCorrect
-                          ? 'border-electric-green/30 bg-electric-green/5'
-                          : 'border-mid-charcoal bg-light-charcoal/20'
-                      }`}
+                      className={`rounded-2xl border p-2 ${cardBorder}`}
                     >
                       <ClozeSentence
                         sentence={sentence}
@@ -1124,6 +1227,13 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   className="rounded-2xl bg-purple-500 px-5 py-3 font-headline text-sm uppercase tracking-[0.25em] text-white transition-transform hover:-translate-y-1 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <HoverTranslationText text="Next Step" translation="下一步" />
+                </button>
+                <button
+                  onClick={replaySameScene}
+                  disabled={isSubmitting}
+                  className="rounded-2xl border border-purple-400/40 bg-purple-500/10 px-4 py-3 font-headline text-sm uppercase tracking-[0.25em] text-purple-300 transition-colors hover:border-purple-400 hover:bg-purple-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <HoverTranslationText text="Replay" translation="重玩此局" />
                 </button>
                 <button
                   onClick={onCancel}
@@ -1165,6 +1275,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      onClick={replaySameScene}
+                      className="rounded-2xl border border-purple-400/40 bg-purple-500/10 px-4 py-3 font-headline text-sm uppercase tracking-[0.25em] text-purple-300 transition-colors hover:border-purple-400 hover:bg-purple-500/20"
+                    >
+                      <HoverTranslationText text="Replay Scene" translation="重玩此场景" />
+                    </button>
                     <button
                       onClick={() => {
                         setResult(null);

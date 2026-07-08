@@ -719,9 +719,12 @@ export const parseSceneDesignWithDiagnostics = (
       el.positionZone = zone;
       zonesAssigned += 1;
     }
-    // Validate the cloze sentence; if it fails, BACKFILL a fallback sentence so
-    // the user NEVER sees "Picture only" — every word gets a playable clue.
-    // Also scrub the [TODAYS_MASCOT] placeholder if the LLM leaked it.
+    // Validate the cloze sentence; if it fails, leave the element sentence-less.
+    // We deliberately do NOT backfill a fallback template like "The word X is
+    // hidden in today's scene" — that sentence is meaningless to the learner,
+    // wastes TTS resources, and clutters the REVIEW screen. Instead, the client
+    // shows "Picture only — guess word #N." in PLAYING and just the word itself
+    // in REVIEW. Also scrub the [TODAYS_MASCOT] placeholder if the LLM leaked it.
     const scrubbedSentence = typeof rawEl.sentence === 'string'
       ? scrubMascotPlaceholder(rawEl.sentence)
       : rawEl.sentence;
@@ -732,24 +735,21 @@ export const parseSceneDesignWithDiagnostics = (
     } else {
       dropReasons[reasonKey[sentenceReason]] += 1;
       missingSentenceFields.push(canonical);
-      // BACKFILL: do not leave the element sentence-less. The fallback sentence
-      // contains the word verbatim and passes validateSentence. This guarantees
-      // every region has a sentence to display in the UI.
-      const wordInput = words.find((w) => normalizeWordKey(w.text) === key);
-      if (wordInput) {
-        el.sentence = buildFallbackClozeSentence(wordInput);
-      }
+      // No backfill — element.sentence stays undefined. The client handles
+      // the "no sentence" case gracefully (picture-only clue).
     }
     elements.push(el);
   }
   // Defensive sweep: any input word that has NO element at all (LLM dropped it
-  // entirely) also gets a fallback element so the UI never renders "Picture only".
+  // entirely) gets a bare element (word only, no sentence) so the region map
+  // still includes it. The client renders these as "Picture only" in PLAYING
+  // and shows just the word in REVIEW.
   for (const w of words) {
     const key = normalizeWordKey(w.text);
     if (!elements.some((e) => normalizeWordKey(e.word) === key)) {
       elements.push({
         word: w.text,
-        sentence: buildFallbackClozeSentence(w),
+        // No sentence — client handles gracefully.
       });
       missingSentenceFields.push(w.text);
     }
@@ -1063,20 +1063,18 @@ const buildFallbackImagePrompt = (words: SceneWordInput[], dayIndex: number): st
 };
 
 /**
- * Build a single fallback cloze sentence for `w`. The sentence contains
- * `w.text` verbatim (so it passes isValidSentence).
+ * Build a single fallback cloze sentence for `w`.
  *
- * IMPORTANT: we deliberately do NOT emit `definitionCn` here. The old template
- * `"In this scene there is a X, which means 苹果."` turned the cloze into a
- * bilingual translation drill — exactly what the product owner rejected. The
- * fallback only fires when the LLM director truly fails, so the best we can
- * do without scene context is acknowledge the word is hidden and let the
- * learner use the picture as the only clue. The director path is what
- * produces real scene-describing sentences.
+ * Returns an EMPTY string — we deliberately do NOT produce a fallback template.
+ * The previous template `The word "X" is hidden in today's scene — guess it
+ * from the picture.` was meaningless to the learner, wasted TTS resources
+ * (every word triggered a TTS call for a useless sentence), and cluttered the
+ * REVIEW screen with rows that added no learning value. Instead, words without
+ * a real LLM-authored sentence are treated as "picture only" — the client
+ * shows a minimal placeholder in PLAYING and just the word itself in REVIEW.
  */
-const buildFallbackClozeSentence = (w: SceneWordInput): string => {
-  const word = String(w.text || '').trim();
-  return `The word "${word}" is hidden in today's scene — guess it from the picture.`;
+const buildFallbackClozeSentence = (_w: SceneWordInput): string => {
+  return '';
 };
 
 /**
@@ -1100,13 +1098,19 @@ const MASCOT_FALLBACK_DESCRIPTIONS: Record<number, string> = {
 /**
  * Build the full fallback result (image prompt + storyboard + sentences).
  *
- * Storyboard: exactly N short sentences, one per word, each containing
- * that single word verbatim. This guarantees `parseStoryboard` reports
- * `violation: null` and `wordCoverage === N`, so any downstream code that
- * re-parses the fallback stays happy.
+ * Storyboard: empty string — without LLM-authored sentences there is nothing
+ * meaningful to string together. The PREPARING preview simply hides the
+ * storyboard card when it's empty.
  *
- * Sentences: same per-word text as the storyboard, exposed as a typed array
- * for direct ingestion by the edge function.
+ * Sentences: one entry per word, but with an EMPTY sentence string. The edge
+ * function's `elementsForEvent` filter drops empty-sentence entries, so the
+ * client never receives them and never sends them to TTS. The client shows
+ * "Picture only — guess word #N." in PLAYING and just the word itself in
+ * REVIEW for these words.
+ *
+ * The image prompt is still fully generated (deterministic, no LLM) so the
+ * image render proceeds normally — the learner at least gets a picture to
+ * look at while answering.
  */
 export const buildFusionResult = (
   words: SceneWordInput[],
@@ -1116,8 +1120,8 @@ export const buildFusionResult = (
   const prompt = buildFallbackImagePrompt(safeWords, dayIndex);
   const sentences: FusionFallbackSentence[] = safeWords.map((w) => ({
     word: String(w.text || '').trim(),
-    sentence: buildFallbackClozeSentence(w),
+    sentence: buildFallbackClozeSentence(w), // empty string — no fallback template
   }));
-  const storyboard = sentences.map((s) => s.sentence).join(' ');
+  const storyboard = ''; // no storyboard without real sentences
   return { prompt, storyboard, sentences };
 };
