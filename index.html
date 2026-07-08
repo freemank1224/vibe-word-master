@@ -291,25 +291,15 @@
                 await Promise.allSettled(warmupTasks);
             }
 
-            function withTimeout(promise, timeoutMs, timeoutMessage) {
-                let timeoutId = null;
-                const timeoutPromise = new Promise(resolve => {
-                    timeoutId = setTimeout(() => {
-                        console.warn(timeoutMessage);
-                        resolve();
-                    }, timeoutMs);
-                });
-
-                return Promise.race([promise, timeoutPromise]).finally(() => {
-                    if (timeoutId) clearTimeout(timeoutId);
-                });
-            }
-
-            const criticalAssetsPromise = withTimeout(
-                preloadCriticalAssets(),
-                6000,
-                'Critical asset warmup timed out, entering app with fallback state.'
-            ).finally(() => {
+            // NOTE: previously this wrapped preloadCriticalAssets() in a 6-second
+            // soft timeout. That timeout was the root cause of "icons not loaded
+            // when entering the app" — Material Symbols Outlined (5000+ icons)
+            // routinely takes 8-12s on slow networks, so the timeout fired first,
+            // the loader gave up waiting, and the user saw fallback glyphs in the
+            // dashboard. Now we let preloadCriticalAssets() complete naturally
+            // (it's already allSettled inside) and rely solely on the hard
+            // 25-second fallback below to escape deadlocked networks.
+            const criticalAssetsPromise = preloadCriticalAssets().finally(() => {
                 const warmupDuration = Math.round(performance.now() - warmupStartTime);
                 if (isDevHost) {
                     console.log(`[Loading] Critical assets warmup finished in ${warmupDuration}ms`);
@@ -369,8 +359,12 @@
                 }, 400);
             }
 
-            // 监听资源和字体加载完毕，增加 8 秒兜底超时
-            const loadTimeout = new Promise(resolve => setTimeout(resolve, 8000));
+            // 监听资源和字体加载完毕，增加 25 秒兜底超时
+            // 25s 是最后的硬性兜底——只用于真正死锁的网络环境。
+            // 正常情况下 preloadCriticalAssets() 会在 2-12 秒内完成
+            // （取决于字体和 monster 图的网络状况），所以我们让它自然
+            // 完成，而不是 8s 强制进入导致图标/字体没加载好。
+            const loadTimeout = new Promise(resolve => setTimeout(resolve, 25000));
             
             Promise.race([
                 Promise.all([
