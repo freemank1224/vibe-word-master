@@ -54,7 +54,7 @@
         输出结构化、完整的 text-to-image 提示词
    输出: { sceneConcept, structuredPrompt, elements:[{word, element, presentation, positionZone}] }
             ↓
-② 渲染 (生图模型 gpt-image-2)           ← 用 ① 的 structuredPrompt
+② 渲染 (生图模型 codex-gpt-image-2)           ← 用 ① 的 structuredPrompt
    等轴卡通场景图 (1024×1024, WebP)
             ↓
    regions = 直接由 elements[].positionZone 经 §5 zone 表派生  ← 默认路径, 不调任何额外模型

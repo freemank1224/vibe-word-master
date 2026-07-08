@@ -48,7 +48,7 @@ const VALID_ASSET = {
   storage_path: 'scenes/u1/2/abc.png',
   prompt: 'isometric scene...',
   regions: [],
-  model: 'gpt-image-2',
+  model: 'codex-gpt-image-2',
   status: 'ready',
   created_at: '2025-01-01T00:00:00Z',
 };

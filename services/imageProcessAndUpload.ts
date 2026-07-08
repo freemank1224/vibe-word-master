@@ -25,7 +25,7 @@ export const processAndUploadImage = async (params: {
 }): Promise<ProcessAndUploadResult> => {
   const { dataUrl, displayWord } = params;
   const language = (params.language || 'en').trim();
-  const model = params.model || 'gpt-image-2';
+  const model = params.model || 'codex-gpt-image-2';
   const normalizedWord = normalizeWord(displayWord);
 
   // 1. 浏览器 Canvas 转 WebP（工业级可靠）

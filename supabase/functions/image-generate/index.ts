@@ -77,11 +77,11 @@ const getProviderConfigs = (): ProviderConfig[] => {
     || '';
   const primaryModel = Deno.env.get('PRIMARY_IMAGE_GEN_MODEL')
     || Deno.env.get('IMAGE_GEN_MODEL')
-    || 'gpt-image-2';
+    || 'codex-gpt-image-2';
 
   const secondaryBaseUrl = Deno.env.get('SECONDARY_IMAGE_GEN_BASE_URL') || '';
   const secondaryApiKey = Deno.env.get('SECONDARY_IMAGE_GEN_API_KEY') || '';
-  const secondaryModel = Deno.env.get('SECONDARY_IMAGE_GEN_MODEL') || 'gpt-image-2';
+  const secondaryModel = Deno.env.get('SECONDARY_IMAGE_GEN_MODEL') || 'codex-gpt-image-2';
 
   const backupBaseUrl = Deno.env.get('BACKUP_IMAGE_GEN_BASE_URL')
     || 'https://tokendance.space/gateway/v1/images/generations';
