@@ -49,6 +49,8 @@ import { getShanghaiDateString } from './utils/timezone';
 import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { useT } from './hooks/useT';
+import GlobalChampionBanner from './components/GlobalChampionBanner';
+import GlobalLeaderboardModal from './components/GlobalLeaderboardModal';
 
 // --- Tooltip Component ---
 interface TooltipProps {
@@ -394,6 +396,7 @@ const App: React.FC = () => {
   const [achievementQueue, setAchievementQueue] = useState<Achievement[]>([]);
   const [isReconciled, setIsReconciled] = useState(false);
   const [showAccountPanel, setShowAccountPanel] = useState(false);
+  const [showGlobalLeaderboard, setShowGlobalLeaderboard] = useState(false);
   
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
@@ -2020,6 +2023,32 @@ const App: React.FC = () => {
             0% { transform: translate(-50%, -50%) rotate(0deg); }
             100% { transform: translate(-50%, -50%) rotate(360deg); }
           }
+          @keyframes champion-flip-out {
+            from { transform: translateY(0); opacity: 1; }
+            to   { transform: translateY(-110%); opacity: 0; }
+          }
+          @keyframes champion-flip-in {
+            from { transform: translateY(110%); opacity: 0; }
+            to   { transform: translateY(0); opacity: 1; }
+          }
+          @keyframes champion-glow {
+            0%, 100% {
+              box-shadow:
+                0 0 0 1px rgba(0, 240, 255, 0.10),
+                0 0 10px 0 rgba(0, 240, 255, 0.12);
+            }
+            50% {
+              box-shadow:
+                0 0 0 1px rgba(0, 240, 255, 0.35),
+                0 0 22px 4px rgba(0, 240, 255, 0.38);
+            }
+          }
+          .animate-champion-glow {
+            animation: champion-glow 3s ease-in-out infinite;
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .animate-champion-glow { animation: none; }
+          }
           .animate-breathe {
             animation: breathe 8s ease-in-out infinite;
           }
@@ -2045,6 +2074,9 @@ const App: React.FC = () => {
             className="absolute left-0 top-1/3 w-12 h-12 object-contain -translate-y-[35%] z-20 pointer-events-none"
           />
           <h1 className="pl-16 font-headline text-3xl tracking-[0.02em] text-electric-blue">VOCAB MONSTER</h1>
+        </div>
+        <div className="hidden md:flex flex-1 justify-center px-4 min-w-0">
+          <GlobalChampionBanner onOpen={() => setShowGlobalLeaderboard(true)} />
         </div>
         <div className="flex items-center gap-4">
           <div 
@@ -2436,7 +2468,7 @@ const App: React.FC = () => {
       </footer>
 
       {showAccountPanel && session && (
-        <AccountPanel 
+        <AccountPanel
           user={session.user}
           words={visibleWords}
           sessions={visibleSessions}
@@ -2449,6 +2481,10 @@ const App: React.FC = () => {
           }}
         />
       )}
+      <GlobalLeaderboardModal
+        open={showGlobalLeaderboard}
+        onClose={() => setShowGlobalLeaderboard(false)}
+      />
       {showAdminConsole && (
         <AdminConsole 
           onClose={() => setShowAdminConsole(false)} 
