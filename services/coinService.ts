@@ -57,12 +57,17 @@ export const claimDailyLoginReward = async (): Promise<DailyLoginReward | null> 
 };
 
 /**
- * Award coins for a CLASSIC quiz round. Internally computes Math.round(score/100).
+ * Award coins for a CLASSIC quiz round.
+ *
+ * CLASSIC totalScore uses fullScore=3.0/word, so a 10-word perfect test ≈ 30.
+ * Divisor is 10 (not 100 — that's for PUZZLE's 0-1000 scale).
+ * A perfect 10-word test → 3 coins; a perfect 20-word test → 6 coins.
+ *
  * Idempotent: calling twice with the same roundId returns 0 (already awarded).
  * @returns number of coins actually awarded (0 if already awarded or error)
  */
 export const awardQuizCoins = async (roundId: string, score: number): Promise<number> => {
-  const delta = Math.round(score / 100);
+  const delta = Math.round(score / 10);
   if (delta <= 0) return 0;
   try {
     const { data, error } = await supabase.rpc('award_game_coins', {
