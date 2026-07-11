@@ -67,9 +67,13 @@ export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ 
           </div>
         </div>
 
-        <p className="text-text-light text-lg mb-8 leading-relaxed">
+        <p className="text-text-light text-lg mb-4 leading-relaxed">
           {achievement.description}
         </p>
+
+        <div className="mb-8 inline-flex items-center gap-1.5 rounded-full border border-electric-green/40 bg-electric-green/10 px-4 py-1.5 font-mono text-sm text-electric-green">
+          +10 🪙
+        </div>
 
         <button
           onClick={onClose}

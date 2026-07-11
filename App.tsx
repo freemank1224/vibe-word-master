@@ -37,6 +37,18 @@ import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordId
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
+import { CoinCounter } from './components/Coin/CoinCounter';
+import { DailyLoginRewardModal } from './components/Coin/DailyLoginRewardModal';
+import { InsufficientCoinsModal } from './components/Coin/InsufficientCoinsModal';
+import {
+  claimDailyLoginReward,
+  awardQuizCoins,
+  awardPuzzleCoins,
+  awardAchievementCoins,
+  awardAllAchievementsBonus,
+  getCoinBalance,
+  type DailyLoginReward,
+} from './services/coinService';
 // import { generateImagesForMissingWords } from './services/imageGenerationTask';
 import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
@@ -163,6 +175,10 @@ const IMAGE_GEN_DEBUG_STORAGE_KEY = 'vibe_word_image_gen_debug_logs_v1';
 const normalizeDefinitionBackfillKey = (text: string, language: string = 'en') => {
   return `${language.toLowerCase()}:${text.trim().toLowerCase().replace(/\s+/g, ' ')}`;
 };
+
+// Module-level guard: ensures we only auto-claim the daily reward once per
+// login session (prevents double-claim if onAuthStateChange fires repeatedly).
+let _lastDailyClaimUserId: string | null = null;
 
 const App: React.FC = () => {
   const t = useT();
@@ -397,6 +413,19 @@ const App: React.FC = () => {
   const [isReconciled, setIsReconciled] = useState(false);
   const [showAccountPanel, setShowAccountPanel] = useState(false);
   const [showGlobalLeaderboard, setShowGlobalLeaderboard] = useState(false);
+
+  // ─── Coin currency state ─────────────────────────────────────
+  // coinBalance starts at -1 (sentinel for "loading") so SceneGameMode's
+  // client-side gate doesn't prematurely block while the wallet RPC is
+  // still in-flight. The edge function's server-side gate is authoritative.
+  const [coinBalance, setCoinBalance] = useState(-1);
+  const [dailyLoginReward, setDailyLoginReward] = useState<DailyLoginReward | null>(null);
+  const [showInsufficientCoins, setShowInsufficientCoins] = useState(false);
+
+  const refreshCoinBalance = useCallback(async () => {
+    const bal = await getCoinBalance();
+    setCoinBalance(bal);
+  }, []);
   
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
@@ -414,6 +443,24 @@ const App: React.FC = () => {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+
+      // ─── Daily login reward ────────────────────────────────────
+      // Fire once per user per page-load. The RPC itself is idempotent
+      // (same-day re-claim returns already_claimed_today=true), but we
+      // also guard client-side to avoid unnecessary network calls and
+      // repeated modal pops during auth event flurries.
+      if (session?.user?.id && session.user.id !== _lastDailyClaimUserId) {
+        _lastDailyClaimUserId = session.user.id;
+        // Delay slightly so the initial data fetch kicks off first.
+        setTimeout(async () => {
+          const reward = await claimDailyLoginReward();
+          if (!reward) return;
+          setCoinBalance(reward.new_balance);
+          if (!reward.already_claimed_today && reward.total_awarded > 0) {
+            setDailyLoginReward(reward);
+          }
+        }, 800);
+      }
 
       // Check if user's email is confirmed after login/signup
       if (session?.user && !session.user.email_confirmed_at) {
@@ -439,6 +486,9 @@ const App: React.FC = () => {
     if (session?.user) {
       setLoadingData(true);
       setDataError(null);
+      // Coin balance loads in parallel (non-blocking; errors are swallowed
+      // inside refreshCoinBalance so a wallet RPC failure can't break data load).
+      void refreshCoinBalance();
       Promise.all([
           fetchUserData(session.user.id),
           fetchUserStats(session.user.id),
@@ -450,6 +500,22 @@ const App: React.FC = () => {
 
           // Initialize Achievements (DB Load)
           setUnlockedAchievements(new Set(achievementIds));
+
+          // ─── One-time achievement coin backfill for existing users ────
+          // Users who unlocked achievements BEFORE the coin system shipped
+          // never received coins for them. The award RPCs are idempotent
+          // (reference=achievement_id), so this is safe to run once and
+          // never again.
+          const backfillKey = `vibe_coin_ach_backfill_${session.user.id}`;
+          if (achievementIds.length > 0 && !localStorage.getItem(backfillKey)) {
+            localStorage.setItem(backfillKey, '1');
+            achievementIds.forEach(id => {
+              void awardAchievementCoins(id).then(a => { if (a > 0) void refreshCoinBalance(); });
+            });
+            if (achievementIds.length >= 10) {
+              void awardAllAchievementsBonus().then(b => { if (b > 0) void refreshCoinBalance(); });
+            }
+          }
 
           // ✅ Phase E: Version-aware stats merging with conflict detection
           const shanghaiToday = getShanghaiDateString();
@@ -479,7 +545,7 @@ const App: React.FC = () => {
         })
         .finally(() => setLoadingData(false));
     }
-  }, [session]);
+  }, [session, refreshCoinBalance]);
 
   useEffect(() => {
       refreshData();
@@ -629,6 +695,10 @@ const App: React.FC = () => {
     setDailyStats({});
     setUnlockedAchievements(new Set());
     setAchievementQueue([]);
+    setCoinBalance(-1);
+    setDailyLoginReward(null);
+    setShowInsufficientCoins(false);
+    _lastDailyClaimUserId = null;
   };
 
   // Background Task: Auto-generate images for words missing them
@@ -688,7 +758,7 @@ const App: React.FC = () => {
 
     if (missingInDb.length > 0) {
         console.log("Phase 1: Reconciling missing achievements (silent sync):", missingInDb);
-        
+
         // 1. Update local state immediately so Phase 2 doesn't see them as "new" events
         setUnlockedAchievements(newUnlockedSet);
 
@@ -697,7 +767,14 @@ const App: React.FC = () => {
             console.log("Phase 1: Saving to DB for user:", session.user.id);
             missingInDb.forEach(id => {
                 saveUserAchievement(session.user.id, id).then(() => console.log(`Saved achievement ${id}`));
+                // Backfill coins for already-unlocked achievements (idempotent RPC).
+                void awardAchievementCoins(id).then(a => { if (a > 0) void refreshCoinBalance(); });
             });
+
+            // If reconciliation pushed the count to 10, claim the all-achievements bonus.
+            if (newUnlockedSet.size >= 10) {
+              void awardAllAchievementsBonus().then(b => { if (b > 0) void refreshCoinBalance(); });
+            }
         } else {
             console.error("Phase 1: Cannot save, no user session");
         }
@@ -716,12 +793,18 @@ const App: React.FC = () => {
 
     const currentStatuses = calculateAchievements(words, sessions, Object.values(dailyStats));
 
+    // Track how many NEW achievements unlock in this pass so we can detect
+    // the 9→10 transition for the all-achievements bonus.
+    const prevCount = unlockedAchievements.size;
+    let newlyUnlocked = 0;
+
     // Check for NEW unlocks only (compare with what we already have in state)
     // Since we are Reconciled, any difference here is a GENUINE new event.
     currentStatuses.forEach(status => {
         if (status.unlocked && !unlockedAchievements.has(status.id)) {
             const ach = ACHIEVEMENTS.find(a => a.id === status.id);
             if (ach) {
+                newlyUnlocked++;
                 // 1. Add to queue (Celebration!)
                 setAchievementQueue(prev => [...prev, ach]);
                 playAchievementUnlock();
@@ -732,14 +815,27 @@ const App: React.FC = () => {
                     next.add(status.id);
                     return next;
                 });
-                
-                // 3. Persist to DB
+
+                // 3. Persist to DB + award coins
                 if (session?.user?.id) {
                     saveUserAchievement(session.user.id, status.id);
+                    void awardAchievementCoins(status.id).then(a => {
+                      if (a > 0) void refreshCoinBalance();
+                    });
                 }
             }
         }
     });
+
+    // All-achievements bonus: fire once when the count crosses 10.
+    if (newlyUnlocked > 0 && prevCount < 10 && prevCount + newlyUnlocked >= 10) {
+      void awardAllAchievementsBonus().then(b => {
+        if (b > 0) {
+          void refreshCoinBalance();
+          showNotification('🏆 全成就解锁！🪙 +100', 'success');
+        }
+      });
+    }
   }, [words, sessions, dailyStats, loadingData, unlockedAchievements, session, isReconciled]);
 
   // Derived Stats (Merged: DB History + Live Local Updates)
@@ -2079,7 +2175,8 @@ const App: React.FC = () => {
           <GlobalChampionBanner onOpen={() => setShowGlobalLeaderboard(true)} />
         </div>
         <div className="flex items-center gap-4">
-          <div 
+          <CoinCounter balance={coinBalance} />
+          <div
             className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-dark cursor-pointer hover:text-white transition-colors group"
             onClick={() => setShowAccountPanel(true)}
           >
@@ -2172,8 +2269,18 @@ const App: React.FC = () => {
                   } catch (statsErr) {
                     console.error('[PuzzleGameMode] word stats sync failed (non-blocking):', statsErr);
                   }
-                  await recordPuzzleGameRound(summary);
-                  showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                  const round: any = await recordPuzzleGameRound(summary);
+                  const roundId = round?.round_id || round?.id;
+                  if (roundId) {
+                    const awarded = await awardPuzzleCoins(roundId, summary.totalScore);
+                    if (awarded > 0) void refreshCoinBalance();
+                    showNotification(
+                      `🧩 字谜成绩已记录：${summary.totalScore} 分${awarded ? ` · 🪙 +${awarded}` : ''}`,
+                      'success',
+                    );
+                  } else {
+                    showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                  }
                 } catch (error) {
                   console.error('[PuzzleGameMode] Failed to record puzzle game round:', error);
                   showNotification('⚠️ 字谜成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
@@ -2217,6 +2324,8 @@ const App: React.FC = () => {
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
+              coinBalance={coinBalance}
+              onInsufficientCoins={() => setShowInsufficientCoins(true)}
             />
           ) : (
             <TestModeV2
@@ -2231,6 +2340,15 @@ const App: React.FC = () => {
                 // ✨ Now waits for database sync to complete before navigating
                 try {
                   await updateLocalStats(summary);
+                  // Award coins based on total score (Math.round(score/100)).
+                  const roundRef = typeof crypto !== 'undefined' && crypto?.randomUUID
+                    ? crypto.randomUUID()
+                    : `quiz-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                  const awarded = await awardQuizCoins(roundRef, summary.totalScore);
+                  if (awarded > 0) {
+                    void refreshCoinBalance();
+                    showNotification(`🪙 +${awarded}`, 'success');
+                  }
                 } catch (err) {
                   console.error('[onComplete] Stats sync failed, navigating anyway:', err);
                 } finally {
@@ -2456,10 +2574,23 @@ const App: React.FC = () => {
         
         {/* Achievement Unlock Modal */}
         {achievementQueue.length > 0 && (
-            <AchievementUnlockModal 
-                achievement={achievementQueue[0]} 
-                onClose={() => setAchievementQueue(prev => prev.slice(1))} 
+            <AchievementUnlockModal
+                achievement={achievementQueue[0]}
+                onClose={() => setAchievementQueue(prev => prev.slice(1))}
             />
+        )}
+
+        {/* Daily Login Reward Modal */}
+        {dailyLoginReward && (
+          <DailyLoginRewardModal
+            reward={dailyLoginReward}
+            onClose={() => setDailyLoginReward(null)}
+          />
+        )}
+
+        {/* Insufficient Coins Modal */}
+        {showInsufficientCoins && (
+          <InsufficientCoinsModal onClose={() => setShowInsufficientCoins(false)} />
         )}
       </main>
 

@@ -1208,6 +1208,51 @@ serve(async (req) => {
         }
       }
 
+      // ─── Coin gate ──────────────────────────────────────────────
+      // Charge 25 coins BEFORE running the pipeline. Cache hits above
+      // already returned for free. On any downstream failure we refund
+      // via refundIfNeeded() so users never pay for a broken generation.
+      const roundRef = `${userId}:${wordSetHash}:${dayIndex}:${Date.now()}`;
+      const SCENE_COIN_COST = 25;
+      let coinsCharged = false;
+      {
+        const { data: spendResult, error: spendErr } = await sb.rpc('spend_scene_game_coins', {
+          p_user_id: userId,
+          p_round_ref: roundRef,
+          p_amount: SCENE_COIN_COST,
+        }).single();
+        if (spendErr || !spendResult?.success) {
+          const reason = spendResult?.reason || (spendErr ? 'rpc_error' : 'spend_error');
+          console.log(`[scene-generate] coin_gate denied user=${userId.substring(0, 8)} reason=${reason}`);
+          send({
+            stage: 'error',
+            failedStage: 'coin_gate',
+            code: reason,
+            error: reason === 'insufficient_balance'
+              ? 'Not enough coins for scene game'
+              : `Coin gate: ${reason}`,
+          });
+          return;
+        }
+        coinsCharged = true;
+        console.log(`[scene-generate] coin_gate charged user=${userId.substring(0, 8)} roundRef=${roundRef} new_balance=${spendResult.new_balance}`);
+      }
+      const refundIfNeeded = async (stage: string): Promise<void> => {
+        if (!coinsCharged) return;
+        try {
+          const { error } = await sb.rpc('refund_scene_game_coins', {
+            p_user_id: userId,
+            p_round_ref: roundRef,
+            p_amount: SCENE_COIN_COST,
+          });
+          if (error) console.error(`[scene-generate] refund rpc error (${stage}):`, error.message);
+          else console.log(`[scene-generate] refund ok (${stage}) roundRef=${roundRef}`);
+        } catch (e) {
+          console.error(`[scene-generate] refund exception (${stage}):`, e);
+        }
+      };
+      // ─── End coin gate ──────────────────────────────────────────
+
       // ① Scene director
       const designCfg = resolveDesignConfig();
       let designResult: { design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; diagnostics: any | null; failReason: string | null; httpStatus?: number; rawHead?: string } = { design: null, diagnostics: null, failReason: 'not-called' };
@@ -1215,6 +1260,7 @@ serve(async (req) => {
         designResult = await designScene(words, dayIndex, designCfg);
       } catch (err) {
         send({ stage: 'error', failedStage: 'designed', error: `director threw: ${err instanceof Error ? err.message : String(err)}` });
+        await refundIfNeeded('designed');
         return;
       }
       const design = designResult.design;
@@ -1341,6 +1387,7 @@ serve(async (req) => {
       const providers = getProviderConfigs();
       if (providers.length === 0) {
         send({ stage: 'error', failedStage: 'rendered', error: 'No image generation providers configured' });
+        await refundIfNeeded('rendered_no_providers');
         return;
       }
 
@@ -1358,6 +1405,7 @@ serve(async (req) => {
       }
       if (!generated) {
         send({ stage: 'error', failedStage: 'rendered', error: 'All image providers failed', failures });
+        await refundIfNeeded('rendered_all_failed');
         return;
       }
       // → emit rendered (real evidence: image dataUrl exists)
@@ -1437,6 +1485,7 @@ serve(async (req) => {
           });
         } catch (err) {
           send({ stage: 'error', failedStage: 'persisted', error: err instanceof Error ? err.message : String(err) });
+          await refundIfNeeded('persisted');
           return;
         }
         // → emit persisted (real evidence: scene_assets row written, publicUrl non-empty)

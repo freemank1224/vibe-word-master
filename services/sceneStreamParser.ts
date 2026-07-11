@@ -188,7 +188,12 @@ export const parseSceneGenerateNdjsonStream = async (
       } else if (stage === 'error') {
         const failedAt = event?.failedStage || 'unknown';
         const message = event?.error || `scene-generate failed at ${failedAt}`;
-        throw new Error(String(message));
+        const err = new Error(String(message));
+        // Attach structured fields so upstream callers (e.g. SceneGameMode)
+        // can branch on specific failure codes like insufficient_balance.
+        if (event?.code) (err as any).code = String(event.code);
+        if (event?.failedStage) (err as any).failedStage = String(event.failedStage);
+        throw err;
       }
     }
   }

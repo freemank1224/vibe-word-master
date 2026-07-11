@@ -6,6 +6,7 @@ import { ClozeSentence, ClozeStatus } from './ClozeSentence';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { playBuzzer, playCheer, playDing } from '../utils/audioFeedback';
+import { SCENE_GAME_COST } from '../services/coinService';
 import {
   InputSession,
   SceneAsset,
@@ -32,6 +33,8 @@ interface SceneGameModeProps {
   sessions: InputSession[];
   onComplete: (summary: SceneGameSummary) => Promise<void> | void;
   onCancel: () => void;
+  coinBalance?: number;
+  onInsufficientCoins?: () => void;
 }
 
 const WORD_COUNT_KEY = 'vibe_scene_word_count';
@@ -121,7 +124,7 @@ const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | nu
 // tried to answer. No separate ReviewCard — keeps content + styling 1:1.
 // ----------------------------------------------------------------
 
-const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel }) => {
+const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel, coinBalance = Infinity, onInsufficientCoins }) => {
   const dayIndex = new Date().getDay();
   const monsterImg = `/monsterImages/M${dayIndex}.webp`;
   const monsterName = MONSTER_NAMES[dayIndex] || MONSTER_NAMES[0];
@@ -144,6 +147,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
   const [preparingElapsed, setPreparingElapsed] = useState(0);
   const [preparingStage, setPreparingStage] = useState(0);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [showCostConfirm, setShowCostConfirm] = useState(false);
   /** Storyboard text surfaced during PREPARING so the player can preview the
    *  scene idea before play. Mirrors the AI-authored `storyboard` field sent on
    *  the `designed` event. Reset at the start of every run. */
@@ -389,6 +393,14 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     } catch (err) {
       if (controller.signal.aborted) return;
       console.error('[SceneGameMode] generation failed', err);
+      // Edge function coin gate: surface the insufficient-coins modal
+      // instead of a generic error string.
+      const code = (err as any)?.code;
+      if (code === 'insufficient_balance') {
+        onInsufficientCoins?.();
+        setPhase('INTRO');
+        return;
+      }
       setGenError(err instanceof Error ? err.message : 'Scene generation failed. Please try again.');
       setPhase('INTRO');
     }
@@ -405,6 +417,19 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
   const beginScene = () => {
     if (!canPrepare) return;
+    // Client-side pre-gate: fast UX feedback before hitting the server.
+    // Skip when coinBalance < 0 (wallet still loading) — the edge function's
+    // server-side gate is authoritative and will catch a true insufficiency.
+    if (coinBalance >= 0 && coinBalance < SCENE_GAME_COST) {
+      onInsufficientCoins?.();
+      return;
+    }
+    // Show the cost confirmation dialog before spending coins.
+    setShowCostConfirm(true);
+  };
+
+  const confirmSceneStart = () => {
+    setShowCostConfirm(false);
     const n = Math.min(Math.max(wordCount, MIN_SCENE_WORDS), Math.min(MAX_SCENE_WORDS, candidateCount));
     void runGeneration(n, false);
   };
@@ -876,7 +901,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                         : 'cursor-not-allowed bg-mid-charcoal text-text-dark'
                     }`}
                   >
-                    <HoverTranslationText text="Load Scene" translation="生成场景" />
+                    <span className="inline-flex items-center gap-2">
+                      <HoverTranslationText text="Load Scene" translation="生成场景" />
+                      <span className="ml-1 inline-flex items-center rounded-full bg-black/30 px-2 py-0.5 text-xs tracking-normal opacity-90">
+                        🪙 {SCENE_GAME_COST}
+                      </span>
+                    </span>
                   </button>
                   {!canPrepare && (
                     <div className="mt-3 font-mono text-xs text-red-300">
@@ -887,6 +917,51 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     <div className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">{genError}</div>
                   )}
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---------------- COST CONFIRMATION DIALOG ---------------- */}
+        {showCostConfirm && (
+          <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowCostConfirm(false)}></div>
+            <div className="relative bg-dark-charcoal border-2 border-amber-400/50 rounded-3xl p-8 max-w-sm w-full text-center shadow-[0_0_40px_rgba(251,191,36,0.2)]">
+              <div className="text-4xl mb-3">🪙</div>
+              <h2 className="text-lg font-headline tracking-wide text-amber-300 mb-2 uppercase">
+                <HoverTranslationText text="Confirm Spend" translation="确认消费" />
+              </h2>
+              <p className="text-text-light text-sm leading-relaxed mb-5">
+                <HoverTranslationText
+                  text={`Starting this scene costs ${SCENE_GAME_COST} coins.`}
+                  translation={`开始场景模式将消耗 ${SCENE_GAME_COST} 金币。`}
+                />
+              </p>
+              {coinBalance >= 0 && (
+                <div className="mb-5 space-y-1 font-mono text-xs">
+                  <div className="flex justify-between text-text-light/70">
+                    <span><HoverTranslationText text="Current balance" translation="当前余额" /></span>
+                    <span className="text-amber-300">🪙 {coinBalance}</span>
+                  </div>
+                  <div className="flex justify-between text-text-light/70">
+                    <span><HoverTranslationText text="After this round" translation="结束后剩余" /></span>
+                    <span className="text-amber-300/70">🪙 {coinBalance - SCENE_GAME_COST}</span>
+                  </div>
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowCostConfirm(false)}
+                  className="flex-1 rounded-xl border border-mid-charcoal bg-mid-charcoal/50 px-4 py-3 font-headline text-xs uppercase tracking-[0.2em] text-text-light hover:bg-mid-charcoal transition-colors"
+                >
+                  <HoverTranslationText text="Cancel" translation="取消" />
+                </button>
+                <button
+                  onClick={confirmSceneStart}
+                  className="flex-1 rounded-xl bg-purple-500 px-4 py-3 font-headline text-xs uppercase tracking-[0.2em] text-white hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] transition-all"
+                >
+                  <HoverTranslationText text="Start" translation="开始" />
+                </button>
               </div>
             </div>
           </div>
