@@ -2340,11 +2340,15 @@ const App: React.FC = () => {
                 // ✨ Now waits for database sync to complete before navigating
                 try {
                   await updateLocalStats(summary);
-                  // Award coins based on total score (Math.round(score/100)).
+                  // Award coins using leaderboard-equivalent formula (test_count + accuracy).
                   const roundRef = typeof crypto !== 'undefined' && crypto?.randomUUID
                     ? crypto.randomUUID()
                     : `quiz-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                  const awarded = await awardQuizCoins(roundRef, summary.totalScore);
+                  const awarded = await awardQuizCoins(
+                    roundRef,
+                    summary.results.filter(r => r.correct).length,
+                    summary.results.length,
+                  );
                   if (awarded > 0) {
                     void refreshCoinBalance();
                     showNotification(`🪙 +${awarded}`, 'success');
