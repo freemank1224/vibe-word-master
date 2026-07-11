@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { CoinIcon } from './CoinIcon';
 
 interface CoinCounterProps {
   balance: number;
@@ -33,7 +34,7 @@ export const CoinCounter: React.FC<CoinCounterProps> = ({ balance }) => {
       }`}
       title="Coin balance"
     >
-      <span className="text-base leading-none">🪙</span>
+      <CoinIcon fontSize="18px" />
       <span className="tabular-nums">{balance < 0 ? '…' : balance}</span>
     </div>
   );

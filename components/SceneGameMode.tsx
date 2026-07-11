@@ -7,6 +7,7 @@ import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { playBuzzer, playCheer, playDing } from '../utils/audioFeedback';
 import { SCENE_GAME_COST } from '../services/coinService';
+import { CoinIcon } from './Coin/CoinIcon';
 import {
   InputSession,
   SceneAsset,
@@ -903,8 +904,8 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   >
                     <span className="inline-flex items-center gap-2">
                       <HoverTranslationText text="Load Scene" translation="生成场景" />
-                      <span className="ml-1 inline-flex items-center rounded-full bg-black/30 px-2 py-0.5 text-xs tracking-normal opacity-90">
-                        🪙 {SCENE_GAME_COST}
+                      <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-black/30 px-2 py-0.5 text-xs tracking-normal opacity-90">
+                        <CoinIcon fontSize="14px" /> {SCENE_GAME_COST}
                       </span>
                     </span>
                   </button>
@@ -927,7 +928,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
           <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowCostConfirm(false)}></div>
             <div className="relative bg-dark-charcoal border-2 border-amber-400/50 rounded-3xl p-8 max-w-sm w-full text-center shadow-[0_0_40px_rgba(251,191,36,0.2)]">
-              <div className="text-4xl mb-3">🪙</div>
+              <div className="mb-3 flex justify-center"><CoinIcon fontSize="40px" /></div>
               <h2 className="text-lg font-headline tracking-wide text-amber-300 mb-2 uppercase">
                 <HoverTranslationText text="Confirm Spend" translation="确认消费" />
               </h2>
@@ -941,11 +942,11 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 <div className="mb-5 space-y-1 font-mono text-xs">
                   <div className="flex justify-between text-text-light/70">
                     <span><HoverTranslationText text="Current balance" translation="当前余额" /></span>
-                    <span className="text-amber-300">🪙 {coinBalance}</span>
+                    <span className="inline-flex items-center gap-1 text-amber-300"><CoinIcon fontSize="14px" /> {coinBalance}</span>
                   </div>
                   <div className="flex justify-between text-text-light/70">
                     <span><HoverTranslationText text="After this round" translation="结束后剩余" /></span>
-                    <span className="text-amber-300/70">🪙 {coinBalance - SCENE_GAME_COST}</span>
+                    <span className="inline-flex items-center gap-1 text-amber-300/70"><CoinIcon fontSize="14px" /> {coinBalance - SCENE_GAME_COST}</span>
                   </div>
                 </div>
               )}

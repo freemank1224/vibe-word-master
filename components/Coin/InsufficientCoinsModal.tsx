@@ -1,5 +1,6 @@
 import React from 'react';
 import { SCENE_GAME_COST } from '../../services/coinService';
+import { CoinIcon } from './CoinIcon';
 
 interface InsufficientCoinsModalProps {
   onClose: () => void;
@@ -16,7 +17,7 @@ export const InsufficientCoinsModal: React.FC<InsufficientCoinsModalProps> = ({ 
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose}></div>
 
       <div className="relative bg-dark-charcoal border-2 border-amber-400/50 rounded-3xl p-8 max-w-sm w-full text-center shadow-[0_0_40px_rgba(251,191,36,0.2)]">
-        <div className="text-5xl mb-4">🪙</div>
+        <div className="mb-4 flex justify-center"><CoinIcon fontSize="48px" /></div>
 
         <h2 className="text-xl font-headline tracking-wide text-amber-300 mb-3 uppercase">
           Not Enough Coins
@@ -29,7 +30,7 @@ export const InsufficientCoinsModal: React.FC<InsufficientCoinsModalProps> = ({ 
 
         <div className="mb-6 space-y-2 text-left font-mono text-xs text-text-light/70">
           <div className="flex items-center gap-2">
-            <span className="text-amber-300">🪙</span>
+            <CoinIcon fontSize="16px" />
             <span>Daily login: +1 (bonus +7 / +30 on streaks)</span>
           </div>
           <div className="flex items-center gap-2">

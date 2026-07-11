@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import type { DailyLoginReward } from '../../services/coinService';
+import { CoinIcon } from './CoinIcon';
 
 interface DailyLoginRewardModalProps {
   reward: DailyLoginReward;
@@ -50,7 +51,9 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
           <div className="text-5xl font-bold text-white font-headline tracking-wide">
             +{reward.total_awarded}
           </div>
-          <div className="text-4xl mt-1">🪙</div>
+          <div className="mt-1 flex justify-center">
+            <CoinIcon fontSize="40px" />
+          </div>
         </div>
 
         {/* Breakdown rows */}

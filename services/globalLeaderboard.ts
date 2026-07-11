@@ -8,7 +8,7 @@ export type ChampionCategory =
   | 'achievements'
   | 'game_total'
   | 'word_mastery'
-  | 'words_added';
+  | 'coins';
 
 export interface ChampionInfo {
   category: ChampionCategory;

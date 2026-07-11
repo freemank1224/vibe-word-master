@@ -16,7 +16,7 @@ const CATEGORY_ACCENT: Record<string, string> = {
   achievements: 'text-electric-purple',
   game_total: 'text-electric-green',
   word_mastery: 'text-electric-blue',
-  words_added: 'text-electric-green',
+  coins: 'text-amber-400',
 };
 
 /**

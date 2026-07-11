@@ -23,7 +23,7 @@ const CATEGORIES: CategoryMeta[] = [
   { key: 'achievements', labelZh: '成就解锁', labelEn: 'Achv', icon: 'military_tech', accent: 'text-electric-purple' },
   { key: 'game_total', labelZh: '游戏总分', labelEn: 'Game', icon: 'sports_esports', accent: 'text-electric-green' },
   { key: 'word_mastery', labelZh: '单词掌握', labelEn: 'Master', icon: 'verified', accent: 'text-electric-blue' },
-  { key: 'words_added', labelZh: '单词添加', labelEn: 'Added', icon: 'library_add', accent: 'text-electric-green' },
+  { key: 'coins', labelZh: '财富榜', labelEn: 'Coins', icon: 'monetization_on', accent: 'text-amber-400' },
 ];
 
 const MEDAL_EMOJI: Record<number, string> = {

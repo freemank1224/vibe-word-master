@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { Achievement } from '../../services/achievementService';
 import { ACHIEVEMENT_ICONS } from './AchievementIcons';
+import { CoinIcon } from '../Coin/CoinIcon';
 
 interface AchievementUnlockModalProps {
   achievement: Achievement;
@@ -72,7 +73,7 @@ export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ 
         </p>
 
         <div className="mb-8 inline-flex items-center gap-1.5 rounded-full border border-electric-green/40 bg-electric-green/10 px-4 py-1.5 font-mono text-sm text-electric-green">
-          +10 🪙
+          +10 <CoinIcon fontSize="16px" />
         </div>
 
         <button
