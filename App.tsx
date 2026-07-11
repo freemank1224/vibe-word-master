@@ -40,6 +40,7 @@ import { AchievementUnlockModal } from './components/Achievements/AchievementUnl
 import { CoinCounter } from './components/Coin/CoinCounter';
 import { DailyLoginRewardModal } from './components/Coin/DailyLoginRewardModal';
 import { InsufficientCoinsModal } from './components/Coin/InsufficientCoinsModal';
+import { CoinRewardPopup } from './components/Coin/CoinRewardPopup';
 import {
   claimDailyLoginReward,
   awardQuizCoins,
@@ -421,6 +422,7 @@ const App: React.FC = () => {
   const [coinBalance, setCoinBalance] = useState(-1);
   const [dailyLoginReward, setDailyLoginReward] = useState<DailyLoginReward | null>(null);
   const [showInsufficientCoins, setShowInsufficientCoins] = useState(false);
+  const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
 
   const refreshCoinBalance = useCallback(async () => {
     const bal = await getCoinBalance();
@@ -698,6 +700,7 @@ const App: React.FC = () => {
     setCoinBalance(-1);
     setDailyLoginReward(null);
     setShowInsufficientCoins(false);
+    setPendingCoinReward(null);
     _lastDailyClaimUserId = null;
   };
 
@@ -832,7 +835,7 @@ const App: React.FC = () => {
       void awardAllAchievementsBonus().then(b => {
         if (b > 0) {
           void refreshCoinBalance();
-          showNotification('🏆 全成就解锁！🪙 +100', 'success');
+          setPendingCoinReward({ amount: b, source: 'achievement_bonus' });
         }
       });
     }
@@ -2273,11 +2276,12 @@ const App: React.FC = () => {
                   const roundId = round?.round_id || round?.id;
                   if (roundId) {
                     const awarded = await awardPuzzleCoins(roundId, summary.totalScore);
-                    if (awarded > 0) void refreshCoinBalance();
-                    showNotification(
-                      `🧩 字谜成绩已记录：${summary.totalScore} 分${awarded ? ` · 🪙 +${awarded}` : ''}`,
-                      'success',
-                    );
+                    if (awarded > 0) {
+                      void refreshCoinBalance();
+                      setPendingCoinReward({ amount: awarded, source: 'puzzle' });
+                    } else {
+                      showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                    }
                   } else {
                     showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
                   }
@@ -2338,6 +2342,7 @@ const App: React.FC = () => {
               }}
               onComplete={async (summary: CompletedTestSummary) => {
                 // ✨ Now waits for database sync to complete before navigating
+                let showCoinPopup = false;
                 try {
                   await updateLocalStats(summary);
                   // Award coins using leaderboard-equivalent formula (test_count + accuracy).
@@ -2351,12 +2356,13 @@ const App: React.FC = () => {
                   );
                   if (awarded > 0) {
                     void refreshCoinBalance();
-                    showNotification(`🪙 +${awarded}`, 'success');
+                    setPendingCoinReward({ amount: awarded, source: 'quiz', navigateAfter: true });
+                    showCoinPopup = true;
                   }
                 } catch (err) {
                   console.error('[onComplete] Stats sync failed, navigating anyway:', err);
                 } finally {
-                  setMode('DASHBOARD');
+                  if (!showCoinPopup) setMode('DASHBOARD');
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
@@ -2595,6 +2601,19 @@ const App: React.FC = () => {
         {/* Insufficient Coins Modal */}
         {showInsufficientCoins && (
           <InsufficientCoinsModal onClose={() => setShowInsufficientCoins(false)} />
+        )}
+
+        {/* Coin Reward Popup (quiz / puzzle / achievement bonus) */}
+        {pendingCoinReward && (
+          <CoinRewardPopup
+            amount={pendingCoinReward.amount}
+            source={pendingCoinReward.source}
+            onClose={() => {
+              const nav = pendingCoinReward.navigateAfter;
+              setPendingCoinReward(null);
+              if (nav) setMode('DASHBOARD');
+            }}
+          />
         )}
       </main>
 
