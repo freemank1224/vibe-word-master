@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import confetti from 'canvas-confetti';
 import { CoinIcon } from './CoinIcon';
+import { playCoinReward } from '../../utils/audioFeedback';
 
 interface CoinRewardPopupProps {
   amount: number;
@@ -19,6 +20,9 @@ export const CoinRewardPopup: React.FC<CoinRewardPopupProps> = ({ amount, source
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
+    // Coin jingle
+    playCoinReward();
+
     // Gold confetti burst from center
     const colors = ['#fbbf24', '#f59e0b', '#fde68a', '#ffffff'];
     confetti({

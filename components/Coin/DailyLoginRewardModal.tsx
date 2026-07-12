@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import type { DailyLoginReward } from '../../services/coinService';
 import { CoinIcon } from './CoinIcon';
+import { playCoinReward } from '../../utils/audioFeedback';
 
 interface DailyLoginRewardModalProps {
   reward: DailyLoginReward;
@@ -16,6 +17,9 @@ interface DailyLoginRewardModalProps {
  */
 export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ reward, onClose }) => {
   useEffect(() => {
+    // Coin jingle
+    playCoinReward();
+
     // Gold + electric-blue confetti burst
     const colors = ['#fbbf24', '#f59e0b', '#00f0ff', '#ffffff'];
     confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 }, colors });

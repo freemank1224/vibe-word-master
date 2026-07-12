@@ -60,6 +60,62 @@ export const playAchievementUnlock = () => {
 };
 
 
+/**
+ * Coin reward jingle: two classic ascending metallic pings (Mario-style
+ * B5 → E6) followed by a quick high sparkle trail. Used by the coin
+ * reward popup and the daily-login reward modal.
+ */
+export const playCoinReward = () => {
+  const ctx = getCtx();
+  const now = ctx.currentTime;
+
+  // 1. Two ascending square-wave pings (the iconic "coin" sound)
+  const coinNotes = [
+    { freq: 988, t: 0 },      // B5
+    { freq: 1319, t: 0.08 },  // E6
+  ];
+
+  coinNotes.forEach(({ freq, t }) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, now + t);
+
+    gain.gain.setValueAtTime(0, now + t);
+    gain.gain.linearRampToValueAtTime(0.12, now + t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + t + 0.18);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now + t);
+    osc.stop(now + t + 0.2);
+  });
+
+  // 2. Sparkle trail (three quick ascending sines for shine)
+  const sparkles = [1568, 1976, 2637]; // G6, B6, E7
+  sparkles.forEach((freq, i) => {
+    const t = 0.18 + i * 0.06;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, now + t);
+
+    gain.gain.setValueAtTime(0, now + t);
+    gain.gain.linearRampToValueAtTime(0.06, now + t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + t + 0.15);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now + t);
+    osc.stop(now + t + 0.16);
+  });
+};
+
+
 export const playBuzzer = () => {
   const ctx = getCtx();
   const osc = ctx.createOscillator();
