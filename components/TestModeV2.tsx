@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WordEntry, InputSession, CompletedTestSummary } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
-import { fetchDictionaryData, playWordAudio as playWordAudioService } from '../services/dictionaryService';
+import { fetchDictionaryData, playWordAudio as playWordAudioService, preloadWordAudio } from '../services/dictionaryService';
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
@@ -236,8 +236,13 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   // Loading States & Refs
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
   const [isResourcesLoaded, setIsResourcesLoaded] = useState(false);
+  const [isRetryingAudio, setIsRetryingAudio] = useState(false);
   const [missingResources, setMissingResources] = useState<{images: number, audio: number}>({ images: 0, audio: 0 });
   const resourceCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  // word.id set of words whose pronunciation failed to preload (drives strict START gate + retry)
+  const failedAudioRef = useRef<Set<string>>(new Set());
+  // Per-resource preload progress for the detailed Loading bar (audio X/Y · images X/Y)
+  const [resourceProgress, setResourceProgress] = useState({ audioReady: 0, audioTotal: 0, imagesReady: 0, imagesTotal: 0 });
   const objectUrlsRef = useRef<string[]>([]);
   const isMountedRef = useRef(true);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -354,21 +359,61 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     };
   }, []);
 
+  // Re-attempt pronunciation preload for words still in failedAudioRef.
+  // Used both for auto-retry (inside the preload effect) and the manual "retry" button.
+  const retryFailedAudio = useCallback(async (rounds: number = 1): Promise<void> => {
+    if (!isMountedRef.current) return;
+    if (failedAudioRef.current.size === 0) return;
+    setIsRetryingAudio(true);
+    try {
+      const batchSize = 4;
+      for (let round = 0; round < rounds; round++) {
+        if (!isMountedRef.current) break;
+        const failedIds = Array.from(failedAudioRef.current);
+        const failedWords = queue.filter((w) => failedIds.includes(w.id));
+        for (let i = 0; i < failedWords.length; i += batchSize) {
+          if (!isMountedRef.current) break;
+          const batch = failedWords.slice(i, i + batchSize);
+          await Promise.all(batch.map(async (word) => {
+            if (!isMountedRef.current) return;
+            const ok = await preloadWordAudio(word.text, word.language || 'en', 8000);
+            if (ok) {
+                failedAudioRef.current.delete(word.id);
+                setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
+            }
+          }));
+        }
+        if (isMountedRef.current) {
+          setMissingResources((prev) => ({ ...prev, audio: failedAudioRef.current.size }));
+        }
+        if (failedAudioRef.current.size === 0) break;
+        await new Promise((res) => setTimeout(res, 300));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsRetryingAudio(false);
+        setMissingResources((prev) => ({ ...prev, audio: failedAudioRef.current.size }));
+      }
+    }
+  }, [queue]);
+
   // Preloading Effect
   useEffect(() => {
     if (queue.length === 0) return;
 
     const loadResources = async () => {
         setIsResourcesLoaded(false);
+        setIsRetryingAudio(false);
+        failedAudioRef.current = new Set();
         setLoadingProgress({ current: 0, total: queue.length });
         setMissingResources({ images: 0, audio: 0 });
+        setResourceProgress({ audioReady: 0, audioTotal: queue.length, imagesReady: 0, imagesTotal: queue.filter(w => w.image_url).length });
         
         let completed = 0;
         let missingImg = 0;
-        let missingAud = 0;
         
         // Use a concurrency limit to avoid overwhelming the network/APIs
-        const batchSize = 2; // Reduced to 2 for even better stability on mobile/slow nets
+        const batchSize = 4; // 4 for parallel audio preload (was 2 for mobile stability)
 
         for (let i = 0; i < queue.length; i += batchSize) {
             if (!isMountedRef.current) break;
@@ -396,27 +441,33 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         console.warn("Dictionary fetch failed for", word.text);
                     }
 
-                    // 2. No audio preloading needed (using Speech Synthesis)
-                    
-                    // 3. Preload Image
-                    if (word.image_url) {
-                        await new Promise<void>((resolve) => {
-                             const img = new Image();
-                             const timeoutId = setTimeout(() => resolve(), 5000);
-                             img.onload = () => {
-                                 clearTimeout(timeoutId);
-                                 resolve();
-                             };
-                             img.onerror = () => {
-                                 clearTimeout(timeoutId);
-                                 missingImg++;
-                                 resolve();
-                             };
-                             img.src = word.image_url!;
-                        });
+                    // 2. Preload pronunciation audio (await a real media event so it
+                    //    plays with zero network during the test). Failure is tracked
+                    //    in failedAudioRef and retried after the loop; START stays
+                    //    disabled until every word is confirmed playable locally.
+                    const audioOk = await preloadWordAudio(word.text, word.language || 'en', 8000);
+                    if (audioOk) {
+                        setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
                     } else {
-                        missingImg++;
+                        failedAudioRef.current.add(word.id);
                     }
+                    
+                    // 3. Preload Image (resolve true on load, false on error/timeout)
+                    if (word.image_url) {
+                        const imgLoaded = await new Promise<boolean>((resolve) => {
+                            const img = new Image();
+                            const timeoutId = setTimeout(() => resolve(false), 5000);
+                            img.onload = () => { clearTimeout(timeoutId); resolve(true); };
+                            img.onerror = () => { clearTimeout(timeoutId); resolve(false); };
+                            img.src = word.image_url!;
+                        });
+                        if (imgLoaded) {
+                            setResourceProgress((p) => ({ ...p, imagesReady: p.imagesReady + 1 }));
+                        } else {
+                            missingImg++;
+                        }
+                    }
+                    // Words without image_url are N/A — not counted as ready or missing.
 
                 } catch (e) {
                     console.warn("Resource load failed for", word.text);
@@ -429,8 +480,13 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             }));
         }
         
+        // Auto-retry failed audio (up to 2 more rounds) before declaring ready.
+        if (isMountedRef.current && failedAudioRef.current.size > 0) {
+            await retryFailedAudio(2);
+        }
+
         if (isMountedRef.current) {
-            setMissingResources({ images: missingImg, audio: missingAud });
+            setMissingResources({ images: missingImg, audio: failedAudioRef.current.size });
             setIsResourcesLoaded(true);
         }
     };
@@ -457,7 +513,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         });
         objectUrlsRef.current = [];
     };
-  }, [queue]);
+  }, [queue, retryFailedAudio]);
 
     useEffect(() => {
         if (!isStarted || isFinished || sessionStartTime === 0) return;
@@ -687,7 +743,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         // Double check before playing
         if (activeWordIdRef.current !== word.id) return;
 
-        // 直接使用本地 Web Speech API
+        // Play via pronunciationService (remote Minimax audio primary; Web Speech is last-resort
+        // fallback only). Audio is preloaded during Loading → this is a zero-network cache hit.
         const success = await playWordAudioService(word.text, word.language || 'en');
         
         if (!success) {
@@ -819,16 +876,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           consecutiveCorrect: currentWordSnapshot?.consecutive_correct || 0  // Error decay: current consecutive correct count
       };
 
-      try {
-        await updateWordStatusV2(currentWordSnapshot.id, dbUpdates);
-        
-        // --- NEW LOGIC: Add to Mistake Bank if Score is 0 ---
-        if (!success) {
-            addMistakeTag(currentWordSnapshot.id, currentWordSnapshot.tags);
-        }
-        // ----------------------------------------------------
-      } catch (e) {
+      // Non-blocking DB sync: updateWordStatusV2 is a per-word read-modify-write (error decay,
+      // best_time, consecutive_correct). Keep per-word for correctness + crash recovery, but
+      // fire-and-forget so word advancement never waits on the network.
+      void updateWordStatusV2(currentWordSnapshot.id, dbUpdates).catch((e) => {
         console.error("Failed to sync word status to DB:", e);
+      });
+
+      // --- Add to Mistake Bank if Score is 0 ---
+      if (!success) {
+        addMistakeTag(currentWordSnapshot.id, currentWordSnapshot.tags);
       }
 
       // 2. Real-time Local Update (for Calendar/Library synchronization)
@@ -1306,13 +1363,15 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     </div>
                     <div className="flex justify-between text-xs font-mono text-gray-500">
                       <span>
-                        {!isSelectionConfirmed 
-                            ? 'IDLE' 
-                            : isOptimizing 
-                                ? 'OPTIMIZING NEURAL PATHWAYS...' 
-                                : isResourcesLoaded 
-                                    ? 'READY' 
-                                    : 'LOADING RESOURCES...'}
+                        {!isSelectionConfirmed
+                            ? 'IDLE'
+                            : isOptimizing
+                                ? 'OPTIMIZING NEURAL PATHWAYS...'
+                                : isRetryingAudio
+                                    ? 'RETRYING AUDIO...'
+                                    : isResourcesLoaded
+                                        ? (missingResources.audio > 0 ? `AUDIO FAILED (${missingResources.audio})` : 'READY')
+                                        : 'LOADING RESOURCES...'}
                       </span>
                       <span>
                         {!isSelectionConfirmed 
@@ -1323,6 +1382,32 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                       </span>
                     </div>
 
+                    {/* Real-time per-resource detail: AUDIO X/Y · IMAGES X/Y */}
+                    {isSelectionConfirmed && !isOptimizing && (!isResourcesLoaded || isRetryingAudio) && (
+                        <div className="mt-2 flex flex-col gap-1.5 text-[10px] font-mono">
+                            <div>
+                                <div className="flex justify-between text-gray-400 mb-0.5">
+                                    <span className="text-blue-400">AUDIO</span>
+                                    <span>{resourceProgress.audioReady}/{resourceProgress.audioTotal}</span>
+                                </div>
+                                <div className="h-1 w-full bg-gray-800 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${resourceProgress.audioTotal ? (resourceProgress.audioReady / resourceProgress.audioTotal) * 100 : 0}%` }} />
+                                </div>
+                            </div>
+                            {resourceProgress.imagesTotal > 0 && (
+                            <div>
+                                <div className="flex justify-between text-gray-400 mb-0.5">
+                                    <span className="text-green-400">IMAGES</span>
+                                    <span>{resourceProgress.imagesReady}/{resourceProgress.imagesTotal}</span>
+                                </div>
+                                <div className="h-1 w-full bg-gray-800 rounded-full overflow-hidden">
+                                    <div className="h-full bg-green-500 transition-all duration-300" style={{ width: `${resourceProgress.imagesTotal ? (resourceProgress.imagesReady / resourceProgress.imagesTotal) * 100 : 0}%` }} />
+                                </div>
+                            </div>
+                            )}
+                        </div>
+                    )}
+
                     {isResourcesLoaded && !isOptimizing && missingResources.images > 0 && (
                         <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-3 text-left animate-in fade-in slide-in-from-bottom-2">
                              <svg className="w-5 h-5 text-yellow-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
@@ -1332,6 +1417,26 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                      {missingResources.images} images failed to load. You can continue, but hints will be limited to Audio/Definitions.
                                  </p>
                              </div>
+                        </div>
+                    )}
+
+                    {isResourcesLoaded && !isOptimizing && !isRetryingAudio && missingResources.audio > 0 && (
+                        <div className="mt-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex flex-col gap-2 text-left animate-in fade-in slide-in-from-bottom-2">
+                             <div className="flex gap-3">
+                                 <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                 <div>
+                                     <p className="text-xs text-red-200 font-bold mb-0.5">Audio Not Ready</p>
+                                     <p className="text-[10px] text-red-400/80 leading-relaxed">
+                                         {missingResources.audio} pronunciation(s) failed to preload. START is locked to avoid silent words mid-test. Retry or check your connection.
+                                     </p>
+                                 </div>
+                             </div>
+                             <button
+                                 onClick={() => retryFailedAudio(1)}
+                                 className="self-start px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 rounded-lg text-xs font-mono transition-colors"
+                             >
+                                 ↻ RETRY AUDIO
+                             </button>
                         </div>
                     )}
                 </div>
@@ -1350,19 +1455,21 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 resetWordTimingState();
                             }
                         }}
-                        disabled={isSelectionConfirmed && (!isResourcesLoaded || isOptimizing)}
+                        disabled={isSelectionConfirmed && (!isResourcesLoaded || isOptimizing || isRetryingAudio || missingResources.audio > 0)}
                         className={`w-full px-8 py-4 text-black rounded-2xl font-headline text-xl transition-all transform duration-300
-                            ${(!isSelectionConfirmed || (isResourcesLoaded && !isOptimizing))
+                            ${(!isSelectionConfirmed || (isResourcesLoaded && !isOptimizing && !isRetryingAudio && missingResources.audio === 0))
                                 ? 'bg-blue-500 hover:bg-blue-400 hover:scale-[1.02] active:scale-95 shadow-[0_0_20px_rgba(59,130,246,0.3)] cursor-pointer' 
                                 : 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50'}`}
                     >
-                        {!isSelectionConfirmed 
-                            ? 'PREPARE NEURAL LINK' 
-                            : isOptimizing 
+                        {!isSelectionConfirmed
+                            ? 'PREPARE NEURAL LINK'
+                            : isOptimizing
                                 ? 'ANALYZING BRAINWAVES...'
-                                : isResourcesLoaded 
-                                    ? (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION') 
-                                    : 'SYNCING...'}
+                                : isRetryingAudio
+                                    ? 'RETRYING AUDIO...'
+                                    : isResourcesLoaded
+                                        ? (missingResources.audio > 0 ? 'AUDIO INCOMPLETE' : (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION'))
+                                        : 'SYNCING...'}
                     </button>
                     <button 
                         onClick={() => handleExit('CANCEL')}

@@ -34,3 +34,8 @@ supabase/.temp/
 # Archive directory - keep locally but don't commit to git
 archive/
 scene-*.png
+
+# Workspace / test screenshots at repo root — not committed (app images live in public/)
+/*.png
+/*.jpg
+/*.jpeg
