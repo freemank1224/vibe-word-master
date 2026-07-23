@@ -3436,6 +3436,15 @@ const LibraryMode: React.FC<{
     const [isMouseDown, setIsMouseDown] = useState(false);
     const [playingPreviewWordId, setPlayingPreviewWordId] = useState<string | null>(null);
 
+    // 字母点击自动滚动定位：每个字母分组节点的 ref 映射（'#' 作为 key 也合法）
+    const letterSectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    // 区分"纯点击"与"拖拽"：记录本次按下的起始字母 + 是否已发生拖拽
+    const pressStateRef = useRef<{ letter: string; moved: boolean } | null>(null);
+    const scrollToLetter = (letter: string) => {
+        const el = letterSectionRefs.current[letter];
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
     // Advanced Filter States
     // 高级过滤状态
     const [filterMistakeOnly, setFilterMistakeOnly] = useState(false);
@@ -3844,17 +3853,36 @@ const LibraryMode: React.FC<{
                                 <button
                                     key={letter}
                                     onMouseDown={() => {
+                                        if (!hasWords) return;
                                         setIsMouseDown(true);
-                                        if (hasWords) toggleLetterGroup(letter);
+                                        // 不立即选中——等待判定是点击（滚动）还是拖拽（多选）
+                                        pressStateRef.current = { letter, moved: false };
                                     }}
                                     onMouseEnter={() => {
-                                        if (isMouseDown && hasWords) {
-                                            // Determine intent based on current state of this letter: usually inverted of current?
-                                            // Simple drag logic: toggle it
+                                        if (!isMouseDown || !hasWords) return;
+                                        const st = pressStateRef.current;
+                                        if (!st) return;
+                                        if (!st.moved) {
+                                            // 首次进入"另一个字母" → 视为拖拽开始：先把起始字母纳入选中
+                                            if (letter !== st.letter) {
+                                                toggleLetterGroup(st.letter);
+                                                st.moved = true;
+                                                toggleLetterGroup(letter);
+                                            }
+                                            // 仍在起始字母上 → 可能是纯点击，暂不动
+                                        } else {
+                                            // 拖拽进行中：涂抹选中当前字母
                                             toggleLetterGroup(letter);
                                         }
                                     }}
                                     onMouseUp={() => setIsMouseDown(false)}
+                                    onClick={() => {
+                                        if (!hasWords) return;
+                                        // 仅在"纯点击（未拖拽）"时滚动；跨字母拖拽不会触发按钮 click
+                                        const st = pressStateRef.current;
+                                        if (!st || !st.moved) scrollToLetter(letter);
+                                        pressStateRef.current = null;
+                                    }}
                                     disabled={!hasWords}
                                     className={`
                                         aspect-square rounded-lg font-headline text-xl flex items-center justify-center transition-all relative overflow-hidden
@@ -3927,7 +3955,11 @@ const LibraryMode: React.FC<{
                         Object.keys(grouped).sort().map(letter => {
                             if (grouped[letter].length === 0) return null;
                             return (
-                                <div key={letter} className="mb-8">
+                                <div
+                                    key={letter}
+                                    className="mb-8"
+                                    ref={node => { letterSectionRefs.current[letter] = node; }}
+                                >
                                     <div className="flex items-center gap-4 mb-4 border-b border-mid-charcoal/50 pb-2">
                                         <h3 className="font-headline text-3xl text-electric-blue w-8">{letter}</h3>
                                         <span className="text-[10px] font-mono text-text-dark opacity-50 ml-auto">{grouped[letter].length} items</span>
