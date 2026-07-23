@@ -435,6 +435,26 @@ export const playWordAudio = async (word: string, lang: string = 'en'): Promise<
   }
 };
 
+/**
+ * Preload a word's pronunciation so it plays with zero network at test time.
+ * Thin dynamic-import wrapper around pronunciationService.preloadWordAudio,
+ * mirroring the playWordAudio pattern. Returns true only when the audio bytes
+ * are confirmed locally playable.
+ */
+export const preloadWordAudio = async (
+  word: string,
+  lang: string = 'en',
+  timeoutMs: number = 8000
+): Promise<boolean> => {
+  try {
+    const { preloadWordAudio: impl } = await import('./pronunciationService');
+    return await impl(word, lang, timeoutMs);
+  } catch (error) {
+    console.error('Preload pronunciation error:', error);
+    return false;
+  }
+};
+
 export const fetchDictionaryData = async (word: string, lang: string = 'en'): Promise<DictionaryData | null> => {
   const meaningOptions = await fetchWordMeaningOptions(word, lang);
 

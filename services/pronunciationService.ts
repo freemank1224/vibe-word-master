@@ -273,6 +273,85 @@ export const preloadAudio = async (word: string, lang: string = 'en'): Promise<b
   return true;
 };
 
+/**
+ * Robustly preload a word's pronunciation so it plays with ZERO network at test time.
+ *
+ * Unlike `preloadAudio` above (which returns immediately without confirming the bytes
+ * actually arrived), this awaits a real media event (loadeddata/canplaythrough), with a
+ * timeout. Only on confirmed success does it warm `audioElementCache` + `audioCacheManager`,
+ * so a later `playWordPronunciation` → `playAudioFromUrl` reuses the warmed <audio> element
+ * (same src) and never hits the network.
+ *
+ * Mirrors playWordPronunciation's self-heal: if a persistently-cached URL fails to load,
+ * that entry is evicted so play-time rebuilds it fresh (and play-time resilience retries).
+ */
+export const preloadWordAudio = async (
+  word: string,
+  lang: string = 'en',
+  timeoutMs: number = 8000
+): Promise<boolean> => {
+  const cacheKey = `${word}-${lang}`;
+
+  // Already warmed and ready — nothing to do.
+  const existing = audioElementCache.get(cacheKey);
+  if (existing && existing.readyState >= 2) {
+    return true;
+  }
+
+  // Resolve URL: prefer persistent URL cache, else build from source.
+  let url = audioCacheManager.get(word, lang);
+  const fromCache = !!url;
+  if (!url) {
+    url = await supabaseProxySource.getAudioUrl(word, lang);
+  }
+  if (!url) return false;
+
+  const cleanUrl = stripTransientQueryParams(url);
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const audio = new Audio();
+    audio.crossOrigin = 'anonymous';
+    audio.preload = 'auto';
+
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      audio.removeEventListener('loadeddata', onReady);
+      audio.removeEventListener('canplaythrough', onReady);
+      audio.removeEventListener('error', onFail);
+      audio.removeEventListener('abort', onFail);
+      if (ok) {
+        audioElementCache.set(cacheKey, audio);
+        audioCacheManager.set(word, lang, cleanUrl, 'Supabase Minimax Proxy');
+      } else {
+        // Drop a possibly-stale persistent URL so play-time rebuilds fresh.
+        if (fromCache) audioCacheManager.delete(word, lang);
+        try { audio.removeAttribute('src'); audio.load(); } catch { /* ignore */ }
+      }
+      resolve(ok);
+    };
+
+    const onReady = () => finish(true);
+    const onFail = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+
+    audio.addEventListener('loadeddata', onReady);
+    audio.addEventListener('canplaythrough', onReady);
+    audio.addEventListener('error', onFail);
+    audio.addEventListener('abort', onFail);
+
+    // Assign src AFTER listeners so we never miss the event.
+    audio.src = cleanUrl;
+
+    // Some browsers sync-ready already-cached resources without firing an event.
+    if (audio.readyState >= 2) {
+      finish(true);
+    }
+  });
+};
+
 export const clearAudioCache = (): void => {
   audioElementCache.forEach((audio) => {
     try {
