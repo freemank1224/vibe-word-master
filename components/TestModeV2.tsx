@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WordEntry, InputSession, CompletedTestSummary } from '../types';
 import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
@@ -247,6 +247,23 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const isMountedRef = useRef(true);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Mirror the queue into a ref so async loops (preload, retry) can read the
+  // latest words WITHOUT depending on the `queue` array reference. The parent
+  // hands us a brand-new `allWords` array (and thus a new `queue`) whenever it
+  // re-renders words — e.g. every time background image generation completes for
+  // a newly-added word. Depending on that reference restarted the preload loop
+  // and reset progress to 0, causing the loading bar to flicker.
+  const queueRef = useRef<WordEntry[]>(queue);
+  queueRef.current = queue;
+
+  // Content signature of the selected word set. This is what the preload effect
+  // depends on instead of `queue`: it only changes when the actual selection
+  // changes, never when the array merely gets a new reference with the same ids.
+  const queueSignature = useMemo(
+    () => queue.map((w) => w.id).slice().sort().join('|'),
+    [queue]
+  );
+
   // Lifecycle
   useEffect(() => {
     isMountedRef.current = true;
@@ -311,30 +328,41 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         // Check for Smart Selection (formerly AI Selection)
         const smartSelectionEnabled = localStorage.getItem('vibe_ai_selection') === 'true';
 
+        let newQueue: WordEntry[];
         if (smartSelectionEnabled) {
             // Smart Selection: Use Adaptive Algorithm
             // ONLY selects from user's checked words (availablePool)
             console.log('🧠 [TestMode] Using Smart Selection (adaptive algorithm)...');
-            const smartQueue = adaptiveWordSelector.calculateQueue(
+            newQueue = adaptiveWordSelector.calculateQueue(
                 allWords,
                 availablePool,  // 用户勾选的单词范围
                 targetCount,     // = availablePool.length × coverage
                 sessions
             );
-
-            console.log(`✓ Selected ${smartQueue.length} words from ${availablePool.length} checked words (${coverage}% coverage)`);
-            setQueue(smartQueue);
-            setIsOptimizing(false);
         } else {
             // Random Selection: Shuffle and pick from available pool
             console.log('🎲 [TestMode] Using Random Selection...');
             const shuffled = [...availablePool].sort(() => Math.random() - 0.5);
-            const randomQueue = shuffled.slice(0, Math.min(targetCount, shuffled.length));
-
-            console.log(`✓ Selected ${randomQueue.length} words from ${availablePool.length} checked words (${coverage}% coverage)`);
-            setQueue(randomQueue);
-            setIsOptimizing(false);
+            newQueue = shuffled.slice(0, Math.min(targetCount, shuffled.length));
         }
+
+        console.log(`✓ Selected ${newQueue.length} words from ${availablePool.length} checked words (${coverage}% coverage)`);
+
+        // Content-signature guard: skip setQueue when the selected word set is
+        // unchanged. allWords (hence the inputs above) gets a new reference
+        // whenever the parent re-renders words — e.g. each time background image
+        // generation completes for a newly-added word. Without this guard that
+        // churn replaces `queue` with a fresh array of the same words, which used
+        // to cascade into the preload effect and reset progress to 0.
+        const currentSig = queueRef.current.map((w) => w.id).slice().sort().join('|');
+        const newSig = newQueue.map((w) => w.id).slice().sort().join('|');
+        if (newSig && newSig === currentSig) {
+            setIsOptimizing(false);
+            return;
+        }
+
+        setQueue(newQueue);
+        setIsOptimizing(false);
     };
 
     generateQueue();
@@ -361,6 +389,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   // Re-attempt pronunciation preload for words still in failedAudioRef.
   // Used both for auto-retry (inside the preload effect) and the manual "retry" button.
+  // Reads from queueRef (always fresh) and has no reactive deps, so this callback
+  // keeps a stable identity forever — which lets the preload effect depend on it
+  // without re-firing on queue reference churn.
   const retryFailedAudio = useCallback(async (rounds: number = 1): Promise<void> => {
     if (!isMountedRef.current) return;
     if (failedAudioRef.current.size === 0) return;
@@ -370,7 +401,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       for (let round = 0; round < rounds; round++) {
         if (!isMountedRef.current) break;
         const failedIds = Array.from(failedAudioRef.current);
-        const failedWords = queue.filter((w) => failedIds.includes(w.id));
+        const failedWords = queueRef.current.filter((w) => failedIds.includes(w.id));
         for (let i = 0; i < failedWords.length; i += batchSize) {
           if (!isMountedRef.current) break;
           const batch = failedWords.slice(i, i + batchSize);
@@ -395,19 +426,26 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         setMissingResources((prev) => ({ ...prev, audio: failedAudioRef.current.size }));
       }
     }
-  }, [queue]);
+  }, []);
 
   // Preloading Effect
   useEffect(() => {
-    if (queue.length === 0) return;
+    // Snapshot the queue by CONTENT, not by reference. This effect depends on
+    // queueSignature (see deps) so it only re-runs when the selected word set
+    // actually changes — never when allWords/queue merely get a new reference
+    // (e.g. background image-gen completing for a newly-added word). Reading
+    // queueRef.current here grabs the words at the moment content changed, and
+    // the loop then runs to completion without ever resetting progress to 0.
+    const snapshot = queueRef.current;
+    if (snapshot.length === 0) return;
 
     const loadResources = async () => {
         setIsResourcesLoaded(false);
         setIsRetryingAudio(false);
         failedAudioRef.current = new Set();
-        setLoadingProgress({ current: 0, total: queue.length });
+        setLoadingProgress({ current: 0, total: snapshot.length });
         setMissingResources({ images: 0, audio: 0 });
-        setResourceProgress({ audioReady: 0, audioTotal: queue.length, imagesReady: 0, imagesTotal: queue.filter(w => w.image_url).length });
+        setResourceProgress({ audioReady: 0, audioTotal: snapshot.length, imagesReady: 0, imagesTotal: snapshot.filter(w => w.image_url).length });
         
         let completed = 0;
         let missingImg = 0;
@@ -415,9 +453,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         // Use a concurrency limit to avoid overwhelming the network/APIs
         const batchSize = 4; // 4 for parallel audio preload (was 2 for mobile stability)
 
-        for (let i = 0; i < queue.length; i += batchSize) {
+        for (let i = 0; i < snapshot.length; i += batchSize) {
             if (!isMountedRef.current) break;
-            const batch = queue.slice(i, i + batchSize);
+            const batch = snapshot.slice(i, i + batchSize);
             
             await Promise.all(batch.map(async (word) => {
                 if (!isMountedRef.current) return;
@@ -474,7 +512,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 } finally {
                     if (isMountedRef.current) {
                         completed++;
-                        setLoadingProgress({ current: completed, total: queue.length });
+                        setLoadingProgress({ current: completed, total: snapshot.length });
                     }
                 }
             }));
@@ -513,7 +551,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         });
         objectUrlsRef.current = [];
     };
-  }, [queue, retryFailedAudio]);
+  }, [queueSignature, retryFailedAudio]);
 
     useEffect(() => {
         if (!isStarted || isFinished || sessionStartTime === 0) return;
