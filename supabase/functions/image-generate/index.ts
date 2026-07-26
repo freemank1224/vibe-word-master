@@ -518,6 +518,26 @@ serve(async (req) => {
 
       if (cached && cached.public_url) {
         console.log(`[image-generate] Cache hit for "${normalizedWord}" (${language})`);
+
+        // 与 cache-miss 的 persistAndLink 保持一致：把所有同名（跨用户）未关联的 words 行
+        // 指向这张共享 asset。service-role 可绕过 RLS 跨用户写，保证本次调用者也能拿到关联。
+        try {
+          const { data: matchingWords } = await sb
+            .from('words')
+            .select('id')
+            .or('deleted.is.false,deleted.is.null')
+            .ilike('text', word)
+            .eq('language', language);
+          if (matchingWords && matchingWords.length > 0) {
+            await sb
+              .from('words')
+              .update({ image_asset_id: cached.id })
+              .in('id', matchingWords.map((w: any) => w.id));
+          }
+        } catch (linkErr) {
+          console.warn(`[image-generate] cache-hit link failed: ${linkErr}`);
+        }
+
         return new Response(JSON.stringify({
           ok: true,
           word,

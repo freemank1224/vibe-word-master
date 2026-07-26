@@ -156,6 +156,154 @@ const triggerImageGenerationBatch = (items: { text: string; language?: string | 
   }
 };
 
+// 与 image_assets 服务端一致的归一化（toLowerCase + 折叠空白）。
+// image_assets 的唯一键是 (normalized_word, language)，所以客户端必须用同一算法构造查询键。
+const normalizeWord = (text: string): string =>
+  text.toLowerCase().trim().replace(/\s+/g, ' ');
+
+/**
+ * 按 (normalized_word, language) 批量查询全局已就绪的 image_assets。
+ * 图片在 image_assets 是跨用户共享的（无 user_id，唯一键 normalized_word+language），
+ * 因此任一用户的词只要 asset 存在且 status='ready' 即可命中。
+ *
+ * 返回 Map: `${normalized}::${language}` -> { id, public_url }
+ *
+ * 分块查询：大词库（如 CET-4 ~2500 词首次全 null）时，单次 .in() 的 URL 会过长而失败，
+ * 因此按 ASSET_QUERY_CHUNK 分批拉取再合并。
+ */
+const ASSET_QUERY_CHUNK = 200;
+
+const fetchReadyAssetMap = async (
+  entries: { text: string; language?: string | null }[]
+): Promise<Map<string, { id: string; public_url: string }>> => {
+  const result = new Map<string, { id: string; public_url: string }>();
+  if (!entries || entries.length === 0) return result;
+
+  const normalizeds: string[] = [];
+  const languages = new Set<string>();
+  const seen = new Set<string>();
+  for (const e of entries) {
+    const nw = normalizeWord(e.text);
+    const lang = (e.language || 'en').trim();
+    const k = `${nw}::${lang}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      normalizeds.push(nw);
+      languages.add(lang);
+    }
+  }
+  if (normalizeds.length === 0) return result;
+
+  const langList = Array.from(languages);
+  for (let i = 0; i < normalizeds.length; i += ASSET_QUERY_CHUNK) {
+    const chunk = normalizeds.slice(i, i + ASSET_QUERY_CHUNK);
+    // PostgREST 的 .in() 是按列的 OR；跨列组合在客户端按完整 key 精确匹配，结果正确。
+    const { data: assets } = await supabase
+      .from('image_assets')
+      .select('id, normalized_word, language, public_url')
+      .eq('status', 'ready')
+      .in('normalized_word', chunk)
+      .in('language', langList);
+    for (const a of assets || []) {
+      result.set(`${a.normalized_word}::${a.language}`, { id: a.id, public_url: a.public_url });
+    }
+  }
+  return result;
+};
+
+/**
+ * 把刚插入的 words 与全局共享的 ready image_assets 关联（按 normalized_word+language 命中）。
+ * 仅返回「未命中共享图」的词，供调用方触发真正需要的生成——
+ * 避免对已有共享图的词重复发起生成请求（这正是历史 bug 的浪费点）。
+ */
+const linkExistingImageAssets = async (
+  inserted: { id: string; text: string; language?: string | null }[]
+): Promise<{ text: string; language?: string | null }[]> => {
+  if (!inserted || inserted.length === 0) return [];
+
+  const assetMap = await fetchReadyAssetMap(inserted);
+  if (assetMap.size === 0) return inserted.map(w => ({ text: w.text, language: w.language }));
+
+  // 按 assetId 聚合待回写的 wordId，减少 UPDATE 次数
+  const assetToWordIds = new Map<string, string[]>();
+  const missing: { text: string; language?: string | null }[] = [];
+
+  for (const w of inserted) {
+    const nw = normalizeWord(w.text);
+    const lang = (w.language || 'en').trim();
+    const asset = assetMap.get(`${nw}::${lang}`);
+    if (asset) {
+      const arr = assetToWordIds.get(asset.id) || [];
+      arr.push(w.id);
+      assetToWordIds.set(asset.id, arr);
+    } else {
+      missing.push({ text: w.text, language: w.language });
+    }
+  }
+
+  for (const [assetId, wordIds] of assetToWordIds) {
+    const { error } = await supabase
+      .from('words')
+      .update({ image_asset_id: assetId })
+      .in('id', wordIds);
+    if (error) {
+      console.warn(`[linkExistingImageAssets] update failed for asset ${assetId}: ${error.message}`);
+    }
+  }
+
+  return missing;
+};
+
+/**
+ * 加词后的统一入口：先回链已存在的跨用户共享图，再对真正缺失的词触发生成。
+ * 替代原先「无脑全部触发」的写法。
+ */
+const linkAndGenerateImages = (inserted: { id: string; text: string; language?: string | null }[]) => {
+  if (!inserted || inserted.length === 0) return;
+  linkExistingImageAssets(inserted)
+    .then(missing => {
+      if (missing.length > 0) triggerImageGenerationBatch(missing);
+    })
+    .catch(err => console.warn('[linkAndGenerateImages] warning:', err?.message || err));
+};
+
+/**
+ * 读时兜底（安全网）：对 image_asset_id 仍为 null 的词，按 (normalized_word, language)
+ * 查全局共享图，命中则回写 image_asset_id（持久化 + 内存同步）。
+ *
+ * 无论词从哪个入口进入（save / modify / 字典批量导入 / 历史数据），开卡即可被捞回。
+ * 这是唯一能兜住所有入口的环节，因此优先级最高。
+ */
+const backfillMissingImageAssets = async (rows: any[]): Promise<void> => {
+  const missing = (rows || []).filter(r => r && !r.image_asset_id && !r.deleted);
+  if (missing.length === 0) return;
+
+  const assetMap = await fetchReadyAssetMap(missing.map(r => ({ text: r.text, language: r.language })));
+  if (assetMap.size === 0) return;
+
+  const assetToWordIds = new Map<string, string[]>();
+  for (const r of missing) {
+    const nw = normalizeWord(r.text);
+    const lang = (r.language || 'en').trim();
+    const asset = assetMap.get(`${nw}::${lang}`);
+    if (!asset) continue;
+    r.image_asset_id = asset.id; // 内存同步，供本次 mapping 直接拿到 image_asset_id
+    const arr = assetToWordIds.get(asset.id) || [];
+    arr.push(r.id);
+    assetToWordIds.set(asset.id, arr);
+  }
+
+  for (const [assetId, wordIds] of assetToWordIds) {
+    const { error } = await supabase
+      .from('words')
+      .update({ image_asset_id: assetId })
+      .in('id', wordIds);
+    if (error) {
+      console.warn(`[backfillMissingImageAssets] update failed for asset ${assetId}: ${error.message}`);
+    }
+  }
+};
+
 // Helper to get current user ID
 export const getCurrentUserId = async (): Promise<string | null> => {
   const { data: { user } } = await supabase.auth.getUser();
@@ -245,6 +393,9 @@ export const fetchUserData = async (userId: string) => {
   }
   
   console.log(`[fetchUserData] Loaded ${wordsData.length} words for user`);
+
+  // 读时兜底：把已有共享图但 image_asset_id 仍为 null 的词懒回链（覆盖所有加词入口与历史数据）
+  await backfillMissingImageAssets(wordsData);
 
   // Map DB structure to App Interface
   // Note: We calculate wordCount and timestamp dynamically based on the actual words fetched
@@ -413,7 +564,8 @@ export const saveSessionData = async (
 
     if (wordsData?.length) {
       triggerPronunciationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
-      triggerImageGenerationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
+      // 先回链已存在的跨用户共享图；只对真正缺失的词触发生成（避免对已有共享图重复请求）
+      linkAndGenerateImages(wordsData.map((w: any) => ({ id: w.id, text: w.text, language: w.language })));
     }
   }
 
@@ -524,7 +676,7 @@ export const modifySession = async (
             if (data) newWordsData.push(...data);
             if (data?.length) {
               triggerPronunciationBatch(data.map((w: any) => ({ text: w.text, language: w.language })));
-              triggerImageGenerationBatch(data.map((w: any) => ({ text: w.text, language: w.language })));
+              linkAndGenerateImages(data.map((w: any) => ({ id: w.id, text: w.text, language: w.language })));
             }
         }
     }
@@ -1357,7 +1509,8 @@ export const getWordsMissingImage = async (userId: string) => {
       .select('*')
       .eq('user_id', userId)
       .or('deleted.eq.false,deleted.is.null')
-      .is('image_path', null);
+      .is('image_path', null)
+      .is('image_asset_id', null);
 
   if (error) {
       console.error("Error fetching words missing images:", error.message);
