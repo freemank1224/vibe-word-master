@@ -5,6 +5,7 @@ type QueueTask = {
   word: string;
   language: string;
   promptOverride?: string;
+  partOfSpeech?: string;
   force?: boolean;
   resolve: (value: ImageGenerationEdgeResult) => void;
   reject: (reason?: any) => void;
@@ -26,6 +27,7 @@ class ImageGenerationQueue {
       word: task.word,
       language: task.language,
       promptOverride: task.promptOverride,
+      partOfSpeech: task.partOfSpeech,
       force: task.force,
     })
       .then((result) => {
@@ -40,7 +42,7 @@ class ImageGenerationQueue {
       });
   }
 
-  enqueue(word: string, options?: { language?: string; promptOverride?: string; force?: boolean }): Promise<ImageGenerationEdgeResult> {
+  enqueue(word: string, options?: { language?: string; promptOverride?: string; partOfSpeech?: string; force?: boolean }): Promise<ImageGenerationEdgeResult> {
     const text = (word || '').trim();
     if (!text) {
       return Promise.reject(new Error('Word is empty'));
@@ -52,6 +54,7 @@ class ImageGenerationQueue {
         word: text,
         language: options?.language || 'en',
         promptOverride: options?.promptOverride,
+        partOfSpeech: options?.partOfSpeech,
         force: options?.force,
         resolve,
         reject,
@@ -74,7 +77,7 @@ class ImageGenerationQueue {
 
 const imageGenerationQueue = new ImageGenerationQueue();
 
-export const requestQueuedWordImage = (word: string, options?: { language?: string; promptOverride?: string; force?: boolean }) => {
+export const requestQueuedWordImage = (word: string, options?: { language?: string; promptOverride?: string; partOfSpeech?: string; force?: boolean }) => {
   return imageGenerationQueue.enqueue(word, options);
 };
 

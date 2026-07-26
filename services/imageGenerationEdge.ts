@@ -7,6 +7,7 @@ export type ImageGenerationEdgeRequest = {
   word: string;
   language?: string;
   promptOverride?: string;
+  partOfSpeech?: string; // 'noun' | 'verb' | 'adjective' | 'adverb' | 'other' — steers depiction strategy
   force?: boolean; // Force regeneration, skip cache
 };
 
@@ -47,6 +48,7 @@ export const requestImageGenerationViaEdge = async (
       word,
       language: request.language || 'en',
       prompt: request.promptOverride,
+      partOfSpeech: request.partOfSpeech,
       force: request.force || false,
       clientPersist: true,
     },

@@ -26,7 +26,7 @@ import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
 import PuzzleGameMode from './components/PuzzleGameMode';
 import SceneGameMode from './components/SceneGameMode';
-import { recordSceneGameRound } from './services/sceneGame';
+import { posOf, recordSceneGameRound } from './services/sceneGame';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { compressToWebP } from './utils/imageUtils';
@@ -1074,7 +1074,7 @@ const App: React.FC = () => {
       if (!w.image_path && !w.image_asset_id) {
         try {
                 appendImageGenDebug('image_gen_request_start', { id: w.id, text: w.text });
-          const generated = await requestQueuedWordImage(w.text, { language: w.language || 'en' });
+          const generated = await requestQueuedWordImage(w.text, { language: w.language || 'en', partOfSpeech: posOf(w) });
 
           // Edge function now handles upload and word linking
           const publicUrl = generated.publicUrl;

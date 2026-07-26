@@ -54,18 +54,78 @@ const getImageGenerationUrls = (baseUrl: string): string[] => {
   return [`${sanitized}/v1/images/generations`, `${sanitized}/images/generations`];
 };
 
-const buildPrompt = (word: string): string => {
+type PosCategory = 'noun' | 'verb' | 'adjective' | 'adverb' | 'function' | 'phrase';
+
+// Per-POS depiction strategies. The model must DRAW meaning instead of writing
+// the target word — these give it a concrete visual job for every word class,
+// which is what stops it from cheating by labelling the image with text
+// (the failure mode that's most severe for non-noun words).
+const POS_STRATEGIES: Record<PosCategory, string> = {
+  noun: 'NOUN — depict one vivid, recognizable instance of the thing itself as the dominant central subject. Pick the most visually iconic, concrete referent (e.g. for "bridge" draw a physical bridge, not an abstract concept). Add distinguishing structural detail so the type is unambiguous. Do NOT surround it with signs, labels, or captions.',
+  verb: 'VERB — draw a single frozen moment of the action mid-act, with motion lines, posture, facial strain, and a clear agent and object when transitive. Convey the result-state when possible (e.g. "broken" → already-shattered glass; "running" → mid-stride with kicked-up dust). Show the doer and the done-to in the same frame.',
+  adjective: 'ADJECTIVE — render the quality as a visible property via comparison: two similar objects side by side where one clearly has the property and one clearly lacks it (e.g. "heavy" → a small figure struggling to lift a dense object next to an identical-looking light one lifted easily; "red" → a row of neutral objects with exactly one red). Contrast makes the quality legible without writing the word.',
+  adverb: 'ADVERB — depict the manner or degree of an action, exaggerated for legibility (e.g. "quickly" → streaking motion blur and a leaning figure; "softly" → tiptoeing with a hushed expression and a finger to the lips as a GESTURE, never as written text). Show the manner as visible kinetic cues, never as written descriptors.',
+  function: 'FUNCTION WORD (preposition / conjunction / pronoun / determiner / article / particle) — do NOT depict the word in isolation. Draw a concrete scene that spatially or logically enacts the relation (e.g. "on" → a cat sitting ON a roof, roof clearly below, cat clearly above; "and" → two distinct objects joined by a plus-shaped connector; "she" → one prominent female figure pointed at while others look on). The spatial relation between objects IS the meaning.',
+  phrase: 'PHRASE / IDIOM — depict the meaning of the WHOLE phrase as one fused scene (e.g. "give up" → hands raised in surrender; "break a leg" as good-luck → a stage curtain and a thumbs-up, NOT a snapped bone). Fuse the meanings into one composition; do not illustrate each word separately and never write any constituent word.',
+};
+
+// Resolve the POS category for a target. Returns null when the input is
+// unknown / 'other' / empty — in that case we let the model infer rather than
+// pin a (possibly wrong) strategy. Multi-word targets with no explicit POS are
+// almost always phrases/idioms.
+const resolvePosCategory = (word: string, partOfSpeech?: string): PosCategory | null => {
+  const rawPos = (partOfSpeech || '').trim().toLowerCase().replace(/\./g, '');
+  if (rawPos === 'noun' || rawPos === 'n') return 'noun';
+  if (rawPos === 'verb' || rawPos === 'v') return 'verb';
+  if (rawPos === 'adjective' || rawPos === 'adj') return 'adjective';
+  if (rawPos === 'adverb' || rawPos === 'adv') return 'adverb';
+  if (rawPos === 'phrase' || rawPos === 'phr') return 'phrase';
+  if (
+    rawPos === 'prep' || rawPos === 'preposition' ||
+    rawPos === 'conj' || rawPos === 'conjunction' ||
+    rawPos === 'pron' || rawPos === 'pronoun' ||
+    rawPos === 'det' || rawPos === 'determiner' ||
+    rawPos === 'article' || rawPos === 'art' ||
+    rawPos === 'particle' || rawPos === 'aux' || rawPos === 'auxiliary' ||
+    rawPos === 'int' || rawPos === 'interjection'
+  ) return 'function';
+  if (word.trim().includes(' ')) return 'phrase';
+  return null;
+};
+
+const buildPrompt = (word: string, partOfSpeech?: string): string => {
   const normalized = word.trim();
+  const posCategory = resolvePosCategory(normalized, partOfSpeech);
+
+  const posSection = posCategory
+    ? `Use the ${posCategory.toUpperCase()} strategy below for this target.`
+    : `Infer the target's part of speech yourself, then apply the matching strategy below. If ambiguous, prefer the most visually concrete reading.`;
+
   return [
-    `Target word or phrase: "${normalized}".`,
-    'Create a cartoon-style illustration that is highly intuitive and semantically accurate for this exact target.',
-    'Critical requirement: key semantic details must be realistic enough to clearly express the meaning.',
-    'If the target is a noun, make that noun the central subject.',
-    'If the target is a verb or phrase, design a clear action scene that conveys the meaning.',
-    'Do not add artificial overlay subtitles, UI labels, watermark-like text, or unrelated floating captions.',
-    'Natural text that belongs to objects in the scene is allowed and should be preserved when semantically necessary, such as blackboard writing, book covers/pages, street signs, or packaging text.',
-    'Single scene, clean composition, vivid colors, high clarity, educational illustration quality.',
-  ].join(' ');
+    `ANTI-CHEAT CONSTRAINT (HIGHEST PRIORITY — overrides every other instruction):`,
+    `This image is for a dictation test where the student must SPELL the target word by looking at the picture alone.`,
+    `THERE MUST BE NO READABLE TEXT ANYWHERE IN THE IMAGE.`,
+    `Forbidden as visible, legible writing:`,
+    `(a) the target word itself; (b) any inflection / plural / tense / derivative of it (so for "run" you may not render "runs", "running", "ran", "runner"); (c) its translation in Chinese or any other language or script; (d) ANY other readable roman-script letters or words, including on signs, book covers, packaging, T-shirts, labels, blackboards, screens, posters, or documents.`,
+    `If a text-bearing object (book, sign, poster, screen, label, blackboard, packaging, T-shirt, document) must appear, render its surface text as NON-READABLE decorative pseudo-text ONLY: abstract scribble strokes, blurred illegible squiggles, fake scribal lines, or solid color blocks — never actual letters, never actual words, in any script.`,
+    `If you are tempted to write the target word to "make the meaning clear", STOP — draw the meaning using the depiction strategy below instead. Drawing the meaning is the entire point of this task.`,
+    ``,
+    `TARGET (for your semantic understanding only — NEVER render it as text in any form): ${normalized}.`,
+    ``,
+    `DEPICTION TASK: Create a single cartoon-style educational illustration that conveys the meaning of the target as intuitively as possible, WITHOUT any text.`,
+    `${posSection}`,
+    ``,
+    `STRATEGY TABLE:`,
+    `- ${POS_STRATEGIES.noun}`,
+    `- ${POS_STRATEGIES.verb}`,
+    `- ${POS_STRATEGIES.adjective}`,
+    `- ${POS_STRATEGIES.adverb}`,
+    `- ${POS_STRATEGIES.function}`,
+    `- ${POS_STRATEGIES.phrase}`,
+    ``,
+    `STYLE: clean cartoon illustration, single self-contained scene, vivid saturated colors, bold legible shapes, soft outlines, plain uncluttered background, educational flashcard quality. Center the subject(s); avoid clutter that could be mistaken for text.`,
+    `FINAL REMINDER: zero readable text. The student will spell the word from what is DRAWN, never from what is WRITTEN.`,
+  ].join('\n');
 };
 
 const getProviderConfigs = (): ProviderConfig[] => {
@@ -494,6 +554,7 @@ serve(async (req) => {
     const word = typeof body?.word === 'string' ? body.word.trim() : '';
     const promptOverride = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
     const language = typeof body?.language === 'string' ? body.language.trim() : 'en';
+    const partOfSpeech = typeof body?.partOfSpeech === 'string' ? body.partOfSpeech.trim() : '';
     const force = body?.force === true || body?.force === '1';
 
     if (!word) {
@@ -564,7 +625,7 @@ serve(async (req) => {
       });
     }
 
-    const prompt = promptOverride || buildPrompt(word);
+    const prompt = promptOverride || buildPrompt(word, partOfSpeech);
     const failures: ProviderAttemptFailure[] = [];
 
     // clientPersist=true (default): edge only returns the raw PNG dataUrl and the

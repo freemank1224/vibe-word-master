@@ -1,4 +1,5 @@
 import { getWordsMissingImage } from './dataService';
+import { posOf } from './sceneGame';
 import { supabase } from '../lib/supabaseClient';
 
 let shouldStop = false;
@@ -40,7 +41,7 @@ export const generateImagesForMissingWords = async (
 
                     // Edge function handles cache check, generation, upload, and word linking
                     const { data, error } = await supabase.functions.invoke('image-generate', {
-                        body: { word: word.text, language: word.language || 'en' },
+                        body: { word: word.text, language: word.language || 'en', partOfSpeech: posOf(word) },
                     });
 
                     if (error) {
