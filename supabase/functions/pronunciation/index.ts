@@ -342,9 +342,14 @@ serve(async (req) => {
       await markJobDone(existingAsset.id);
 
       const cachedResponse = await fetch(existingAsset.public_url);
-      if (cachedResponse.ok) {
-        const audioData = await cachedResponse.arrayBuffer();
-        return new Response(audioData, {
+      if (cachedResponse.ok && cachedResponse.body) {
+        // Stream bytes straight through instead of buffering the entire file
+        // (arrayBuffer) first. The client starts receiving bytes the moment
+        // Storage begins sending, which keeps slow/large loads from blowing
+        // the client preload timeout. (The hot path no longer hits the edge
+        // function at all — clients fetch the Storage CDN URL directly — but
+        // this remains the fallback when a word has no known direct URL.)
+        return new Response(cachedResponse.body, {
           status: 200,
           headers: {
             ...corsHeaders,

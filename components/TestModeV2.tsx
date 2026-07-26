@@ -407,7 +407,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           const batch = failedWords.slice(i, i + batchSize);
           await Promise.all(batch.map(async (word) => {
             if (!isMountedRef.current) return;
-            const ok = await preloadWordAudio(word.text, word.language || 'en', 8000);
+            const ok = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url);
             if (ok) {
                 failedAudioRef.current.delete(word.id);
                 setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
@@ -483,7 +483,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     //    plays with zero network during the test). Failure is tracked
                     //    in failedAudioRef and retried after the loop; START stays
                     //    disabled until every word is confirmed playable locally.
-                    const audioOk = await preloadWordAudio(word.text, word.language || 'en', 8000);
+                    const audioOk = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url);
                     if (audioOk) {
                         setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
                     } else {
@@ -783,7 +783,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
         // Play via pronunciationService (remote Minimax audio primary; Web Speech is last-resort
         // fallback only). Audio is preloaded during Loading → this is a zero-network cache hit.
-        const success = await playWordAudioService(word.text, word.language || 'en');
+        const success = await playWordAudioService(word.text, word.language || 'en', word.audio_url);
         
         if (!success) {
             console.warn("Pronunciation playback failed for:", word.text);

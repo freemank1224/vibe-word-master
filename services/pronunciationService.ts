@@ -90,7 +90,9 @@ const playAudioFromUrl = async (url: string, cacheKey: string, word: string): Pr
         audio = cachedAudio;
       } else {
         audio = new Audio(url);
-        audio.crossOrigin = 'anonymous';
+        // No crossOrigin: word audio is plain playback (no Web Audio analysis),
+        // and Storage CDN URLs are served without CORS headers. Setting
+        // crossOrigin='anonymous' here would make direct-Storage loads fail.
         audioElementCache.set(cacheKey, audio);
       }
 
@@ -185,7 +187,8 @@ export const stopCurrentAudio = async (): Promise<void> => {
 export const playWordPronunciation = async (
   word: string,
   lang: string = 'en',
-  preferredSource?: string
+  preferredSource?: string,
+  directUrl?: string | null
 ): Promise<{ success: boolean; sourceUsed: string }> => {
   const cacheKey = `${word}-${lang}`;
   await stopCurrentAudio();
@@ -195,6 +198,18 @@ export const playWordPronunciation = async (
     const success = await playAudioFromUrl(cachedUrl, cacheKey, word);
     if (success) return { success: true, sourceUsed: 'Persistent Cache' };
     audioCacheManager.delete(word, lang);
+  }
+
+  // Prefer a known direct Storage CDN URL (already-generated asset) — this
+  // bypasses the edge function entirely for a true, cacheable download. Only
+  // fall through to the edge-function source loop (which generates server-side)
+  // if no direct URL is available or it fails to play.
+  if (directUrl) {
+    const result = await playAudioWithResilience(directUrl, cacheKey, word);
+    if (result.success) {
+      audioCacheManager.set(word, lang, stripTransientQueryParams(result.playedUrl), 'Storage CDN (direct)');
+      return { success: true, sourceUsed: 'Storage CDN (direct)' };
+    }
   }
 
   let sortedSources = [...sources].sort((a, b) => a.priority - b.priority);
@@ -255,7 +270,6 @@ export const preloadAudio = async (word: string, lang: string = 'en'): Promise<b
   const cachedUrl = audioCacheManager.get(word, lang);
   if (cachedUrl) {
     const audio = new Audio(cachedUrl);
-    audio.crossOrigin = 'anonymous';
     audio.preload = 'auto';
     audioElementCache.set(cacheKey, audio);
     return true;
@@ -266,7 +280,6 @@ export const preloadAudio = async (word: string, lang: string = 'en'): Promise<b
   if (!url) return false;
 
   const audio = new Audio(url);
-  audio.crossOrigin = 'anonymous';
   audio.preload = 'auto';
   audioElementCache.set(cacheKey, audio);
   audioCacheManager.set(word, lang, url, source.name);
@@ -285,33 +298,14 @@ export const preloadAudio = async (word: string, lang: string = 'en'): Promise<b
  * Mirrors playWordPronunciation's self-heal: if a persistently-cached URL fails to load,
  * that entry is evicted so play-time rebuilds it fresh (and play-time resilience retries).
  */
-export const preloadWordAudio = async (
-  word: string,
-  lang: string = 'en',
-  timeoutMs: number = 8000
-): Promise<boolean> => {
-  const cacheKey = `${word}-${lang}`;
-
-  // Already warmed and ready — nothing to do.
-  const existing = audioElementCache.get(cacheKey);
-  if (existing && existing.readyState >= 2) {
-    return true;
-  }
-
-  // Resolve URL: prefer persistent URL cache, else build from source.
-  let url = audioCacheManager.get(word, lang);
-  const fromCache = !!url;
-  if (!url) {
-    url = await supabaseProxySource.getAudioUrl(word, lang);
-  }
-  if (!url) return false;
-
-  const cleanUrl = stripTransientQueryParams(url);
-
-  return new Promise<boolean>((resolve) => {
+// Load a single URL into an HTMLAudioElement and resolve only once a real media
+// event fires (loadeddata/canplaythrough) or the timeout elapses. Resolves with
+// the warmed element on success, null on failure/timeout. No crossOrigin — word
+// audio is plain playback and Storage CDN URLs are served without CORS headers.
+const loadAudioElement = (url: string, timeoutMs: number): Promise<HTMLAudioElement | null> => {
+  return new Promise((resolve) => {
     let settled = false;
     const audio = new Audio();
-    audio.crossOrigin = 'anonymous';
     audio.preload = 'auto';
 
     const finish = (ok: boolean) => {
@@ -322,34 +316,82 @@ export const preloadWordAudio = async (
       audio.removeEventListener('canplaythrough', onReady);
       audio.removeEventListener('error', onFail);
       audio.removeEventListener('abort', onFail);
-      if (ok) {
-        audioElementCache.set(cacheKey, audio);
-        audioCacheManager.set(word, lang, cleanUrl, 'Supabase Minimax Proxy');
-      } else {
-        // Drop a possibly-stale persistent URL so play-time rebuilds fresh.
-        if (fromCache) audioCacheManager.delete(word, lang);
+      if (!ok) {
         try { audio.removeAttribute('src'); audio.load(); } catch { /* ignore */ }
       }
-      resolve(ok);
+      resolve(ok ? audio : null);
     };
 
     const onReady = () => finish(true);
     const onFail = () => finish(false);
     const timer = setTimeout(() => finish(false), timeoutMs);
 
+    // Attach listeners BEFORE assigning src so we never miss the event.
     audio.addEventListener('loadeddata', onReady);
     audio.addEventListener('canplaythrough', onReady);
     audio.addEventListener('error', onFail);
     audio.addEventListener('abort', onFail);
 
-    // Assign src AFTER listeners so we never miss the event.
-    audio.src = cleanUrl;
+    audio.src = url;
 
     // Some browsers sync-ready already-cached resources without firing an event.
     if (audio.readyState >= 2) {
       finish(true);
     }
   });
+};
+
+export const preloadWordAudio = async (
+  word: string,
+  lang: string = 'en',
+  timeoutMs: number = 8000,
+  directUrl?: string | null
+): Promise<boolean> => {
+  const cacheKey = `${word}-${lang}`;
+
+  // Already warmed and ready — nothing to do.
+  const existing = audioElementCache.get(cacheKey);
+  if (existing && existing.readyState >= 2) {
+    return true;
+  }
+
+  // Build candidate URLs in priority order:
+  //   1. The word's known direct Storage CDN URL (word.audio_url) — a true,
+  //      cacheable download that BYPASSES the edge function entirely.
+  //   2. The persistent URL cache (may be a direct or edge URL from prior use).
+  //   3. The edge-function URL — generates+caches server-side if the asset
+  //      isn't ready yet. Always tried last so a stale direct/cache URL can't
+  //      cause a preload failure the edge function could have recovered.
+  const persistentUrl = audioCacheManager.get(word, lang);
+  const edgeUrl = await supabaseProxySource.getAudioUrl(word, lang);
+  const candidates: string[] = [];
+  if (directUrl) candidates.push(directUrl);
+  if (persistentUrl && persistentUrl !== directUrl) candidates.push(persistentUrl);
+  if (edgeUrl && !candidates.includes(edgeUrl)) candidates.push(edgeUrl);
+  if (candidates.length === 0) return false;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    const fromDirect = i === 0 && !!directUrl;
+    const audio = await loadAudioElement(stripTransientQueryParams(candidate), timeoutMs);
+    if (audio) {
+      audioElementCache.set(cacheKey, audio);
+      audioCacheManager.set(
+        word,
+        lang,
+        stripTransientQueryParams(candidate),
+        fromDirect ? 'Storage CDN (direct)' : 'Supabase Minimax Proxy'
+      );
+      return true;
+    }
+    // This candidate failed. If it was the persistent cache URL, evict it so a
+    // later play-time call doesn't reuse a known-bad URL. Direct/edge URLs are
+    // not eviction candidates (we don't own their lifecycle here).
+    if (candidate === persistentUrl) {
+      audioCacheManager.delete(word, lang);
+    }
+  }
+  return false;
 };
 
 export const clearAudioCache = (): void => {

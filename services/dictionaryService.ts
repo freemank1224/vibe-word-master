@@ -409,10 +409,10 @@ export const fetchWordMeaningOptions = async (word: string, lang: string = 'en',
  * 4. Youdao Dictionary (Alternative)
  * 5. Web Speech API (System fallback)
  */
-export const playWordAudio = async (word: string, lang: string = 'en'): Promise<boolean> => {
+export const playWordAudio = async (word: string, lang: string = 'en', directUrl?: string | null): Promise<boolean> => {
   try {
     const { playWordPronunciation } = await import('./pronunciationService');
-    const result = await playWordPronunciation(word, lang);
+    const result = await playWordPronunciation(word, lang, undefined, directUrl);
     console.log(`Pronunciation played using: ${result.sourceUsed}`);
     return result.success;
   } catch (error) {
@@ -444,11 +444,12 @@ export const playWordAudio = async (word: string, lang: string = 'en'): Promise<
 export const preloadWordAudio = async (
   word: string,
   lang: string = 'en',
-  timeoutMs: number = 8000
+  timeoutMs: number = 8000,
+  directUrl?: string | null
 ): Promise<boolean> => {
   try {
     const { preloadWordAudio: impl } = await import('./pronunciationService');
-    return await impl(word, lang, timeoutMs);
+    return await impl(word, lang, timeoutMs, directUrl);
   } catch (error) {
     console.error('Preload pronunciation error:', error);
     return false;
