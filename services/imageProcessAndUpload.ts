@@ -38,7 +38,10 @@ export const processAndUploadImage = async (params: {
   const contentType = isWebp ? 'image/webp' : (webpBlob.type || 'image/webp');
 
   // 2. 上传 storage（路径恒 .webp：Supabase Storage public URL 对 .webp 路径稳定）
-  const storagePath = `images/${language}/${encodeURIComponent(normalizedWord)}.webp`;
+  // 注意：storagePath 必须传【未编码】的原始词，让 SDK 在 upload 与 getPublicUrl 里各自只编码一次。
+  // 之前这里用 encodeURIComponent 预编码，再被 getPublicUrl 二次编码成 %2520，导致多词短语（如 "get up"）
+  // 的 public_url 指向不存在的对象（storage 实际存的 key 是解码后的 "get up"），图片 400 加载失败。
+  const storagePath = `images/${language}/${normalizedWord}.webp`;
   const { error: ulErr } = await supabase.storage
     .from(BUCKET)
     .upload(storagePath, webpBlob, {

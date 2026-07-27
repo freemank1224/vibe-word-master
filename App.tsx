@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats, healDoubleEncodedImageUrls } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -253,6 +253,12 @@ const App: React.FC = () => {
     definitionBackfillCompletedRef.current.clear();
     definitionBackfillRetryRef.current.clear();
     definitionBackfillRunningRef.current = false;
+  }, [session?.user?.id]);
+
+  // 一次性自愈：登录后修复历史多词短语图片被双重编码的 public_url（get up / high heels 等）
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    void healDoubleEncodedImageUrls();
   }, [session?.user?.id]);
 
   // 同步状态

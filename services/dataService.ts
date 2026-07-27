@@ -347,6 +347,59 @@ export const getImageUrl = (path: string | null | undefined): string | null => {
   return data.publicUrl;
 };
 
+const IMAGE_ASSET_URL_HEAL_FLAG = 'vibe_word_img_url_heal_v1';
+
+/**
+ * 一次性自愈：修复 image_assets 里被【双重 URL 编码】的 public_url。
+ *
+ * 背景：旧版 imageProcessAndUpload.ts 用 encodeURIComponent 预编码词再交给 getPublicUrl，
+ * 后者又编一次 → 多词短语（如 "get up"）的 public_url 变成 get%2520up.webp，
+ * 而 storage 实际存的 key 是解码后的 "get up"，于是 400 加载失败。单词无空格不受影响。
+ *
+ * 写 image_assets 需要登录身份（anon 被 RLS 挡），所以由前端登录后调用。
+ * localStorage 标记保证每个客户端只跑一次；坏数据被任意一个客户端修完后，
+ * 后续客户端 SELECT 命中 0 行，自然 no-op。
+ */
+export const healDoubleEncodedImageUrls = async (): Promise<number> => {
+  if (typeof window !== 'undefined' && window.localStorage.getItem(IMAGE_ASSET_URL_HEAL_FLAG)) {
+    return 0;
+  }
+  try {
+    // 取所有 normalized_word 含空格的 asset（双重编码只可能出现在多词短语上）
+    const { data: rows, error } = await supabase
+      .from('image_assets')
+      .select('id, language, normalized_word, public_url')
+      .like('normalized_word', '* *');
+    if (error) throw error;
+
+    const broken = (rows || []).filter((r: any) => typeof r.public_url === 'string' && r.public_url.includes('%2520'));
+    let fixed = 0;
+    for (const r of broken) {
+      const word = String(r.normalized_word || '').trim();
+      const lang = String(r.language || 'en').trim();
+      // 与修复后的上传逻辑一致：传未编码路径，getPublicUrl 单次编码
+      const storagePath = `images/${lang}/${word}.webp`;
+      const { data: urlData } = supabase.storage.from('word-images').getPublicUrl(storagePath);
+      const { error: ue } = await supabase
+        .from('image_assets')
+        .update({ public_url: urlData.publicUrl, storage_path: storagePath })
+        .eq('id', r.id);
+      if (!ue) fixed += 1;
+    }
+
+    // 只有全部修完（或本就无坏数据）才打标，避免部分失败时漏修；失败则下次登录重试
+    if (typeof window !== 'undefined' && fixed === broken.length) {
+      window.localStorage.setItem(IMAGE_ASSET_URL_HEAL_FLAG, '1');
+    }
+    if (fixed > 0) console.log(`[image-heal] fixed ${fixed}/${broken.length} double-encoded image_assets rows`);
+    return fixed;
+  } catch (e) {
+    console.warn('[image-heal] skipped:', e);
+    return 0;
+  }
+};
+
+
 export const fetchUserData = async (userId: string) => {
   // Fetch Sessions (Filtered: Not deleted)
   const { data: sessionsData, error: sessionsError } = await supabase
