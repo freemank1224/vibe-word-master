@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, LayoutGroup } from 'motion/react';
 import { HoverTranslationText } from './HoverTranslationText';
 import { preloadAudio, playWordPronunciation, stopCurrentAudio } from '../services/pronunciationService';
 import { playBuzzer, playDing } from '../utils/audioFeedback';
@@ -39,6 +40,7 @@ const createCardState = (word: WordEntry): PuzzleGameCardState => ({
   isLocked: false,
   activatedAtMs: null,
   solvedAtMs: null,
+  lastWrongInput: null,
 });
 
 const formatClock = (seconds: number) => {
@@ -54,6 +56,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const [rankingEligible, setRankingEligible] = useState(true);
   const [rankingIneligibleReason, setRankingIneligibleReason] = useState<string | null>(null);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [hasStarted, setHasStarted] = useState(false);
   const [selectedWords, setSelectedWords] = useState<WordEntry[]>([]);
   const [cards, setCards] = useState<PuzzleGameCardState[]>([]);
   const [audioProgress, setAudioProgress] = useState({ current: 0, total: 0 });
@@ -64,15 +67,18 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const [bannerMessage, setBannerMessage] = useState<string | null>(null);
   const [result, setResult] = useState<PuzzleGameSummary | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   const gameStartTimeRef = useRef<number | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
   const thirtySecondAlertRef = useRef(false);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const finalizeGuardRef = useRef(false);
+  const resultSubmittedRef = useRef(false);
 
   const candidateCount = useMemo(() => getPuzzleCandidateWords(allWords).length, [allWords]);
   const canPrepare = candidateCount >= 9;
+  const activeCard = useMemo(() => cards.find((card) => card.word.id === activeCardId) || null, [cards, activeCardId]);
 
   useEffect(() => {
     if (phase !== 'PLAYING') {
@@ -245,6 +251,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
   const activateCard = async (card: PuzzleGameCardState) => {
     if (phase !== 'PLAYING' || card.isSolved || card.isLocked) return;
 
+    setHasStarted(true);
     setActiveCardId(card.word.id);
     const activatedAtMs = card.activatedAtMs ?? (gameStartTimeRef.current ? Date.now() - gameStartTimeRef.current : 0);
     updateCard(card.word.id, (current) => ({
@@ -306,6 +313,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
       attemptsUsed: nextAttempts,
       isLocked: nextAttempts >= 3,
       isInputOpen: false,
+      lastWrongInput: current.inputValue.trim() || current.lastWrongInput,
       inputValue: '',
     }));
     setActiveCardId(nextPlayableCard?.word.id || (nextAttempts >= 3 ? null : card.word.id));
@@ -338,17 +346,35 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
       rankingIneligibleReason,
     );
     setResult(summary);
-    setPhase('RESULT');
+    setPhase('REVIEW');
 
     if (timedOut) {
       setBannerMessage('Time up');
     }
+  };
 
+  // Called when the user advances past the REVIEW screen. This is what actually
+  // fires onComplete → which (in App.tsx) bumps error_count += 1 for every missed
+  // word via syncGameResultsToWordStats, then records the round + awards coins.
+  const proceedToResult = async () => {
+    if (resultSubmittedRef.current || !result) return;
+    resultSubmittedRef.current = true;
     setIsSubmitting(true);
+    setPhase('RESULT');
     try {
-      await onComplete(summary);
+      await onComplete(result);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // From the REVIEW screen, exiting would discard an unsubmitted round (score +
+  // error-weight bumps never get recorded). Warn the user and let them choose.
+  const handleExitClick = () => {
+    if (phase === 'REVIEW') {
+      setShowExitConfirm(true);
+    } else {
+      onCancel();
     }
   };
 
@@ -389,6 +415,183 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
             ? `最后 ${timeLeft} 秒`
             : '';
 
+  // A single card renderer used in BOTH layouts (3×3 preview + expanded/compact split).
+  // Because every card carries a stable `layoutId`, motion smoothly flies each card
+  // between its 3×3 slot, the big left pane, and the 4×2 right grid on every change.
+  const renderCard = (card: PuzzleGameCardState, expanded: boolean) => {
+    const isActiveCard = activeCardId === card.word.id && !card.isSolved && !card.isLocked;
+    const inputDisabled = phase !== 'PLAYING' || card.isLocked || card.isSolved || timeLeft <= 0;
+    const revealImage = card.hintUsed || card.isSolved;
+
+    const renderPips = (large: boolean) => (
+      <div className="flex items-center gap-1.5">
+        {Array.from({ length: 3 }).map((_, index) => {
+          const successfulAttemptIndex = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : null;
+          const isSuccessfulAttempt = successfulAttemptIndex !== null && index === successfulAttemptIndex;
+          const failedAttemptsCount = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : card.attemptsUsed;
+          const isFailedAttempt = index < failedAttemptsCount;
+          const isRemainingAttempt = !isSuccessfulAttempt && !isFailedAttempt;
+
+          return (
+            <span
+              key={`${card.word.id}-attempt-${index}`}
+              className={`flex-1 rounded-full transition-colors ${large ? 'h-1.5' : 'h-1'} ${
+                isSuccessfulAttempt
+                  ? 'bg-electric-green shadow-[0_0_10px_rgba(34,197,94,0.55)]'
+                  : isFailedAttempt
+                    ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.55)]'
+                    : isRemainingAttempt
+                      ? 'bg-electric-blue/55 shadow-[0_0_8px_rgba(96,165,250,0.35)]'
+                      : 'bg-mid-charcoal'
+              }`}
+            />
+          );
+        })}
+      </div>
+    );
+
+    const containerClass = expanded
+      ? `relative h-full w-full overflow-hidden rounded-[32px] border transition-colors ${
+          card.isSolved
+            ? 'border-green-400 bg-green-500/10'
+            : card.isLocked
+              ? 'border-red-500/40 bg-red-500/10'
+              : 'border-electric-blue bg-electric-blue/8 shadow-[0_0_0_1px_rgba(96,165,250,0.42),0_0_28px_rgba(96,165,250,0.28)]'
+        }`
+      : `relative grid h-full w-full overflow-hidden rounded-[18px] border p-2 transition-colors duration-300 ${
+          card.isSolved
+            ? 'border-green-400/70 bg-green-500/10'
+            : card.isLocked
+              ? 'border-red-500/40 bg-red-500/10'
+              : isActiveCard
+                ? 'border-electric-blue/70 bg-electric-blue/5 shadow-[0_0_0_1px_rgba(96,165,250,0.30),0_0_18px_rgba(96,165,250,0.18)]'
+                : 'border-mid-charcoal bg-dark-charcoal/70 hover:border-electric-blue/50 hover:bg-electric-blue/5'
+        }`;
+
+    return (
+      <motion.div
+        key={card.word.id}
+        layoutId={`puzzle-card-${card.word.id}`}
+        layout
+        transition={{ layout: { duration: 0.45, ease: [0.22, 1, 0.36, 1] } }}
+        className={containerClass}
+        style={expanded ? undefined : { gridTemplateRows: '1fr auto' }}
+      >
+        {isActiveCard && (
+          <div className="pointer-events-none absolute inset-0 z-10 rounded-[inherit] border border-electric-blue/70 animate-pulse shadow-[0_0_0_1px_rgba(96,165,250,0.55),0_0_22px_rgba(96,165,250,0.4),0_0_42px_rgba(96,165,250,0.22)]" />
+        )}
+
+        {expanded ? (
+          <>
+            <button
+              onClick={() => useHint(card)}
+              disabled={card.hintUsed || card.isSolved || card.isLocked}
+              className={`absolute right-4 top-4 z-30 flex h-12 w-12 items-center justify-center rounded-full border backdrop-blur-sm transition-colors ${
+                card.hintUsed || card.isSolved || card.isLocked
+                  ? 'cursor-not-allowed border-mid-charcoal bg-mid-charcoal/60 text-text-dark'
+                  : 'border-electric-green/40 bg-dark-charcoal/70 text-electric-green hover:border-electric-green hover:bg-electric-green/15'
+              }`}
+            >
+              <span className="material-symbols-outlined">lightbulb</span>
+            </button>
+
+            {/* Image fills the entire card */}
+            <div className="absolute inset-0">
+              {card.imageUrl ? (
+                <img
+                  src={card.imageUrl}
+                  alt={card.word.text}
+                  className={`h-full w-full object-contain transition-all duration-500 ${revealImage ? 'scale-100 blur-0' : 'scale-150 blur-[52px]'}`}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center bg-mid-charcoal text-text-dark">
+                  <span className="material-symbols-outlined text-7xl">image</span>
+                </div>
+              )}
+
+              {card.isSolved && (
+                <div className="absolute inset-0 flex items-center justify-center bg-green-500/10 backdrop-blur-[1px]">
+                  <div className="rounded-full border border-green-300/30 bg-green-500/20 p-6 text-6xl">✅</div>
+                </div>
+              )}
+            </div>
+
+            {/* Big input overlaid on the lower portion of the image (kept within roughly the bottom third) */}
+            {!card.isSolved && !card.isLocked && (
+              <div className="absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(to_top,rgba(0,0,0,0.92)_0%,rgba(0,0,0,0.78)_45%,rgba(0,0,0,0.35)_75%,transparent_100%)] px-5 pb-5 pt-14">
+                {renderPips(true)}
+                <input
+                  ref={(node) => {
+                    inputRefs.current[card.word.id] = node;
+                  }}
+                  value={card.inputValue}
+                  disabled={inputDisabled}
+                  onChange={(event) => updateInput(card.word.id, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      submitAnswer(card);
+                    }
+                  }}
+                  className="mt-3 w-full rounded-2xl border border-electric-blue/50 bg-white/10 px-6 py-4 text-center font-serif text-[64px] leading-none tracking-[0.1em] text-white shadow-[0_0_24px_rgba(96,165,250,0.18)] outline-none backdrop-blur-md placeholder:text-white/40 focus:border-electric-blue focus:bg-white/15"
+                  placeholder="type here"
+                />
+                <div className="mt-2 text-center text-[10px] font-mono uppercase tracking-[0.24em] text-white/55">
+                  <HoverTranslationText text="Press Enter To Submit" translation="按回车键提交" />
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="relative min-h-0 overflow-hidden rounded-[12px] border border-mid-charcoal bg-black/30">
+              {card.imageUrl ? (
+                <img
+                  src={card.imageUrl}
+                  alt={card.word.text}
+                  className={`h-full w-full object-cover transition-all duration-500 ${revealImage ? 'scale-100 blur-0' : 'scale-125 blur-[26px]'}`}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center bg-mid-charcoal text-text-dark">
+                  <span className="material-symbols-outlined text-3xl">image</span>
+                </div>
+              )}
+
+              {!card.isSolved && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/35">
+                  <button
+                    onClick={() => void activateCard(card)}
+                    className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-2xl backdrop-blur-md transition-transform hover:scale-105 hover:bg-white/15"
+                  >
+                    <span className="material-symbols-outlined text-2xl">volume_up</span>
+                  </button>
+                </div>
+              )}
+
+              {card.isSolved && (
+                <div className="absolute inset-0 flex items-center justify-center bg-green-500/10 backdrop-blur-[1px]">
+                  <div className="rounded-full border border-green-300/30 bg-green-500/20 p-2 text-xl">✅</div>
+                </div>
+              )}
+
+              {card.isLocked && !card.isSolved && (
+                <div className="absolute inset-0 flex items-center justify-center bg-red-500/10 backdrop-blur-[1px]">
+                  <span className="material-symbols-outlined text-3xl text-red-300">lock</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-1.5 space-y-1.5">
+              {renderPips(false)}
+              <div className="rounded-md border border-mid-charcoal/70 bg-light-charcoal/20 px-2 py-1 text-center text-[9px] font-mono uppercase tracking-[0.18em] text-text-dark">
+                {card.isSolved ? '✓ solved' : card.isLocked ? 'locked' : 'tap ▶'}
+              </div>
+            </div>
+          </>
+        )}
+      </motion.div>
+    );
+  };
+
   return (
     <div className="fixed inset-0 z-[90] overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(163,255,0,0.12),_transparent_28%),linear-gradient(180deg,_rgba(9,12,16,0.96),_rgba(12,14,18,1))]">
       <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(180deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:26px_26px] opacity-30" />
@@ -401,7 +604,7 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
             </h2>
           </div>
           <button
-            onClick={onCancel}
+            onClick={handleExitClick}
             className="rounded-2xl border border-mid-charcoal bg-dark-charcoal/70 px-4 py-2 text-xs font-mono uppercase tracking-[0.25em] text-text-light transition-colors hover:border-white hover:text-white"
           >
             <HoverTranslationText text="Exit" translation="退出" />
@@ -604,128 +807,99 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
               </div>
             </div>
 
-            <div className="grid min-h-0 grid-cols-3 gap-3">
-              {cards.map((card) => {
-                const inputDisabled = phase !== 'PLAYING' || card.isLocked || card.isSolved || timeLeft <= 0;
-                const isActiveCard = activeCardId === card.word.id && !card.isSolved && !card.isLocked;
+            <LayoutGroup>
+              {(!hasStarted || !activeCard) ? (
+                <div className="grid min-h-0 grid-cols-3 gap-3" style={{ gridTemplateRows: 'repeat(3, minmax(0, 1fr))' }}>
+                  {cards.map((card) => renderCard(card, false))}
+                </div>
+              ) : (
+                <div className="flex min-h-0 gap-3">
+                  <div className="h-full shrink-0" style={{ aspectRatio: '1 / 1' }}>
+                    {activeCard ? (
+                      renderCard(activeCard, true)
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center rounded-[32px] border border-mid-charcoal bg-dark-charcoal/70 px-6 text-center text-xs font-mono uppercase tracking-[0.24em] text-text-dark">
+                        <HoverTranslationText text="Selecting next word" translation="正在挑选下一个词" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid min-h-0 flex-1 grid-cols-2 gap-2" style={{ gridTemplateRows: 'repeat(4, minmax(0, 1fr))' }}>
+                    {cards
+                      .filter((card) => card.word.id !== activeCard?.word.id)
+                      .map((card) => renderCard(card, false))}
+                  </div>
+                </div>
+              )}
+            </LayoutGroup>
+          </div>
+        )}
 
+        {phase === 'REVIEW' && result && (
+          <div className="flex flex-1 flex-col items-center gap-5 overflow-y-auto py-2">
+            <div className="shrink-0 text-center">
+              <div className="text-xs font-mono uppercase tracking-[0.35em] text-electric-blue/80">
+                <HoverTranslationText text="Round Review" translation="本局复盘" />
+              </div>
+              <h3 className="mt-2 font-headline text-3xl text-white md:text-4xl">
+                <HoverTranslationText text="See every word" translation="九词全览" />
+              </h3>
+              <p className="mx-auto mt-1 max-w-xl text-xs leading-6 text-text-light md:text-sm">
+                {cards.filter((c) => c.isSolved).length === cards.length ? (
+                  <HoverTranslationText
+                    text={`All ${cards.length} words solved — flawless run!`}
+                    translation={`全部 ${cards.length} 个答对——完美通关！`}
+                  />
+                ) : (
+                  <HoverTranslationText
+                    text={`Images are now clear — ${cards.filter((c) => c.isSolved).length}/${cards.length} solved. Missed words (red) gain error weight and will be prioritized next time.`}
+                    translation={`图片已清晰展示——本局答对 ${cards.filter((c) => c.isSolved).length}/${cards.length}。标红的词会增加错误权重，下次优先出现。`}
+                  />
+                )}
+              </p>
+            </div>
+
+            <div className="grid w-full max-w-[min(58vh,500px)] h-[min(58vh,500px)] grid-cols-3 grid-rows-3 gap-3">
+              {cards.map((card) => {
+                const wrong = !card.isSolved;
                 return (
                   <div
                     key={card.word.id}
-                    className={`relative grid min-h-0 overflow-hidden rounded-[28px] border p-3 ${
-                      card.isSolved
-                        ? 'border-green-400 bg-green-500/10'
-                        : card.isLocked
-                          ? 'border-red-500/40 bg-red-500/10'
-                          : isActiveCard
-                            ? 'border-electric-blue bg-electric-blue/8 shadow-[0_0_0_1px_rgba(96,165,250,0.42),0_0_24px_rgba(96,165,250,0.24)]'
-                          : 'border-mid-charcoal bg-dark-charcoal/70'
-                    }`}
-                    style={{ gridTemplateRows: '1fr auto' }}
+                    className={`relative overflow-hidden rounded-[18px] border ${wrong ? 'border-red-500/60 bg-red-500/5' : 'border-green-400/60 bg-green-500/5'}`}
                   >
-                    {isActiveCard && (
-                      <div className="pointer-events-none absolute inset-0 z-10 rounded-[28px] border border-electric-blue/70 animate-pulse shadow-[0_0_0_1px_rgba(96,165,250,0.55),0_0_22px_rgba(96,165,250,0.4),0_0_42px_rgba(96,165,250,0.22)]" />
+                    {card.imageUrl ? (
+                      <img
+                        src={card.imageUrl}
+                        alt={card.word.text}
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center bg-mid-charcoal text-text-dark">
+                        <span className="material-symbols-outlined text-4xl">image</span>
+                      </div>
                     )}
 
-                    <button
-                      onClick={() => useHint(card)}
-                      disabled={card.hintUsed || card.isSolved || card.isLocked}
-                      className={`absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full border text-sm transition-colors ${
-                        card.hintUsed || card.isSolved || card.isLocked
-                          ? 'cursor-not-allowed border-mid-charcoal bg-mid-charcoal/50 text-text-dark'
-                          : 'border-electric-green/30 bg-dark-charcoal/70 text-electric-green hover:border-electric-green hover:bg-electric-green/10'
-                      }`}
-                    >
-                      <span className="material-symbols-outlined">lightbulb</span>
-                    </button>
-
-                    <div className="relative min-h-0 overflow-hidden rounded-[22px] border border-mid-charcoal bg-black/30">
-                      {card.imageUrl ? (
-                        <img
-                          src={card.imageUrl}
-                          alt={card.word.text}
-                          className={`h-full w-full object-cover transition-all duration-500 ${card.hintUsed || card.isSolved ? 'scale-100 blur-0' : 'scale-125 blur-[26px]'}`}
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center bg-mid-charcoal text-text-dark">
-                          <span className="material-symbols-outlined text-5xl">image</span>
-                        </div>
-                      )}
-
-                      {!card.isSolved && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/35">
-                          <button
-                            onClick={() => void activateCard(card)}
-                            className="flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-2xl backdrop-blur-md transition-transform hover:scale-105 hover:bg-white/15"
-                          >
-                            <span className="material-symbols-outlined text-3xl">volume_up</span>
-                          </button>
-                        </div>
-                      )}
-
-                      {card.isSolved && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-green-500/10 backdrop-blur-[1px]">
-                          <div className="rounded-full border border-green-300/30 bg-green-500/20 p-5 text-5xl">✅</div>
-                        </div>
-                      )}
-
+                    <div className={`absolute left-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full text-sm font-bold shadow-lg ${wrong ? 'bg-red-500/85 text-white' : 'bg-green-500/85 text-charcoal'}`}>
+                      {wrong ? '✗' : '✓'}
                     </div>
 
-                    <div className="mt-3 space-y-2">
-                      <div className="flex items-center gap-1.5">
-                        {Array.from({ length: 3 }).map((_, index) => {
-                          const successfulAttemptIndex = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : null;
-                          const isSuccessfulAttempt = successfulAttemptIndex !== null && index === successfulAttemptIndex;
-                          const failedAttemptsCount = card.isSolved ? Math.max(card.attemptsUsed - 1, 0) : card.attemptsUsed;
-                          const isFailedAttempt = index < failedAttemptsCount;
-                          const isRemainingAttempt = !isSuccessfulAttempt && !isFailedAttempt;
-
-                          return (
-                            <span
-                              key={`${card.word.id}-attempt-${index}`}
-                              className={`h-1.5 flex-1 rounded-full transition-colors ${
-                                isSuccessfulAttempt
-                                  ? 'bg-electric-green shadow-[0_0_10px_rgba(34,197,94,0.55)]'
-                                  : isFailedAttempt
-                                  ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.55)]'
-                                  : isRemainingAttempt
-                                    ? 'bg-electric-blue/55 shadow-[0_0_8px_rgba(96,165,250,0.35)]'
-                                    : 'bg-mid-charcoal'
-                              }`}
-                            />
-                          );
-                        })}
+                    <div className="absolute inset-x-0 bottom-0 z-10 bg-[linear-gradient(to_top,rgba(0,0,0,0.92)_0%,rgba(0,0,0,0.7)_50%,transparent_100%)] px-3 pb-2 pt-8">
+                      <div className="font-serif text-lg leading-tight tracking-[0.04em] text-white md:text-xl">
+                        {card.word.text}
                       </div>
-                      {card.isInputOpen && !card.isSolved && !card.isLocked ? (
-                        <div className="rounded-2xl border border-electric-blue/30 bg-dark-charcoal/80 p-2 shadow-[0_0_20px_rgba(96,165,250,0.15)]">
-                          <input
-                            ref={(node) => {
-                              inputRefs.current[card.word.id] = node;
-                            }}
-                            value={card.inputValue}
-                            disabled={inputDisabled}
-                            onChange={(event) => updateInput(card.word.id, event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                submitAnswer(card);
-                              }
-                            }}
-                            className="w-full bg-transparent px-3 py-2 text-center font-serif text-lg tracking-[0.04em] text-white outline-none placeholder:text-text-dark"
-                            placeholder="type here"
-                          />
-                          <div className="mt-2 text-center text-[10px] font-mono uppercase tracking-[0.24em] text-text-dark">
-                            <HoverTranslationText text="Press Enter To Submit" translation="按回车键提交" />
+                      {wrong ? (
+                        <>
+                          {card.lastWrongInput ? (
+                            <div className="mt-0.5 truncate text-[11px] text-red-300 line-through">
+                              {card.lastWrongInput}
+                            </div>
+                          ) : null}
+                          <div className="mt-0.5 text-[9px] font-mono uppercase tracking-[0.18em] text-red-300/85">
+                            <HoverTranslationText text="error_count +1" translation="错误权重 +1" />
                           </div>
-                        </div>
+                        </>
                       ) : (
-                        <div className="rounded-2xl border border-mid-charcoal bg-light-charcoal/20 px-3 py-3 text-center text-[11px] font-mono text-text-dark">
-                          {card.isSolved ? (
-                            <HoverTranslationText text="Solved" translation="已答对" />
-                          ) : card.isLocked ? (
-                            <HoverTranslationText text="Locked" translation="已锁定" />
-                          ) : (
-                            <HoverTranslationText text="Tap speaker to answer" translation="点击喇叭开始作答" />
-                          )}
+                        <div className="mt-0.5 text-[9px] font-mono uppercase tracking-[0.18em] text-green-300/85">
+                          {card.hintUsed ? <HoverTranslationText text="solved with hint" translation="提示答对" /> : <HoverTranslationText text="solved" translation="已答对" />}
                         </div>
                       )}
                     </div>
@@ -733,6 +907,13 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
                 );
               })}
             </div>
+
+            <button
+              onClick={() => void proceedToResult()}
+              className="shrink-0 rounded-2xl bg-electric-green px-8 py-4 font-headline text-sm uppercase tracking-[0.3em] text-charcoal shadow-[0_0_30px_rgba(163,255,0,0.25)] transition-transform hover:-translate-y-1"
+            >
+              <HoverTranslationText text="Next: View Score" translation="下一步：查看成绩" />
+            </button>
           </div>
         )}
 
@@ -820,6 +1001,44 @@ const PuzzleGameMode: React.FC<PuzzleGameModeProps> = ({ allWords, sessions, onC
         {preparationError && (
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-2xl border border-red-500/40 bg-red-500/15 px-4 py-3 text-sm text-red-200 shadow-2xl">
             {preparationError}
+          </div>
+        )}
+
+        {showExitConfirm && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-[28px] border border-mid-charcoal bg-dark-charcoal/95 p-6 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-amber-400/40 bg-amber-400/10 text-amber-300">
+                  <span className="material-symbols-outlined">warning</span>
+                </div>
+                <h3 className="font-headline text-2xl text-white">
+                  <HoverTranslationText text="Leave without saving?" translation="退出将不保留成绩？" />
+                </h3>
+              </div>
+              <p className="mt-4 text-sm leading-6 text-text-light">
+                <HoverTranslationText
+                  text="If you exit now, this round's score and answer stats — including the error-weight bump for missed words — will NOT be saved. Go to the score screen to keep them."
+                  translation="如果现在退出，本局得分与答题统计（含错词的错误权重提升）都不会保留。需进入成绩页才会保存。"
+                />
+              </p>
+              <div className="mt-6 flex gap-3">
+                <button
+                  onClick={() => setShowExitConfirm(false)}
+                  className="flex-1 rounded-2xl bg-electric-green px-4 py-3 font-headline text-sm uppercase tracking-[0.2em] text-charcoal transition-transform hover:-translate-y-0.5"
+                >
+                  <HoverTranslationText text="Keep Reviewing" translation="继续复盘" />
+                </button>
+                <button
+                  onClick={() => {
+                    setShowExitConfirm(false);
+                    onCancel();
+                  }}
+                  className="flex-1 rounded-2xl border border-red-500/50 bg-red-500/15 px-4 py-3 font-headline text-sm uppercase tracking-[0.2em] text-red-200 transition-colors hover:bg-red-500/25"
+                >
+                  <HoverTranslationText text="Exit Anyway" translation="仍然退出" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

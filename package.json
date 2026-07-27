@@ -15,6 +15,7 @@
     "@types/canvas-confetti": "^1.9.0",
     "canvas-confetti": "^1.9.4",
     "dictionary-en": "^4.0.0",
+    "motion": "^12.42.2",
     "nspell": "^2.1.5",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

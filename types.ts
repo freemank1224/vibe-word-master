@@ -67,7 +67,7 @@ export interface CompletedTestSummary {
 
 export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'SCENE';
 
-export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'RESULT';
+export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'REVIEW' | 'RESULT';
 
 export type PuzzleGameSelectionMode = 'smart' | 'random';
 
@@ -124,6 +124,7 @@ export interface PuzzleGameCardState {
   isLocked: boolean;
   activatedAtMs: number | null;
   solvedAtMs: number | null;
+  lastWrongInput: string | null;
 }
 
 // ================================================================
