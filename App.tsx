@@ -432,9 +432,19 @@ const App: React.FC = () => {
   const [showInsufficientCoins, setShowInsufficientCoins] = useState(false);
   const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
 
+  // Monotonic sequence guarding setCoinBalance against stale fetches. Each
+  // refreshCoinBalance call increments this and only applies its result if it
+  // is still the latest call; the daily-login claim bumps it too, so a slow
+  // login-time fetch (started before the award committed) can't clobber the
+  // authoritative new_balance returned by claimDailyLoginReward.
+  const balanceReqSeqRef = useRef(0);
+
   const refreshCoinBalance = useCallback(async () => {
+    const seq = ++balanceReqSeqRef.current;
     const bal = await getCoinBalance();
-    setCoinBalance(bal);
+    if (seq === balanceReqSeqRef.current) {
+      setCoinBalance(bal);
+    }
   }, []);
   
   // Filtered Data for View (Soft Delete Logic)
@@ -466,6 +476,9 @@ const App: React.FC = () => {
           const reward = await claimDailyLoginReward();
           if (!reward) return;
           setCoinBalance(reward.new_balance);
+          // Invalidate any refreshCoinBalance fetch that started before this
+          // award committed, so its stale response can't clobber new_balance.
+          balanceReqSeqRef.current += 1;
           if (!reward.already_claimed_today && reward.total_awarded > 0) {
             setDailyLoginReward(reward);
           }
