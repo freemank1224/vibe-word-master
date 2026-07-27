@@ -127,6 +127,7 @@ type EditableWord = {
   text: string;
   imageBase64?: string;
   hasImage?: boolean;
+  imageUrl?: string;
   imageGenerating?: boolean;
   definition_cn?: string;
   definition_en?: string;
@@ -157,6 +158,7 @@ const createEditableWord = (word: Omit<EditableWord, 'tempId'> & { tempId?: stri
   text: word.text,
   imageBase64: word.imageBase64,
   hasImage: word.hasImage,
+  imageUrl: word.imageUrl,
   imageGenerating: word.imageGenerating,
   definition_cn: word.definition_cn,
   definition_en: word.definition_en,
@@ -2239,6 +2241,7 @@ const App: React.FC = () => {
             onDeleteWord={handleInputModeDeleteWord}
             allWords={visibleWords}
             cachedImageWordIds={cachedImageWordIds}
+            cachedImageDataUrls={cachedImageDataUrls}
             onGenerateImageForWord={handleGenerateImageForWord}
           />
         )}
@@ -2377,13 +2380,14 @@ const App: React.FC = () => {
           )
         )}
         {mode === 'LIBRARY' && (
-            <LibraryMode 
+            <LibraryMode
                 words={visibleWords}
                 onClose={() => setMode('DASHBOARD')}
                 onTest={handleStartTestFromLibrary}
                 userId={session?.user?.id}
                 onRefresh={refreshData}
             cachedImageWordIds={cachedImageWordIds}
+            cachedImageDataUrls={cachedImageDataUrls}
             onGenerateImageForWord={handleGenerateImageForWord}
             />
         )}
@@ -2886,6 +2890,206 @@ const SessionMatrix: React.FC<{
   );
 };
 
+// --- Shared Image Preview Modal (fullscreen lightbox with prev/next + gallery strip) ---
+interface PreviewItem {
+  id: string;
+  text: string;
+  imageSrc: string;
+  sessionId?: string;
+}
+
+const ImagePreviewModal: React.FC<{
+  items: PreviewItem[];
+  currentId: string | null;
+  onChangeCurrentId: (id: string) => void;
+  onClose: () => void;
+  onOpenSession?: (sessionId: string) => void;
+}> = ({ items, currentId, onChangeCurrentId, onClose, onOpenSession }) => {
+  const [scale, setScale] = useState(1);
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const activeThumbRef = useRef<HTMLButtonElement | null>(null);
+
+  const currentIndex = currentId ? items.findIndex(it => it.id === currentId) : -1;
+  const current = currentIndex !== -1 ? items[currentIndex] : null;
+  const hasMultiple = items.length > 1;
+
+  // 切换图片时重置缩放
+  useEffect(() => {
+    setScale(1);
+  }, [currentId]);
+
+  const navigate = useCallback((delta: number) => {
+    if (currentIndex === -1 || items.length === 0) return;
+    const len = items.length;
+    const nextIdx = ((currentIndex + delta) % len + len) % len;
+    onChangeCurrentId(items[nextIdx].id);
+  }, [currentIndex, items, onChangeCurrentId]);
+
+  // 键盘左右方向键切换上一张/下一张
+  useEffect(() => {
+    if (!current || !hasMultiple) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') navigate(-1);
+      else if (e.key === 'ArrowRight') navigate(1);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [current, hasMultiple, navigate]);
+
+  // 缩略图窗口：当前张前后各 5 张
+  const galleryWindow = useMemo(() => {
+    if (currentIndex === -1) return [] as PreviewItem[];
+    const half = 5;
+    const len = items.length;
+    let start = currentIndex - half;
+    let end = currentIndex + half + 1;
+    if (start < 0) { end -= start; start = 0; }
+    if (end > len) { start -= (end - len); end = len; }
+    start = Math.max(0, start);
+    return items.slice(start, end);
+  }, [currentIndex, items]);
+
+  // 自动将当前缩略图滚动到画廊中央（仅滚动画廊容器本身）
+  useEffect(() => {
+    const container = galleryRef.current;
+    const thumb = activeThumbRef.current;
+    if (!container || !thumb) return;
+    const target = thumb.offsetLeft - container.clientWidth / 2 + thumb.clientWidth / 2;
+    container.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+  }, [currentId, currentIndex]);
+
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.12 : -0.12;
+    setScale(prev => Math.max(0.5, Math.min(4, Number((prev + delta).toFixed(2)))));
+  };
+
+  if (!current) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[220] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex flex-col items-center max-w-[calc(100vw-40px)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div
+          className="relative rounded-2xl overflow-hidden border border-mid-charcoal"
+          onWheel={handleWheel}
+          title="可使用鼠标滚轮缩放图片"
+        >
+          <img
+            src={current.imageSrc}
+            alt={current.text}
+            className="block max-w-[calc(100vw-40px)] max-h-[calc(100vh-260px)] w-auto h-auto transition-transform duration-150"
+            style={{ transform: `scale(${scale})`, transformOrigin: 'center center' }}
+          />
+
+          {onOpenSession && current.sessionId && (
+            <div className="absolute left-3 top-3 flex items-center gap-2">
+              <button
+                onClick={() => onOpenSession(current.sessionId!)}
+                className="px-3 py-1.5 rounded-lg bg-electric-blue text-charcoal hover:bg-white transition-colors text-xs font-headline"
+              >
+                打开所属 Session
+              </button>
+            </div>
+          )}
+
+          <div className="absolute right-3 top-3 flex items-center gap-2">
+            {hasMultiple && (
+              <span className="px-2 py-1 rounded-md bg-black/45 text-white font-mono text-[10px]">
+                {currentIndex + 1} / {items.length}
+              </span>
+            )}
+            <span className="px-2 py-1 rounded-md bg-black/45 text-white font-mono text-[10px]">
+              {Math.round(scale * 100)}%
+            </span>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg bg-black/45 text-text-light hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center"
+              title="关闭预览"
+            >
+              <span className="material-symbols-outlined text-base">close</span>
+            </button>
+          </div>
+
+          <div className="absolute left-0 right-0 bottom-0 px-4 py-3 bg-gradient-to-t from-black/75 to-transparent">
+            <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em]">Image Preview</p>
+            <p className="text-white font-serif text-lg truncate">{current.text}</p>
+          </div>
+        </div>
+
+        {/* Gallery 缩略图陈列：当前张前后各 5 张，可点击跳转；两侧箭头一次跳 10 张 */}
+        {hasMultiple && (
+          <div className="mt-3 flex items-center justify-center gap-2 max-w-[calc(100vw-40px)]">
+            <button
+              onClick={(event) => { event.stopPropagation(); navigate(-10); }}
+              className="shrink-0 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
+              title="向前 10 张"
+            >
+              <span className="material-symbols-outlined text-lg">keyboard_double_arrow_left</span>
+            </button>
+            <div
+              ref={galleryRef}
+              className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-[calc(100vw-140px)]"
+            >
+              {galleryWindow.map((it) => {
+                const active = it.id === currentId;
+                return (
+                  <button
+                    key={it.id}
+                    ref={active ? activeThumbRef : null}
+                    onClick={() => onChangeCurrentId(it.id)}
+                    title={it.text}
+                    className={`relative shrink-0 w-14 h-14 rounded-md overflow-hidden border-2 transition-all ${active ? 'border-electric-blue ring-2 ring-electric-blue/40 scale-105' : 'border-transparent opacity-60 hover:opacity-100'}`}
+                  >
+                    <img src={it.imageSrc} alt={it.text} className="w-full h-full object-cover" />
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={(event) => { event.stopPropagation(); navigate(10); }}
+              className="shrink-0 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
+              title="向后 10 张"
+            >
+              <span className="material-symbols-outlined text-lg">keyboard_double_arrow_right</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {hasMultiple && (
+        <>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate(-1);
+            }}
+            className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 w-11 h-11 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
+            title="上一张（←）"
+          >
+            <span className="material-symbols-outlined text-xl">chevron_left</span>
+          </button>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate(1);
+            }}
+            className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 z-30 w-11 h-11 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
+            title="下一张（→）"
+          >
+            <span className="material-symbols-outlined text-xl">chevron_right</span>
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
 // --- Dashboard Component ---
 const Dashboard: React.FC<{
   stats: Record<string, DayStats>,
@@ -2909,7 +3113,6 @@ const Dashboard: React.FC<{
   const t = useT();
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
-  const [previewScale, setPreviewScale] = useState(1);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const recentSessionsRef = useRef<HTMLDivElement>(null);
   const {
@@ -2969,76 +3172,32 @@ const Dashboard: React.FC<{
 
   const openPreview = (item: { id: string; text: string; imageSrc: string; sessionId: string }) => {
     setPreviewImage(item);
-    setPreviewScale(1);
   };
 
   const closePreview = () => {
     setPreviewImage(null);
-    setPreviewScale(1);
   };
 
-  const handlePreviewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const delta = event.deltaY < 0 ? 0.12 : -0.12;
-    setPreviewScale(prev => Math.max(0.5, Math.min(4, Number((prev + delta).toFixed(2)))));
+  const handlePreviewChangeCurrentId = (id: string) => {
+    const next = wordsWithImages.find(w => w.id === id);
+    if (next) setPreviewImage(next);
+  };
+
+  const handlePreviewOpenSession = (sessionId: string) => {
+    closePreview();
+    onStartEdit(sessionId);
   };
 
   return (
     <div className="relative grid lg:grid-cols-12 gap-8 items-stretch animate-in fade-in slide-in-from-bottom-4 duration-700">
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-[220] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
-          onClick={closePreview}
-        >
-          <div
-            className="relative inline-block max-w-[calc(100vw-40px)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div
-              className="relative rounded-2xl overflow-hidden border border-mid-charcoal"
-              onWheel={handlePreviewWheel}
-              title="可使用鼠标滚轮缩放图片"
-            >
-              <img
-                src={previewImage.imageSrc}
-                alt={previewImage.text}
-                className="block max-w-[calc(100vw-40px)] max-h-[calc(100vh-180px)] w-auto h-auto transition-transform duration-150"
-                style={{ transform: `scale(${previewScale})`, transformOrigin: 'center center' }}
-              />
+      <ImagePreviewModal
+        items={wordsWithImages}
+        currentId={previewImage?.id ?? null}
+        onChangeCurrentId={handlePreviewChangeCurrentId}
+        onClose={closePreview}
+        onOpenSession={handlePreviewOpenSession}
+      />
 
-              <div className="absolute left-3 top-3 flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    closePreview();
-                    onStartEdit(previewImage.sessionId);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-electric-blue text-charcoal hover:bg-white transition-colors text-xs font-headline"
-                >
-                  打开所属 Session
-                </button>
-              </div>
-
-              <div className="absolute right-3 top-3 flex items-center gap-2">
-                <span className="px-2 py-1 rounded-md bg-black/45 text-white font-mono text-[10px]">
-                  {Math.round(previewScale * 100)}%
-                </span>
-                <button
-                  onClick={closePreview}
-                  className="w-8 h-8 rounded-lg bg-black/45 text-text-light hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center"
-                  title="关闭预览"
-                >
-                  <span className="material-symbols-outlined text-base">close</span>
-                </button>
-              </div>
-
-              <div className="absolute left-0 right-0 bottom-0 px-4 py-3 bg-gradient-to-t from-black/75 to-transparent">
-                <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em]">Image Preview</p>
-                <p className="text-white font-serif text-lg truncate">{previewImage.text}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {highlightRecentSessions && (
         <div
@@ -3360,10 +3519,23 @@ const LibraryMode: React.FC<{
     userId?: string;
     onRefresh?: () => void;
   cachedImageWordIds?: Set<string>;
+  cachedImageDataUrls?: Record<string, string>;
   onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>;
-}> = ({ words, onClose, onTest, userId, onRefresh, cachedImageWordIds = new Set(), onGenerateImageForWord }) => {
+}> = ({ words, onClose, onTest, userId, onRefresh, cachedImageWordIds = new Set(), cachedImageDataUrls = {}, onGenerateImageForWord }) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [previewId, setPreviewId] = useState<string | null>(null);
     const [generatingWordIds, setGeneratingWordIds] = useState<Set<string>>(new Set());
+
+    // 带图单词列表，用于全屏预览与缩略图导航
+    const libraryItems = useMemo(() => {
+      return words
+        .map((word) => {
+          const src = word.image_url || cachedImageDataUrls[word.id] || null;
+          if (!src) return null;
+          return { id: word.id, text: word.text, imageSrc: src, sessionId: word.sessionId };
+        })
+        .filter(Boolean) as { id: string; text: string; imageSrc: string; sessionId: string }[];
+    }, [words, cachedImageDataUrls]);
 
     // Helper function to determine error severity level
     // 辅助函数：确定错误严重度等级
@@ -3644,6 +3816,12 @@ const LibraryMode: React.FC<{
 
     return (
         <div className="max-w-7xl mx-auto py-8 px-4 animate-in fade-in slide-in-from-bottom-4 duration-500 min-h-[calc(100vh-100px)] flex flex-col md:flex-row gap-6">
+            <ImagePreviewModal
+                items={libraryItems}
+                currentId={previewId}
+                onChangeCurrentId={setPreviewId}
+                onClose={() => setPreviewId(null)}
+            />
             
             {/* Sidebar Tools */}
             <div className="w-full md:w-80 flex flex-col gap-6 flex-shrink-0">
@@ -3987,11 +4165,19 @@ const LibraryMode: React.FC<{
                                                     }`}
                                                 >
                                                     <button
-                                                      onClick={(e) => handleGenerateImageClick(e, word)}
+                                                      onClick={(e) => {
+                                                        if (isGenerating) return;
+                                                        if (hasGeneratedImage) {
+                                                          e.stopPropagation();
+                                                          setPreviewId(word.id);
+                                                        } else {
+                                                          handleGenerateImageClick(e, word);
+                                                        }
+                                                      }}
                                                       disabled={isGenerating}
                                                       className={`absolute top-1 right-1 z-10 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
-                                                      title={hasGeneratedImage ? '已生成，点击可重新生成并替换' : '未生成，点击立即生成'}
-                                                      aria-label={hasGeneratedImage ? `重新生成 ${word.text} 的图片` : `生成 ${word.text} 的图片`}
+                                                      title={isGenerating ? '生成中…' : hasGeneratedImage ? '点击查看大图' : '未生成，点击立即生成'}
+                                                      aria-label={isGenerating ? `正在生成 ${word.text} 的图片` : hasGeneratedImage ? `查看 ${word.text} 的大图` : `生成 ${word.text} 的图片`}
                                                     >
                                                       <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
                                                     </button>
@@ -4117,13 +4303,15 @@ const InputMode: React.FC<{
   onDeleteWord?: (id: string) => Promise<void>,
   allWords: WordEntry[],
   cachedImageWordIds?: Set<string>,
+  cachedImageDataUrls?: Record<string, string>,
   onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>
-}> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords, cachedImageWordIds = new Set(), onGenerateImageForWord }) => {
+}> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords, cachedImageWordIds = new Set(), cachedImageDataUrls = {}, onGenerateImageForWord }) => {
   const [currentWords, setCurrentWords] = useState<EditableWord[]>(
     initialWords.map(w => createEditableWord({
       id: w.id,
       text: w.text,
       hasImage: !!w.image_url || !!w.image_path,
+      imageUrl: w.image_url || undefined,
       definition_cn: w.definition_cn || undefined,
       definition_en: w.definition_en || undefined,
       meaning_options: w.meaning_options || undefined,
@@ -4134,6 +4322,7 @@ const InputMode: React.FC<{
   // We don't use deletedIds for batch delete anymore based on new requirements, 
   // but keeping it empty for compatibility with onComplete refactoring if needed.
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [validationStage, setValidationStage] = useState<InputValidationStage>('IDLE');
@@ -4176,6 +4365,17 @@ const InputMode: React.FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingLockRef = useRef(false);
   const fallbackMeaning = '暂无中文释义';
+
+  // 带图单词列表，用于全屏预览与缩略图导航（草稿图优先，其次持久化 URL，最后缓存）
+  const inputItems = useMemo(() => {
+    return currentWords
+      .map((w) => {
+        const src = w.imageBase64 || w.imageUrl || (w.id ? cachedImageDataUrls[w.id] : undefined);
+        if (!src) return null;
+        return { id: w.id || w.tempId, text: w.text, imageSrc: src };
+      })
+      .filter(Boolean) as { id: string; text: string; imageSrc: string }[];
+  }, [currentWords, cachedImageDataUrls]);
 
   const validationStageLabel: Record<InputValidationStage, string> = {
     IDLE: 'VALIDATING...',
@@ -4719,6 +4919,12 @@ const InputMode: React.FC<{
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 py-6 animate-in fade-in duration-500 relative">
+      <ImagePreviewModal
+        items={inputItems}
+        currentId={previewId}
+        onChangeCurrentId={setPreviewId}
+        onClose={() => setPreviewId(null)}
+      />
       <div className="w-full flex flex-col items-center gap-3 px-2">
         <div className="w-full grid grid-cols-3 items-center gap-3">
           <div className="flex justify-start">
@@ -4941,10 +5147,18 @@ const InputMode: React.FC<{
                       const isGenerating = generatingWordTempIds.has(w.tempId) || !!w.imageGenerating;
                       return (
                       <button
-                        onClick={(event) => handleGenerateWordImageClick(event, w)}
+                        onClick={(event) => {
+                          if (isGenerating) return;
+                          if (hasGeneratedImage) {
+                            event.stopPropagation();
+                            setPreviewId(w.id || w.tempId);
+                          } else {
+                            handleGenerateWordImageClick(event, w);
+                          }
+                        }}
                         disabled={isGenerating}
                         className={`absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
-                        title={hasGeneratedImage ? '已生成，点击可重新生成并替换' : '未生成，点击立即生成'}
+                        title={isGenerating ? '生成中…' : hasGeneratedImage ? '点击查看大图' : '未生成，点击立即生成'}
                       >
                         <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
                       </button>
