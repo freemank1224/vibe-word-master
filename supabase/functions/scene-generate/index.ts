@@ -282,6 +282,34 @@ const convertImageUrlToDataUrl = async (imageUrl: string): Promise<string | null
 const parseResponseJson = async (response: Response) =>
   response.json().catch(async () => ({ error: { message: await response.text().catch(() => response.statusText) } }));
 
+// Extract the assistant text from a chat-completions response across providers.
+// Most gateways speak OpenAI shape (choices[0].message.content), but some do not:
+//   • Aliyun Bailian MaaS at .../compatible-mode/v1/chat/completions returns a
+//     flat {"text": "...", "finish_reason": "stop"} (no `choices` array).
+//   • DashScope native returns {"output": {"text": "..."}}.
+// Try the standard shape first, then fall back to the others so a single
+// director call works regardless of which provider the admin selected.
+const extractChatContent = (data: any): string => {
+  if (!data || typeof data !== 'object') return '';
+  const choices = Array.isArray(data.choices) ? data.choices : [];
+  const c0 = choices[0];
+  if (c0 && typeof c0 === 'object') {
+    const msg = c0.message;
+    if (msg && typeof msg?.content === 'string') return msg.content;
+    if (typeof c0.text === 'string') return c0.text; // legacy completion shape
+  }
+  if (typeof data.text === 'string') return data.text;             // Aliyun flat
+  const output = data.output;
+  if (output && typeof output === 'object') {
+    if (typeof output.text === 'string') return output.text;        // DashScope native
+    const ochoices = Array.isArray(output.choices) ? output.choices : [];
+    if (ochoices[0]?.message && typeof ochoices[0].message.content === 'string') {
+      return ochoices[0].message.content;                           // DashScope compat
+    }
+  }
+  return '';
+};
+
 const tryGenerateByProvider = async (
   provider: ProviderConfig,
   prompt: string,
@@ -403,7 +431,15 @@ interface DesignLLMConfig { baseUrl: string; apiKey: string; model: string; }
 const chatCompletionsUrl = (baseUrl: string): string => {
   const s = normalizeUrl(baseUrl);
   if (!s) return '';
-  return s.endsWith('/chat/completions') ? s : `${s}/v1/chat/completions`;
+  if (s.endsWith('/chat/completions')) return s;
+  // Some providers document the OpenAI-compatible base WITH the version segment
+  // already included (e.g. Aliyun Bailian: ".../compatible-mode/v1", or OpenAI's
+  // own "https://api.openai.com/v1"). Appending "/v1/chat/completions" to those
+  // would double the "/v1" and 404. If the base already ends in a "/vN" segment,
+  // append only "/chat/completions"; otherwise add the "/v1" ourselves.
+  const base = s.replace(/\/+$/, '');
+  if (/\/v\d+$/.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
 };
 
 const designScene = async (
@@ -472,7 +508,7 @@ const designScene = async (
         console.warn(`[scene-generate] design http ${response.status}: ${lastHttpError}`);
         return '';
       }
-      const content = typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+      const content = extractChatContent(data);
       lastRawHead = JSON.stringify(content.substring(0, 500));
       console.log(`[scene-generate] design raw len=${content.length} head=${lastRawHead}`);
       return content;
@@ -595,7 +631,7 @@ const detectRegions = async (
   if (!data) data = await attempt(false);
   if (!data) return [];
 
-  const rawContent: string = data?.choices?.[0]?.message?.content || '';
+  const rawContent: string = extractChatContent(data);
   if (!rawContent) return [];
 
   let parsed: any = null;
@@ -775,16 +811,40 @@ const resolveUserId = async (req: Request): Promise<string | null> => {
 // ----------------------------------------------------------------
 interface LLMConfig { baseUrl: string; apiKey: string; model: string; }
 
+// Director provider selection — switchable at runtime from the Admin Console
+// ("~" panel). Both providers' keys live ONLY server-side as Edge Secrets; the
+// frontend sends just the non-sensitive `directorProvider` string, never keys.
+// This is an extension of §10's "keys server-side only" rule: the selector
+// carries no secret material.
+type DirectorProvider = 'default' | 'aliyun';
+const readDirectorProvider = (body: any): DirectorProvider => {
+  const p = typeof body?.directorProvider === 'string' ? body.directorProvider.trim().toLowerCase() : 'default';
+  return p === 'aliyun' ? 'aliyun' : 'default';
+};
+
 const envStr = (name: string): string => {
   const v = Deno.env.get(name);
   return typeof v === 'string' ? v.trim() : '';
 };
 
-const resolveDesignConfig = (): LLMConfig => ({
-  baseUrl: envStr('SCENE_DESIGN_BASE_URL'),
-  apiKey: envStr('SCENE_DESIGN_API_KEY'),
-  model: envStr('SCENE_DESIGN_MODEL') || 'gpt-4o',
-});
+// `default` = the original director (Minimax-m3 via SCENE_DESIGN_*).
+// `aliyun`  = Tongyi/Qwen (e.g. qwen-max) via SCENE_DESIGN_ALIYUN_*, using the
+//             OpenAI-compatible Aliyun MaaS endpoint — same /v1/chat/completions
+//             protocol, so chatCompletionsUrl() needs no changes.
+const resolveDesignConfig = (provider: DirectorProvider = 'default'): LLMConfig => {
+  if (provider === 'aliyun') {
+    return {
+      baseUrl: envStr('SCENE_DESIGN_ALIYUN_BASE_URL'),
+      apiKey: envStr('SCENE_DESIGN_ALIYUN_API_KEY'),
+      model: envStr('SCENE_DESIGN_ALIYUN_MODEL') || 'qwen-max',
+    };
+  }
+  return {
+    baseUrl: envStr('SCENE_DESIGN_BASE_URL'),
+    apiKey: envStr('SCENE_DESIGN_API_KEY'),
+    model: envStr('SCENE_DESIGN_MODEL') || 'gpt-4o',
+  };
+};
 
 const resolveVisionEnabled = (bodyVisionEnabled: boolean): boolean =>
   bodyVisionEnabled === true || Deno.env.get('SCENE_VISION_ENABLED') === 'true';
@@ -878,9 +938,11 @@ serve(async (req) => {
     if (action === 'probe') {
       const userId = await resolveUserId(req);
       if (!userId) return json({ ok: false, error: 'Authentication required' }, 401);
-      const cfg = resolveDesignConfig();
+      const directorProvider = readDirectorProvider(body);
+      const cfg = resolveDesignConfig(directorProvider);
+      const secretPrefix = directorProvider === 'aliyun' ? 'SCENE_DESIGN_ALIYUN_*' : 'SCENE_DESIGN_*';
       if (!cfg.baseUrl || !cfg.apiKey) {
-        return json({ ok: false, error: 'SCENE_DESIGN_* secret not configured (BASE_URL/API_KEY missing)' }, 502);
+        return json({ ok: false, error: `${secretPrefix} secret not configured (BASE_URL/API_KEY missing)`, provider: directorProvider }, 502);
       }
       const url = chatCompletionsUrl(cfg.baseUrl);
       const startedAt = Date.now();
@@ -915,15 +977,15 @@ serve(async (req) => {
         const latencyMs = Date.now() - startedAt;
         if (!response.ok) {
           const data = await parseResponseJson(response);
-          return json({ ok: false, error: data?.error?.message || `director HTTP ${response.status}`, status: 502, latencyMs, model: cfg.model, baseUrl: masked }, 502);
+          return json({ ok: false, error: data?.error?.message || `director HTTP ${response.status}`, status: 502, latencyMs, model: cfg.model, baseUrl: masked, provider: directorProvider }, 502);
         }
         const data = await parseResponseJson(response);
-        const content = typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '';
+        const content = extractChatContent(data);
         if (content.trim().length < 40) {
           return json({
             ok: false,
             error: `director returned short response (len=${content.length}): ${content.slice(0, 120)}`,
-            latencyMs, model: cfg.model, baseUrl: masked,
+            latencyMs, model: cfg.model, baseUrl: masked, provider: directorProvider,
           }, 502);
         }
         const parsed = parseSceneDesignWithDiagnostics(content, testWords);
@@ -931,10 +993,17 @@ serve(async (req) => {
         const diag = parsed.diagnostics;
         const sentencesProduced = design ? design.elements.filter((e: any) => typeof e.sentence === 'string' && e.sentence.trim().length > 0).length : 0;
         const sampleSentence = design?.elements?.[0]?.sentence || '';
+        const probeOk = !!design && sentencesProduced >= 1;
         return json({
-          ok: !!design && sentencesProduced >= 1,
+          ok: probeOk,
+          // Surface a human-readable reason even on the 200 path so the Admin
+          // Console shows WHY a "probe failed" happened, not just that it did.
+          error: probeOk
+            ? undefined
+            : `director responded (len=${content.length}) but produced no valid cloze sentences${diag?.failReason ? `: ${diag.failReason}` : ''}`,
           probe: 'design',
           model: cfg.model,
+          provider: directorProvider,
           latencyMs,
           baseUrl: masked,
           parsed: !!design,
@@ -947,7 +1016,7 @@ serve(async (req) => {
           sampleSentence,
         });
       } catch (err) {
-        return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502, latencyMs: Date.now() - startedAt, model: cfg.model, baseUrl: masked }, 502);
+        return json({ ok: false, error: err instanceof Error ? err.message : String(err), status: 502, latencyMs: Date.now() - startedAt, model: cfg.model, baseUrl: masked, provider: directorProvider }, 502);
       }
     }
 
@@ -1354,7 +1423,8 @@ serve(async (req) => {
       // ─── End balance pre-check ──────────────────────────────────
 
       // ① Scene director
-      const designCfg = resolveDesignConfig();
+      const directorProvider = readDirectorProvider(body);
+      const designCfg = resolveDesignConfig(directorProvider);
       let designResult: { design: { structuredPrompt: string; elements: any[]; sceneConcept?: string; sceneTitle?: string } | null; diagnostics: any | null; failReason: string | null; httpStatus?: number; rawHead?: string } = { design: null, diagnostics: null, failReason: 'not-called' };
       try {
         designResult = await designScene(words, dayIndex, designCfg);
@@ -1404,6 +1474,11 @@ serve(async (req) => {
           structuredPrompt: design.structuredPrompt, // preserve original (with placeholder) for reproducibility
           elements: design.elements,
           source: 'director',
+          // Which director actually produced this design (purely additive to
+          // the JSONB — no schema change). Lets us audit which model ran even
+          // when the director failed and the fallback was used.
+          directorProvider,
+          directorModel: designCfg.model,
         };
       } else {
         // buildFusionResult always emits a valid storyboard + one sentence per
@@ -1431,6 +1506,9 @@ serve(async (req) => {
           sentences: fallbackResult.sentences,
           source: 'fallback',
           fallbackReason: designResult.failReason,
+          // Record which director was *attempted* before falling back.
+          directorProvider,
+          directorModel: designCfg.model,
           diagnostics: fbDiagnostics
             ? {
                 failReason: fbDiagnostics.failReason,
@@ -1469,6 +1547,8 @@ serve(async (req) => {
         stage: 'designed',
         prompt,
         source: fellBack ? 'fallback' : 'director',
+        directorProvider,
+        directorModel: designCfg.model,
         sceneTitle: design?.sceneTitle || null,
         storyboard: storyboardForEvent,
         elements: elementsForEvent,

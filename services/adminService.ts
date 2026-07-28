@@ -137,6 +137,22 @@ class AdminService {
     return text.toLowerCase().trim().replace(/\s+/g, ' ');
   }
 
+  /**
+   * Verify the Admin Console ("~" panel) password against the server-side
+   * SCENE_ADMIN_PANEL_PASSWORD secret via the `admin-verify` edge function.
+   * Returns { ok } — never throws on a wrong password (that's a normal result);
+   * only surfaces transport/auth errors via `error`.
+   */
+  async verifyPanelPassword(password: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const data = await this._invokeFn('admin-verify', { password });
+      return { ok: data?.ok === true, error: data?.ok === true ? undefined : data?.error };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: msg };
+    }
+  }
+
   get status() {
     return this._status;
   }

@@ -384,7 +384,15 @@ export const requestSceneGeneration = async (
   callbacks?: SceneGenerationCallbacks,
 ): Promise<SceneGenerationResult> => {
   return callSceneGenerate(
-    { words, dayIndex, language, force: false, visionEnabled: SceneGameSettings.isVisionEnabled(), clientPersist: true },
+    {
+      words,
+      dayIndex,
+      language,
+      force: false,
+      visionEnabled: SceneGameSettings.isVisionEnabled(),
+      directorProvider: SceneGameSettings.getDirectorProvider(),
+      clientPersist: true,
+    },
     signal,
     callbacks,
     SCENE_GENERATION_TIMEOUT_MS,
@@ -400,7 +408,15 @@ export const requestSceneRegeneration = async (
   callbacks?: SceneGenerationCallbacks,
 ): Promise<SceneGenerationResult> => {
   return callSceneGenerate(
-    { words, dayIndex, language, force: true, visionEnabled: SceneGameSettings.isVisionEnabled(), clientPersist: true },
+    {
+      words,
+      dayIndex,
+      language,
+      force: true,
+      visionEnabled: SceneGameSettings.isVisionEnabled(),
+      directorProvider: SceneGameSettings.getDirectorProvider(),
+      clientPersist: true,
+    },
     signal,
     callbacks,
     SCENE_GENERATION_TIMEOUT_MS,
@@ -624,6 +640,7 @@ export const migrateScenePngsToWebp = async (
 export interface SceneDirectorProbeResult {
   ok: boolean;
   model?: string;
+  provider?: string;
   latencyMs?: number;
   baseUrl?: string;
   error?: string;
@@ -633,17 +650,41 @@ export const probeSceneDirector = async (): Promise<SceneDirectorProbeResult> =>
   if (!isSupabaseConfigured) {
     return { ok: false, error: 'Supabase is not configured' };
   }
-  const { data, error } = await supabase.functions.invoke('scene-generate', { body: { action: 'probe' } });
-  if (error) return { ok: false, error: error.message || 'scene-generate invoke failed' };
-  if (!data || data.ok !== true) {
-    return { ok: false, error: data?.error || 'probe failed' };
+  const provider = SceneGameSettings.getDirectorProvider();
+  // Use raw fetch (not supabase.functions.invoke) so we can read the response
+  // body on ANY status. invoke swallows the body on non-2xx and surfaces only a
+  // generic "Edge Function returned a non-2xx status code" — which hides the
+  // real director error (e.g. "director HTTP 401", "secret not configured").
+  const functionUrl = `${SUPABASE_URL}/functions/v1/scene-generate`;
+  const accessToken = (await supabase.auth.getSession())?.data?.session?.access_token || '';
+  try {
+    const res = await fetch(functionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ action: 'probe', directorProvider: provider }),
+    });
+    let data: any = null;
+    try { data = await res.json(); } catch { /* non-JSON body */ }
+    if (!res.ok) {
+      return { ok: false, provider: data?.provider || provider, error: data?.error || `scene-generate HTTP ${res.status}` };
+    }
+    if (!data || data.ok !== true) {
+      return { ok: false, provider: data?.provider || provider, error: data?.error || 'probe failed (director produced no valid sentences)' };
+    }
+    return {
+      ok: true,
+      provider: String(data.provider || provider),
+      model: String(data.model || ''),
+      latencyMs: Number(data.latencyMs ?? 0),
+      baseUrl: String(data.baseUrl || ''),
+    };
+  } catch (err) {
+    return { ok: false, provider, error: err instanceof Error ? err.message : String(err) };
   }
-  return {
-    ok: true,
-    model: String(data.model || ''),
-    latencyMs: Number(data.latencyMs ?? 0),
-    baseUrl: String(data.baseUrl || ''),
-  };
 };
 
 // ----------------------------------------------------------------

@@ -4,7 +4,7 @@ import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
 import { HoverTranslationText } from './HoverTranslationText';
-import { SceneGameSettings } from '../services/sceneGameSettings';
+import { SceneGameSettings, DirectorProvider } from '../services/sceneGameSettings';
 import { probeSceneDirector, SceneDirectorProbeResult, cleanupOrphanSceneAssets, migrateScenePngsToWebp } from '../services/sceneGame';
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -95,8 +95,72 @@ const formatBytes = (bytes: number): string => {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+// ----------------------------------------------------------------
+// Password gate for the whole Admin Console.
+// The panel is already restricted to the super-admin email in App.tsx; this
+// adds a second factor verified server-side against the
+// SCENE_ADMIN_PANEL_PASSWORD Edge Secret (admin-verify function). Until the
+// correct password is supplied, NO settings tabs are rendered. A successful
+// unlock is cached in sessionStorage so re-opening the panel in the same
+// browser tab doesn't re-prompt (a new tab/window re-locks).
+// ----------------------------------------------------------------
+const SESSION_UNLOCK_KEY = 'vibe-word-admin-unlocked';
+
+const AdminPanelLock: React.FC<{ onUnlocked: () => void }> = ({ onUnlocked }) => {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password || busy) return;
+    setBusy(true);
+    setError(null);
+    const { ok, error: verifyError } = await adminService.verifyPanelPassword(password);
+    setBusy(false);
+    if (ok) {
+      try { sessionStorage.setItem(SESSION_UNLOCK_KEY, 'true'); } catch { /* private mode */ }
+      setPassword('');
+      onUnlocked();
+    } else {
+      setError(verifyError || '密码错误，请重试。');
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <form onSubmit={submit} style={{ width: '320px', textAlign: 'center' }}>
+        <div style={{ fontSize: '34px', marginBottom: '6px' }}>🔒</div>
+        <div style={{ fontSize: '14px', color: '#ccc', marginBottom: '16px' }}>
+          <HoverTranslationText text="Admin panel password" translation="请输入管理面板密码" />
+        </div>
+        <input
+          type="password"
+          autoFocus
+          autoComplete="off"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          style={INPUT_STYLE}
+          disabled={busy}
+        />
+        {error && <div style={{ color: '#FF8A8A', fontSize: '12px', marginBottom: '10px' }}>{error}</div>}
+        <button type="submit" style={{ ...BUTTON_STYLE, width: '100%', opacity: busy ? 0.6 : 1 }} disabled={busy}>
+          {busy ? '验证中…' : '解锁'}
+        </button>
+        <div style={{ fontSize: '11px', color: '#777', marginTop: '14px', lineHeight: 1.5 }}>
+          密码由服务端校验（Edge Secret <code>SCENE_ADMIN_PANEL_PASSWORD</code>），不在前端保存。
+        </div>
+      </form>
+    </div>
+  );
+};
+
 export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => void }> = ({ onClose, onDataChange }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'text' | 'scene'>('dashboard');
+  const [unlocked, setUnlocked] = useState<boolean>(() => {
+    try { return sessionStorage.getItem(SESSION_UNLOCK_KEY) === 'true'; } catch { return false; }
+  });
   const [logs, setLogs] = useState<string[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -185,6 +249,10 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
         <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: '20px' }}>×</button>
       </div>
 
+      {!unlocked ? (
+        <AdminPanelLock onUnlocked={() => setUnlocked(true)} />
+      ) : (
+        <>
       <div style={{ display: 'flex', borderBottom: '1px solid #333' }}>
         <button style={TAB_BUTTON_STYLE(activeTab === 'dashboard')} onClick={() => setActiveTab('dashboard')}>概览</button>
         <button style={TAB_BUTTON_STYLE(activeTab === 'text')} onClick={() => setActiveTab('text')}>普通文本</button>
@@ -273,6 +341,8 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
         {activeTab === 'text' && <TaskSettingsPanel task="TEXT" title="普通文本思考配置" onLog={addLog} />}
         {activeTab === 'scene' && <SceneGameSettingsPanel onLog={addLog} />}
       </div>
+        </>
+      )}
     </div>
   );
 };
@@ -285,6 +355,7 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
 // ----------------------------------------------------------------
 const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLog }) => {
   const [visionEnabled, setVisionEnabled] = useState<boolean>(() => SceneGameSettings.load().visionEnabled);
+  const [directorProvider, setDirectorProvider] = useState<DirectorProvider>(() => SceneGameSettings.load().directorProvider);
   const [probeBusy, setProbeBusy] = useState(false);
   const [probeResult, setProbeResult] = useState<SceneDirectorProbeResult | null>(null);
   const [migrateBusy, setMigrateBusy] = useState(false);
@@ -293,27 +364,34 @@ const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLo
 
   const handleToggleVision = (enabled: boolean) => {
     setVisionEnabled(enabled);
-    SceneGameSettings.save({ visionEnabled: enabled });
+    SceneGameSettings.save({ visionEnabled: enabled, directorProvider });
+  };
+
+  const handleChangeProvider = (provider: DirectorProvider) => {
+    setDirectorProvider(provider);
+    SceneGameSettings.setDirectorProvider(provider);
+    setProbeResult(null);
   };
 
   const handleClear = () => {
-    if (!confirm('重置场景游戏的视觉精修开关？(将恢复默认关闭)')) return;
+    if (!confirm('重置场景游戏设置？(导演模型恢复默认，视觉精修关闭)')) return;
     SceneGameSettings.clear();
     setVisionEnabled(false);
+    setDirectorProvider('default');
     onLog('Cleared scene-game settings.');
   };
 
   const handleProbe = async () => {
     setProbeBusy(true);
     setProbeResult(null);
-    onLog('Probing scene director connection…');
+    onLog(`Probing scene director connection (${directorProvider})…`);
     const result = await probeSceneDirector();
     setProbeResult(result);
     setProbeBusy(false);
     if (result.ok) {
-      onLog(`Scene director OK: ${result.model} (${result.latencyMs}ms) @ ${result.baseUrl}`);
+      onLog(`Scene director OK [${result.provider || directorProvider}]: ${result.model} (${result.latencyMs}ms) @ ${result.baseUrl}`);
     } else {
-      onLog(`Scene director probe failed: ${result.error}`);
+      onLog(`Scene director probe failed [${result.provider || directorProvider}]: ${result.error}`);
     }
   };
 
@@ -372,6 +450,37 @@ const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLo
       </p>
 
       <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '10px' }}>① 导演模型（场景编排）</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+            <input
+              type="radio"
+              name="director-provider"
+              checked={directorProvider === 'default'}
+              onChange={() => handleChangeProvider('default')}
+              style={{ width: '16px', height: '16px' }}
+            />
+            <span>默认 · Minimax-m3</span>
+            <code style={{ fontSize: '11px', color: '#999' }}>SCENE_DESIGN_*</code>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+            <input
+              type="radio"
+              name="director-provider"
+              checked={directorProvider === 'aliyun'}
+              onChange={() => handleChangeProvider('aliyun')}
+              style={{ width: '16px', height: '16px' }}
+            />
+            <span>通义千问 · Aliyun qwen-max</span>
+            <code style={{ fontSize: '11px', color: '#999' }}>SCENE_DESIGN_ALIYUN_*</code>
+          </label>
+        </div>
+        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px', lineHeight: 1.5 }}>
+          选择后立即生效（写入本地偏好，随请求发送 <code>directorProvider</code>）。密钥始终在服务端，切换不暴露任何 key。下方「测试导演连接」会探测当前选中的模型。
+        </div>
+      </div>
+
+      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
         <button
           style={{ ...BUTTON_STYLE, opacity: probeBusy ? 0.6 : 1 }}
           onClick={handleProbe}
@@ -380,13 +489,13 @@ const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLo
           {probeBusy ? '测试中…' : '测试导演连接'}
         </button>
         <div style={{ fontSize: '11px', color: '#999', marginTop: '8px' }}>
-          验证服务端 <code>SCENE_DESIGN_*</code> Secret 是否可用。不发图、不写库。
+          验证当前选中导演（<code>{directorProvider === 'aliyun' ? 'SCENE_DESIGN_ALIYUN_*' : 'SCENE_DESIGN_*'}</code>）的服务端 Secret 是否可用。不发图、不写库。
         </div>
         {probeResult && (
           <div style={{ marginTop: '10px', fontSize: '12px', color: probeResult.ok ? '#7CFC8A' : '#FF8A8A' }}>
             {probeResult.ok
-              ? `✓ ${probeResult.model} · ${probeResult.latencyMs}ms · ${probeResult.baseUrl}`
-              : `✗ ${probeResult.error}`}
+              ? `✓ [${probeResult.provider || directorProvider}] ${probeResult.model} · ${probeResult.latencyMs}ms · ${probeResult.baseUrl}`
+              : `✗ [${probeResult.provider || directorProvider}] ${probeResult.error}`}
           </div>
         )}
       </div>
@@ -436,7 +545,7 @@ const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLo
       </div>
 
       <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
-        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={() => { SceneGameSettings.save({ visionEnabled }); onLog('Saved scene-game settings.'); alert('已保存场景游戏设置！'); }}>保存设置</button>
+        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={() => { SceneGameSettings.save({ visionEnabled, directorProvider }); onLog('Saved scene-game settings.'); alert('已保存场景游戏设置！'); }}>保存设置</button>
         <button style={{ ...BUTTON_STYLE, backgroundColor: '#666' }} onClick={handleClear}>重置</button>
       </div>
     </div>
