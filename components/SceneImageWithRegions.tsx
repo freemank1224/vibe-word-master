@@ -15,6 +15,15 @@ interface SceneImageWithRegionsProps {
   blinkNonce: number;
   /** Optional handler shown in the load-failure placeholder (e.g. "Regenerate"). */
   onRegenerate?: () => void;
+  /** Fired when the <img> fails to load (404 / network / CORS). Used by the
+   *  PLAYING screen to refund the scene charge, since the user never saw the
+   *  image. The in-component broken-image placeholder still shows as well. */
+  onImageError?: () => void;
+  /** Fired on a successful <img> load. Used by the PLAYING screen to "consume"
+   *  the charge (clear the refund handle) once the user has actually seen the
+   *  image — so a later cached replay that fails to load can't refund a charge
+   *  the user already benefited from. */
+  onImageLoaded?: () => void;
   /** When true (PLAYING mode), render at full container size with NO max-width cap. */
   fullSize?: boolean;
   /**
@@ -45,6 +54,8 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
   revealedWordIndices,
   blinkNonce,
   onRegenerate,
+  onImageError,
+  onImageLoaded,
   fullSize = false,
   showOverlays = true,
 }) => {
@@ -136,10 +147,14 @@ export const SceneImageWithRegions: React.FC<SceneImageWithRegionsProps> = ({
             alt="Scene"
             className="absolute inset-0 h-full w-full object-contain"
             draggable={false}
-            onLoad={() => console.log('[SceneImage] loaded', imageUrl)}
+            onLoad={() => {
+              console.log('[SceneImage] loaded', imageUrl);
+              onImageLoaded?.();
+            }}
             onError={(e) => {
               console.error('[SceneImage] onError', imageUrl, e);
               setImgError(true);
+              onImageError?.();
             }}
           />
         ) : (

@@ -18,6 +18,16 @@ export interface SceneGenerationResult {
   asset: SceneAsset;
   degraded: boolean;
   /**
+   * The charge idempotency key (a.k.a. roundRef) for this generation. Present
+   * for the legacy server-persist `done` path (where the edge already charged).
+   * For the clientPersist path this is filled in by `callSceneGenerate` after
+   * `finalize` runs (finalize returns the roundRef it charged under). Cache hits
+   * have no commitRef — they are free and never charged.
+   */
+  commitRef?: string;
+  /** Wallet balance after the charge landed (legacy path / after finalize). */
+  newBalance?: number;
+  /**
    * Present when the edge streamed a `clientPersist:true` done event (PNG bytes
    * returned inline; client must run compressToWebP + upload + call finalize).
    * `asset` is undefined in this case — the caller must finalize before use.
@@ -25,6 +35,8 @@ export interface SceneGenerationResult {
   pendingClientPersist?: {
     imageDataUrl: string;
     pendingAsset: any;
+    /** roundRef echoed from the edge's done payload; passed to `finalize`. */
+    roundRef?: string;
   };
 }
 
@@ -139,7 +151,11 @@ export const parseSceneGenerateNdjsonStream = async (
   let finalAsset: SceneAsset | null = null;
   let finalSource: 'cache-hit' | 'generated' = 'generated';
   let finalDegraded = false;
-  let pendingClientPersist: { imageDataUrl: string; pendingAsset: any } | undefined = undefined;
+  // roundRef from the legacy server-persist `done` event (the edge already
+  // charged under it). The clientPersist path resolves its commitRef after
+  // `finalize` runs. Cache hits leave this empty (free, never charged).
+  let finalCommitRef = '';
+  let pendingClientPersist: { imageDataUrl: string; pendingAsset: any; roundRef?: string } | undefined = undefined;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -174,6 +190,7 @@ export const parseSceneGenerateNdjsonStream = async (
           pendingClientPersist = {
             imageDataUrl: event.imageDataUrl,
             pendingAsset: event.pendingAsset,
+            roundRef: String(event?.pendingAsset?.roundRef || event?.roundRef || ''),
           };
           finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
           finalDegraded = Boolean(event.degraded);
@@ -184,6 +201,7 @@ export const parseSceneGenerateNdjsonStream = async (
           finalAsset = asset;
           finalSource = event.source === 'cache-hit' ? 'cache-hit' : 'generated';
           finalDegraded = Boolean(event.degraded);
+          finalCommitRef = String(event?.roundRef || '');
         }
       } else if (stage === 'error') {
         const failedAt = event?.failedStage || 'unknown';
@@ -202,5 +220,5 @@ export const parseSceneGenerateNdjsonStream = async (
   if (pendingClientPersist) {
     return { source: finalSource, asset: null as any, degraded: finalDegraded, pendingClientPersist };
   }
-  return { source: finalSource, asset: finalAsset!, degraded: finalDegraded };
+  return { source: finalSource, asset: finalAsset!, degraded: finalDegraded, commitRef: finalCommitRef || undefined };
 };

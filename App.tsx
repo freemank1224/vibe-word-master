@@ -2319,12 +2319,11 @@ const App: React.FC = () => {
               allWords={visibleWords}
               sessions={sessions}
               onComplete={async (summary: SceneGameSummary) => {
-                // Scene games spend coins at generation time (edge function),
-                // and — unlike CLASSIC/PUZZLE — this handler previously had
-                // no refresh, so the right-side CoinCounter stayed stale by
-                // SCENE_GAME_COST. Refresh unconditionally: coins were spent
-                // regardless of rankingEligible, so we must update even when
-                // the round is rejected for duplicate words.
+                // Scene games now charge when the image is SAVED (inside the
+                // `finalize` action), not at generation time. The header is
+                // refreshed live via onCoinsSpent at that moment; this final
+                // refresh is a safety re-sync after the round (and covers any
+                // reward/edge cases). No charge happens on a failed generation.
                 void refreshCoinBalance();
                 if (!summary.rankingEligible) {
                   showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
@@ -2359,6 +2358,8 @@ const App: React.FC = () => {
               onCancel={() => setMode('DASHBOARD')}
               coinBalance={coinBalance}
               onInsufficientCoins={() => setShowInsufficientCoins(true)}
+              onCoinsSpent={(bal) => { if (typeof bal === 'number') setCoinBalance(bal); else void refreshCoinBalance(); }}
+              onNotify={showNotification}
             />
           ) : (
             <TestModeV2

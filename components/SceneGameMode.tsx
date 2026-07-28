@@ -22,6 +22,7 @@ import {
   calculateSceneGameSummary,
   gatherWordMeta,
   getSceneCandidateWords,
+  refundSceneCharge,
   requestSceneGeneration,
   requestSceneRegeneration,
   sceneDurationSeconds,
@@ -36,6 +37,11 @@ interface SceneGameModeProps {
   onCancel: () => void;
   coinBalance?: number;
   onInsufficientCoins?: () => void;
+  /** Fired after the scene charge lands (finalize) and after any refund, so the
+   *  header CoinCounter can refresh. Passes the post-charge balance when known. */
+  onCoinsSpent?: (newBalance?: number) => void;
+  /** Optional toast hook (e.g. to confirm a refund). */
+  onNotify?: (message: string, kind?: 'success' | 'warning' | 'error') => void;
 }
 
 const WORD_COUNT_KEY = 'vibe_scene_word_count';
@@ -125,7 +131,83 @@ const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | nu
 // tried to answer. No separate ReviewCard — keeps content + styling 1:1.
 // ----------------------------------------------------------------
 
-const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel, coinBalance = Infinity, onInsufficientCoins }) => {
+// ----------------------------------------------------------------
+// PREPARING failure classification — maps a generation error to a
+// concrete UI reason so the loading screen can tell the user whether
+// the scene ORCHESTRATION (director) or the IMAGE MODEL (render) or
+// the SAVE step failed, instead of a generic "failed" string.
+// ----------------------------------------------------------------
+type PreparingErrorStage = 'designed' | 'rendered' | 'persisted' | 'unknown';
+interface PreparingError {
+  /** Which checklist step to highlight red (1=orchestration, 2=render).
+   *  'persisted'/'unknown' highlight no step. */
+  stageKey: PreparingErrorStage;
+  titleZh: string;
+  titleEn: string;
+  detail: string;
+}
+
+/**
+ * @param reachedStage The last `preparingStage` value reached before the error
+ *   (0=selecting, 1=orchestration done, 2=render done). Used to infer which leg
+ *   a client-side timeout hit.
+ */
+const describePreparingError = (err: unknown, reachedStage: number): PreparingError => {
+  const failedStage = (err as any)?.failedStage as string | undefined;
+  const raw = err instanceof Error ? err.message : String(err);
+  const isTimeout = /timeout after \d+ms/i.test(raw);
+
+  if (failedStage === 'designed') {
+    return {
+      stageKey: 'designed',
+      titleZh: '场景编排失败 — 导演模型未能生成场景',
+      titleEn: 'Scene orchestration failed — the director model could not build the scene.',
+      detail: raw,
+    };
+  }
+  if (failedStage === 'rendered') {
+    return {
+      stageKey: 'rendered',
+      titleZh: '图像生成失败 — 生图模型未能出图',
+      titleEn: 'Image generation failed — the render model could not produce an image.',
+      detail: raw,
+    };
+  }
+  if (failedStage === 'persisted') {
+    return {
+      stageKey: 'persisted',
+      titleZh: '图像保存失败 — 图片处理或上传出错',
+      titleEn: 'Failed to save the image — processing or upload went wrong.',
+      detail: raw,
+    };
+  }
+  if (isTimeout) {
+    // No explicit failedStage and the client timeout fired — infer the leg from
+    // how far the pipeline got.
+    if (reachedStage <= 1) {
+      return {
+        stageKey: 'designed',
+        titleZh: '场景编排超时 — 导演模型响应过久，请重试',
+        titleEn: 'Scene orchestration timed out — the director model took too long. Please retry.',
+        detail: raw,
+      };
+    }
+    return {
+      stageKey: 'rendered',
+      titleZh: '图像生成/保存超时 — 生图模型响应过久，请重试',
+      titleEn: 'Image generation/save timed out — the render model took too long. Please retry.',
+      detail: raw,
+    };
+  }
+  return {
+    stageKey: 'unknown',
+    titleZh: '场景生成失败，请重试',
+    titleEn: 'Scene generation failed. Please try again.',
+    detail: raw,
+  };
+};
+
+const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel, coinBalance = Infinity, onInsufficientCoins, onCoinsSpent, onNotify }) => {
   const dayIndex = new Date().getDay();
   const monsterImg = `/monsterImages/M${dayIndex}.webp`;
   const monsterName = MONSTER_NAMES[dayIndex] || MONSTER_NAMES[0];
@@ -153,6 +235,18 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
    *  scene idea before play. Mirrors the AI-authored `storyboard` field sent on
    *  the `designed` event. Reset at the start of every run. */
   const [storyboard, setStoryboard] = useState<string | null>(null);
+  /** Structured PREPARING failure (orchestration vs render vs save vs timeout).
+   *  When set, the PREPARING card shows a precise reason in place instead of
+   *  bouncing back to INTRO with a generic error string. */
+  const [preparingError, setPreparingError] = useState<PreparingError | null>(null);
+  /** Soft (non-blocking) notice that the director fell back to the deterministic
+   *  arrangement — gameplay still proceeds. Surfaced from the `designed` event's
+   *  fallbackReason. */
+  const [directorDegraded, setDirectorDegraded] = useState<string | null>(null);
+  /** Refund handle for the charge that paid for the currently-displayed asset.
+   *  Set when `finalize` charges (roundRef present), consumed (nulled) on a
+   *  successful image load, and used to refund on an image load failure. */
+  const chargeRef = useRef<{ roundRef: string; wordSetHash: string; dayIndex: number; language: string } | null>(null);
 
   const [countdownValue, setCountdownValue] = useState(3);
   const [timeLeft, setTimeLeft] = useState(0);
@@ -302,6 +396,9 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setAsset(null);
     setDegraded(false);
     setStoryboard(null);
+    setPreparingError(null);
+    setDirectorDegraded(null);
+    chargeRef.current = null;
     // Reset TTS state for the new round and revoke any stale blob URLs.
     setSentenceAudios({});
     setAudioProgress({ done: 0, total: 0, failed: 0 });
@@ -315,6 +412,9 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     // TTS prefetch in parallel with the image render; we then await this
     // promise before transitioning to COUNTDOWN.
     let ttsPromise: Promise<void> | null = null;
+    // Local mirror of preparingStage for the catch block (the React state closure
+    // is stale inside the memoized callback). Used to infer which leg a timeout hit.
+    let reachedStage = 0;
 
     const smart = typeof window !== 'undefined' && window.localStorage.getItem('vibe_ai_selection') === 'true';
     const selection = selectSceneWords(allWords, sessions, smart, n);
@@ -346,11 +446,16 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
           onStage: (stage, payload) => {
             console.log('[SceneGameMode] onStage', stage);
             if (stage === 'designed') {
+              reachedStage = 1;
               setPreparingStage(1);
               // Capture the AI-authored storyboard (or fallback storyboard) for
               // the PREPARING stage preview card.
               const sb = typeof payload?.storyboard === 'string' ? payload.storyboard.trim() : '';
               if (sb) setStoryboard(sb);
+              // Soft (non-blocking) notice when the director degraded to the
+              // deterministic fallback. Not a failure — gameplay proceeds.
+              const fr = typeof payload?.fallbackReason === 'string' ? payload.fallbackReason.trim() : '';
+              setDirectorDegraded(fr || null);
               // Kick off parallel TTS prefetch as soon as we have sentences.
               // The image render (stage 'rendered' → 'done') is slow, so TTS
               // usually finishes first; we still await ttsPromise below
@@ -363,7 +468,10 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               if (sentences.length) {
                 ttsPromise = prefetchSentenceAudios(sentences);
               }
-            } else if (stage === 'rendered') setPreparingStage(2);
+            } else if (stage === 'rendered') {
+              reachedStage = 2;
+              setPreparingStage(2);
+            }
           },
         },
       );
@@ -371,6 +479,20 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       console.log('[SceneGameMode] asset received', { source: res.source, imageUrl: res.asset.imageUrl, regionCount: res.asset.regions.length });
       setAsset(res.asset);
       setDegraded(res.degraded);
+      // Option C: the charge landed inside `finalize`. Stash the refund handle
+      // (consumed on first successful image load, refunded on load failure) and
+      // refresh the header balance. A cache hit has no commitRef (free) — leave
+      // any prior chargeRef untouched so a regenerated-then-replayed asset can
+      // still be refunded if it fails to load.
+      if (res.commitRef) {
+        chargeRef.current = {
+          roundRef: res.commitRef,
+          wordSetHash: res.asset.wordSetHash,
+          dayIndex: res.asset.dayIndex,
+          language: res.asset.language,
+        };
+      }
+      if (res.newBalance !== undefined) onCoinsSpent?.(res.newBalance);
       // Wait for TTS to finish before COUNTDOWN. Usually already done since
       // image gen is the slow leg — but never block gameplay on TTS failure
       // (prefetchSentenceAudios never throws).
@@ -402,10 +524,12 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
         setPhase('INTRO');
         return;
       }
-      setGenError(err instanceof Error ? err.message : 'Scene generation failed. Please try again.');
-      setPhase('INTRO');
+      // Stay in PREPARING and surface a precise failure reason (orchestration vs
+      // render vs save vs timeout) — no coins were charged, so there is nothing
+      // to refund; the Retry button re-runs generation with the same word count.
+      setPreparingError(describePreparingError(err, reachedStage));
     }
-  }, [allWords, sessions, dayIndex, prefetchSentenceAudios]);
+  }, [allWords, sessions, dayIndex, prefetchSentenceAudios, onCoinsSpent]);
 
   useEffect(() => {
     if (phase !== 'PREPARING') return;
@@ -415,6 +539,37 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     }, 500);
     return () => window.clearInterval(t);
   }, [phase]);
+
+  // PLAYING image-load outcomes drive the charge (option C): a successful load
+  // "consumes" the refund handle (the user saw what they paid for); a load
+  // failure refunds it. Both are no-ops when there is no pending charge (cache
+  // hit / already consumed). chargeRef is set fresh on each finalize and cleared
+  // on first load, so a non-null value always corresponds to the asset currently
+  // on screen.
+  const handleImageLoaded = useCallback(() => {
+    chargeRef.current = null;
+  }, []);
+
+  const handleImageError = useCallback(() => {
+    const c = chargeRef.current;
+    if (!c) return;
+    chargeRef.current = null; // one refund per charge
+    void (async () => {
+      try {
+        const r = await refundSceneCharge(c.roundRef, c.wordSetHash, c.dayIndex, c.language);
+        if (r.ok && r.refunded) {
+          onNotify?.('图片加载失败，已自动退还 25 金币', 'warning');
+        } else if (!r.ok) {
+          console.error('[SceneGameMode] refundSceneCharge failed:', r.code);
+          onNotify?.('图片加载失败，自动退款未成功，请联系客服', 'error');
+        }
+        if (r.newBalance !== undefined) onCoinsSpent?.(r.newBalance);
+        else onCoinsSpent?.();
+      } catch (e) {
+        console.error('[SceneGameMode] refundSceneCharge exception:', e);
+      }
+    })();
+  }, [onNotify, onCoinsSpent]);
 
   const beginScene = () => {
     if (!canPrepare) return;
@@ -443,25 +598,52 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setPreparingElapsed(0);
     setPreparingStage(0);
     setStoryboard(null);
+    setPreparingError(null);
+    setDirectorDegraded(null);
+    chargeRef.current = null;
+    let reachedStage = 0;
     try {
       const meta = gatherWordMeta(selectedWords);
       const res = await requestSceneRegeneration(meta, dayIndex, 'en', undefined, {
         onStage: (stage, payload) => {
           if (stage === 'designed') {
+            reachedStage = 1;
             setPreparingStage(1);
             const sb = typeof payload?.storyboard === 'string' ? payload.storyboard.trim() : '';
             if (sb) setStoryboard(sb);
-          } else if (stage === 'rendered') setPreparingStage(2);
+            const fr = typeof payload?.fallbackReason === 'string' ? payload.fallbackReason.trim() : '';
+            setDirectorDegraded(fr || null);
+          } else if (stage === 'rendered') {
+            reachedStage = 2;
+            setPreparingStage(2);
+          }
         },
       });
       setAsset(res.asset);
       setDegraded(res.degraded);
+      // Regeneration charges at finalize too (new roundRef). Stash the refund
+      // handle + refresh the header.
+      if (res.commitRef) {
+        chargeRef.current = {
+          roundRef: res.commitRef,
+          wordSetHash: res.asset.wordSetHash,
+          dayIndex: res.asset.dayIndex,
+          language: res.asset.language,
+        };
+      }
+      if (res.newBalance !== undefined) onCoinsSpent?.(res.newBalance);
       // After regeneration, return to INTRO so the player can press LOAD SCENE
       // again to start the round (no mode select any more).
       setPhase('INTRO');
     } catch (err) {
-      setGenError(err instanceof Error ? err.message : 'Regeneration failed.');
-      setPhase('INTRO');
+      const code = (err as any)?.code;
+      if (code === 'insufficient_balance') {
+        onInsufficientCoins?.();
+        setPhase('INTRO');
+      } else {
+        // Mirror runGeneration: show a precise PREPARING failure reason in place.
+        setPreparingError(describePreparingError(err, reachedStage));
+      }
     } finally {
       setIsRegenerating(false);
     }
@@ -978,6 +1160,16 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
               <h3 className="mt-6 font-headline text-2xl text-white md:text-3xl">
                 <HoverTranslationText text="Fusing words into one scene" translation="把单词融合进同一张图" />
               </h3>
+              {/* Soft (non-blocking) notice: the director degraded to the fallback
+                  arrangement. Gameplay still proceeds normally — this is NOT a failure. */}
+              {directorDegraded && !preparingError && (
+                <div className="mx-auto mt-4 max-w-md rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-left text-[12px] leading-5 text-amber-200">
+                  <HoverTranslationText
+                    text="The director model degraded — using a fallback scene arrangement. Gameplay is unaffected."
+                    translation="导演模型降级，已使用兜底场景编排（玩法不受影响）。"
+                  />
+                </div>
+              )}
               <div className="mx-auto mt-6 max-w-md space-y-2.5 text-left">
                 {([
                   { stage: 0, icon: 'checklist', en: 'Selecting words', zh: '抽取单词', hint: 'Smart/random pick from your library' },
@@ -986,35 +1178,88 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                 ] as const).map((step) => {
                   const done = preparingStage > step.stage;
                   const active = preparingStage === step.stage;
+                  // Highlight the failed step red (1=orchestration, 2=render) so
+                  // the user can see at a glance whether 编排 or 生图 broke.
+                  const failed = preparingError
+                    ? (preparingError.stageKey === 'designed' && step.stage === 1)
+                      || (preparingError.stageKey === 'rendered' && step.stage === 2)
+                    : false;
                   return (
                     <div
                       key={step.stage}
                       className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-all duration-300 ${
-                        active
-                          ? 'border-purple-400/50 bg-purple-500/10'
-                          : done
-                            ? 'border-green-500/30 bg-green-500/5'
-                            : 'border-mid-charcoal bg-light-charcoal/10 opacity-50'
+                        failed
+                          ? 'border-red-500/60 bg-red-500/10'
+                          : active
+                            ? 'border-purple-400/50 bg-purple-500/10'
+                            : done
+                              ? 'border-green-500/30 bg-green-500/5'
+                              : 'border-mid-charcoal bg-light-charcoal/10 opacity-50'
                       }`}
                     >
-                      <span className={`material-symbols-outlined text-xl ${active ? 'animate-spin text-purple-300' : done ? 'text-green-400' : 'text-text-dark'}`}>
-                        {done ? 'check_circle' : step.icon}
+                      <span className={`material-symbols-outlined text-xl ${failed ? 'text-red-400' : active ? 'animate-spin text-purple-300' : done ? 'text-green-400' : 'text-text-dark'}`}>
+                        {failed ? 'error' : done ? 'check_circle' : step.icon}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className={`text-sm font-medium ${active ? 'text-white' : done ? 'text-text-light' : 'text-text-dark'}`}>
+                        <div className={`text-sm font-medium ${failed ? 'text-red-200' : active ? 'text-white' : done ? 'text-text-light' : 'text-text-dark'}`}>
                           <HoverTranslationText text={step.en} translation={step.zh} />
                         </div>
                         <div className="truncate text-[11px] text-text-dark">{step.hint}</div>
                       </div>
-                      {active && (
+                      {failed ? (
+                        <span className="font-mono text-[11px] uppercase tracking-widest text-red-400">
+                          <HoverTranslationText text="failed" translation="失败" />
+                        </span>
+                      ) : active ? (
                         <span className="font-mono text-[11px] uppercase tracking-widest text-purple-300">
                           <HoverTranslationText text="working" translation="进行中" />
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   );
                 })}
               </div>
+
+              {/* Failure panel — shown in place (we stay in PREPARING on failure
+                  rather than bouncing to INTRO). Names the broken leg (orchestration
+                  vs render vs save vs timeout) and offers Retry / Back. No coins
+                  were charged on these failures, so there is nothing to refund. */}
+              {preparingError && (
+                <div className="mx-auto mt-4 max-w-md rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-left">
+                  <div className="flex items-start gap-3">
+                    <span className="material-symbols-outlined text-xl text-red-400">error</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold leading-6 text-red-100">
+                        <HoverTranslationText text={preparingError.titleEn} translation={preparingError.titleZh} />
+                      </div>
+                      <details className="mt-1">
+                        <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-widest text-red-300/70">
+                          <HoverTranslationText text="Details" translation="详情" />
+                        </summary>
+                        <div className="mt-1 break-words text-[11px] leading-5 text-red-200/80">{preparingError.detail}</div>
+                      </details>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      onClick={() => {
+                        setPreparingError(null);
+                        const n = Math.min(Math.max(wordCount, MIN_SCENE_WORDS), Math.min(MAX_SCENE_WORDS, candidateCount));
+                        void runGeneration(n, false);
+                      }}
+                      className="flex-1 rounded-xl bg-purple-500 px-4 py-2 font-headline text-xs uppercase tracking-[0.2em] text-white transition-all hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)]"
+                    >
+                      <HoverTranslationText text="Retry" translation="重试" />
+                    </button>
+                    <button
+                      onClick={() => { abortRef.current?.abort(); setPreparingError(null); setPhase('INTRO'); }}
+                      className="flex-1 rounded-xl border border-mid-charcoal bg-light-charcoal/20 px-4 py-2 font-headline text-xs uppercase tracking-[0.2em] text-text-light transition-colors hover:border-red-500/50 hover:text-red-300"
+                    >
+                      <HoverTranslationText text="Back" translation="返回" />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Audio generation progress — runs in parallel with the image
                   render, so it appears after the director stage completes and
@@ -1137,6 +1382,8 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                   blinkNonce={0}
                   fullSize
                   showOverlays={false}
+                  onImageLoaded={handleImageLoaded}
+                  onImageError={handleImageError}
                 />
               </div>
 

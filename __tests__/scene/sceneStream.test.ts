@@ -316,3 +316,67 @@ test('normalizeAsset ignores whitespace-only storyboard (treated as absent)', as
   ]);
   assert.equal(result.asset.storyboard, undefined);
 });
+
+// ----------------------------------------------------------------
+// Charge idempotency key (roundRef / commitRef) passthrough
+// ----------------------------------------------------------------
+test('legacy done event forwards roundRef as result.commitRef (for refund-on-load-failure)', async () => {
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'generated', asset: VALID_ASSET, roundRef: 'u1:abc:2:1700000000000' }),
+  ]);
+  assert.equal(result.commitRef, 'u1:abc:2:1700000000000');
+});
+
+test('clientPersist done forwards pendingAsset.roundRef for the finalize charge', async () => {
+  const { result } = await collectStages([
+    JSON.stringify({
+      stage: 'done',
+      source: 'generated',
+      clientPersist: true,
+      imageDataUrl: 'data:image/png;base64,AAAA',
+      pendingAsset: { wordSetHash: 'abc', dayIndex: 2, userId: 'u1', roundRef: 'u1:abc:2:1700000000001' },
+    }),
+  ]);
+  assert.equal(result.pendingClientPersist?.roundRef, 'u1:abc:2:1700000000001');
+  // commitRef is resolved by callSceneGenerate after finalize, not by the parser.
+  assert.equal(result.commitRef, undefined);
+});
+
+test('cache-hit done has no commitRef (free — never charged)', async () => {
+  const { result } = await collectStages([
+    JSON.stringify({ stage: 'done', source: 'cache-hit', asset: VALID_ASSET }),
+  ]);
+  assert.equal(result.commitRef, undefined);
+});
+
+test('error event attaches failedStage to the thrown Error so the UI can label the broken leg', async () => {
+  await assert.rejects(
+    async () => {
+      try {
+        await collectStages([
+          JSON.stringify({ stage: 'error', failedStage: 'rendered', error: 'All image providers failed' }),
+        ]);
+      } catch (err: any) {
+        assert.equal(err.failedStage, 'rendered');
+        throw err;
+      }
+    },
+    /All image providers failed/,
+  );
+});
+
+test('coin_gate insufficient_balance error carries the code for the modal branch', async () => {
+  await assert.rejects(
+    async () => {
+      try {
+        await collectStages([
+          JSON.stringify({ stage: 'error', failedStage: 'coin_gate', code: 'insufficient_balance', error: 'Not enough coins for scene game' }),
+        ]);
+      } catch (err: any) {
+        assert.equal(err.code, 'insufficient_balance');
+        throw err;
+      }
+    },
+    /Not enough coins/,
+  );
+});
