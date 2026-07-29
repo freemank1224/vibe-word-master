@@ -167,13 +167,32 @@ test('done event with empty public_url throws (blocks black-screen MODE_SELECT)'
   );
 });
 
-test('stream that ends without done throws', async () => {
+test('stream that ends without done throws a diagnostic truncation error naming the last stage', async () => {
   await assert.rejects(
     collectStages([
       JSON.stringify({ stage: 'designed', prompt: 'p', source: 'director' }),
       JSON.stringify({ stage: 'rendered', providerId: 'x' }),
     ]),
-    /ended without done event/,
+    (err: Error) => {
+      // Names the last stage reached so the failure points at the right step,
+      // and carries a machine-readable flag for callers to branch on.
+      assert.match(err.message, /中途中断/);
+      assert.match(err.message, /rendered/);
+      assert.equal((err as any).streamTruncated, true);
+      assert.equal((err as any).failedStage, 'rendered');
+      return true;
+    },
+  );
+});
+
+test('stream that ends before any stage throws with the empty-stage signature', async () => {
+  await assert.rejects(
+    collectStages([]),
+    (err: Error) => {
+      assert.match(err.message, /before any stage completed/);
+      assert.equal((err as any).streamTruncated, true);
+      return true;
+    },
   );
 });
 

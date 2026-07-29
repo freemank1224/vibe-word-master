@@ -122,6 +122,10 @@ const sentenceForWord = (word: WordEntry, asset: SceneAsset | null): string | nu
   if (fromIndex && fromIndex.trim() && !isFallbackSentence(fromIndex)) return fromIndex;
   const fromRegion = asset.regions.find((r) => r.word.toLowerCase() === key)?.sentence;
   if (fromRegion && fromRegion.trim() && !isFallbackSentence(fromRegion)) return fromRegion;
+  // Paired (merged) word: it shares a group's sentence but has no per-word
+  // entry, so look it up via clozeGroups (used by REVIEW + TTS keying).
+  const fromGroup = asset.clozeGroups?.find((g) => g.words.some((w) => w.toLowerCase() === key))?.sentence;
+  if (fromGroup && fromGroup.trim() && !isFallbackSentence(fromGroup)) return fromGroup;
   return null;
 };
 
@@ -706,6 +710,73 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     });
   }, [activeWordIndex]);
 
+  // ----------------------------------------------------------------
+  // Cloze ROWS — render by group, navigate by word.
+  //
+  // `asset.clozeGroups` carries one row per sentence; a 2-word group is a
+  // merged pair (one row, two blanks). We keep `activeWordIndex`/`wordStates`
+  // PER WORD (so scoring/timing are unchanged), but RENDER one ClozeSentence per
+  // group. Words not in any group (picture-only) render as solo 1-blank rows.
+  // ----------------------------------------------------------------
+  const clozeRows = useMemo(() => {
+    const groups = asset?.clozeGroups || [];
+    const indexByText = new Map<string, number>();
+    selectedWords.forEach((w, i) => {
+      const k = w.text.toLowerCase();
+      if (!indexByText.has(k)) indexByText.set(k, i);
+    });
+    // Assign each selectedWord index to the first group that claims it.
+    const groupOf = new Array(selectedWords.length).fill(-1);
+    const groupRows: { sentence: string; indices: number[] }[] = [];
+    groups.forEach((g) => {
+      const indices: number[] = [];
+      g.words.forEach((w) => {
+        const wi = indexByText.get(String(w).toLowerCase());
+        if (typeof wi === 'number' && groupOf[wi] === -1) {
+          groupOf[wi] = groupRows.length;
+          indices.push(wi);
+        }
+      });
+      if (indices.length > 0) groupRows.push({ sentence: g.sentence, indices });
+    });
+    // Build the render list in selectedWords order (a group renders at the
+    // position of its earliest word).
+    type Row =
+      | { kind: 'group'; sentence: string; indices: number[] }
+      | { kind: 'solo'; index: number };
+    const rows: Row[] = [];
+    const seen = new Set<number>();
+    for (let i = 0; i < selectedWords.length; i++) {
+      if (seen.has(i)) continue;
+      const gi = groupOf[i];
+      if (gi >= 0) {
+        const gr = groupRows[gi];
+        rows.push({ kind: 'group', sentence: gr.sentence, indices: gr.indices });
+        gr.indices.forEach((wi) => seen.add(wi));
+      } else {
+        rows.push({ kind: 'solo', index: i });
+        seen.add(i);
+      }
+    }
+    return { rows, groupOf, groupRows };
+  }, [asset?.clozeGroups, selectedWords]);
+
+  const statusForWord = useCallback((wi: number): ClozeStatus => {
+    const s = wordStates[wi];
+    if (!s) return 'idle';
+    if (s.solved) return 'correct';
+    if (wi === activeWordIndex) {
+      return flashStatus === 'correct' ? 'correct' : flashStatus === 'wrong' ? 'wrong' : 'active';
+    }
+    if (s.revealed) return 'revealed';
+    return 'idle';
+  }, [wordStates, activeWordIndex, flashStatus]);
+
+  const wordIsVisible = (wi: number): boolean => {
+    const s = wordStates[wi];
+    return !!(s && (s.solved || s.revealed));
+  };
+
   // ---------------------------------------------------------------
   // Move active row up / down
   // ---------------------------------------------------------------
@@ -728,6 +799,16 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
 
   const advance = useCallback(() => {
     if (activeWordIndex == null) return;
+    // Prefer the next unsolved word IN THE SAME GROUP — so filling blank 1 of a
+    // two-blank row auto-advances to blank 2 of the same row (owner-approved UX).
+    const gi = clozeRows.groupOf[activeWordIndex];
+    if (gi >= 0) {
+      const sameGroup = clozeRows.groupRows[gi]?.indices || [];
+      for (const wi of sameGroup) {
+        const s = wordStatesRef.current[wi];
+        if (wi !== activeWordIndex && s && !s.solved && !s.locked) { moveToIndex(wi); return; }
+      }
+    }
     // Pick the next non-locked, non-solved row. If none, finish.
     let next = -1;
     for (let i = activeWordIndex + 1; i < selectedWords.length; i++) {
@@ -746,7 +827,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       return;
     }
     moveToIndex(next);
-  }, [activeWordIndex, selectedWords.length, moveToIndex]);
+  }, [activeWordIndex, selectedWords.length, moveToIndex, clozeRows]);
 
   const submitActive = useCallback(() => {
     if (activeWordIndex == null || phase !== 'PLAYING') return;
@@ -1400,30 +1481,47 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     </div>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    {selectedWords.map((word, i) => {
+                    {clozeRows.rows.map((row) => {
+                      if (row.kind === 'group') {
+                        // One row, N blanks (1 or 2). A 2-word group is a merged
+                        // pair — rendered once so the two words can't leak each
+                        // other's answer across two identical single-blank rows.
+                        const idxs = row.indices;
+                        const isActive = idxs.includes(activeWordIndex ?? -1);
+                        const firstUnsolved = idxs.find((wi) => {
+                          const st = wordStates[wi];
+                          return st && !st.solved && !st.locked;
+                        });
+                        const target = idxs[0] != null ? selectedWords[idxs[0]].text : '';
+                        return (
+                          <ClozeSentence
+                            key={`g-${idxs[0]}`}
+                            sentence={row.sentence}
+                            targetWords={idxs.map((wi) => selectedWords[wi].text)}
+                            statuses={idxs.map((wi) => statusForWord(wi))}
+                            revealedFlags={idxs.map((wi) => wordIsVisible(wi))}
+                            isActive={isActive}
+                            audioUrl={sentenceAudios[target.toLowerCase()] || null}
+                            isAudioPlaying={playingWord === target.toLowerCase()}
+                            onPlayAudio={() => playSentenceAudio(target)}
+                            onSelect={() => { if (firstUnsolved != null) moveToIndex(firstUnsolved); }}
+                          />
+                        );
+                      }
+                      const i = row.index;
+                      const word = selectedWords[i];
                       const s = wordStates[i] || createWordState();
                       const isActive = i === activeWordIndex;
                       const sentence = sentenceForWord(word, asset);
-
-                      let status: ClozeStatus = 'idle';
-                      if (s.solved) status = 'correct';
-                      else if (isActive) status = flashStatus === 'correct' ? 'correct' : flashStatus === 'wrong' ? 'wrong' : 'active';
-                      else if (s.revealed) status = 'revealed';
-
-                      // When the backend hasn't returned a sentence (or the
-                      // sentence is the legacy fallback template), show a
-                      // graceful placeholder instead. TTS audio is NOT
-                      // attached for these rows — no speaker icon, no
-                      // wasted blob URL.
+                      // No real sentence → graceful "picture only" placeholder.
                       const displaySentence = sentence || `Picture only — guess word #${i + 1}.`;
-
                       return (
                         <ClozeSentence
                           key={word.id}
                           sentence={displaySentence}
-                          targetWord={word.text}
-                          status={status}
-                          revealed={s.revealed && !s.solved}
+                          targetWords={[word.text]}
+                          statuses={[statusForWord(i)]}
+                          revealedFlags={[wordIsVisible(i)]}
                           isActive={isActive}
                           audioUrl={sentence ? (sentenceAudios[word.text.toLowerCase()] || null) : null}
                           isAudioPlaying={playingWord === word.text.toLowerCase()}
@@ -1525,9 +1623,9 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
                     >
                       <ClozeSentence
                         sentence={sentence}
-                        targetWord={word.text}
-                        status={wasCorrect ? 'correct' : 'revealed'}
-                        revealed
+                        targetWords={[word.text]}
+                        statuses={[wasCorrect ? 'correct' : 'revealed']}
+                        revealedFlags={[true]}
                         isActive={false}
                         audioUrl={audioUrl}
                         isAudioPlaying={playingWord === word.text.toLowerCase()}

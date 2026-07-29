@@ -34,6 +34,8 @@ import {
   mapWordToStoryboardSentence,
   splitStoryboardSentences,
   buildFusionResult,
+  backfillMissingSentences,
+  buildClozeGroups,
 } from '../../supabase/functions/scene-generate/sceneDesign.ts';
 
 const WORDS = [
@@ -560,6 +562,7 @@ test('parseSceneDesignWithDiagnostics returns full diagnostics on a clean parse'
   assert.equal(diagnostics.droppedSentences, 0);
   assert.deepEqual(diagnostics.dropReasons, {
     notString: 0, tooShort: 0, tooLong: 0, missingWord: 0, lazyTemplate: 0, meansOpener: 0,
+    wordRepeated: 0, duplicateSentence: 0,
   });
   assert.deepEqual(diagnostics.missingSentenceFields, []);
   assert.equal(diagnostics.thinkBlockStripped, false);
@@ -631,6 +634,113 @@ test('parseSceneDesignWithDiagnostics reports per-reason sentence drop counts', 
   assert.equal(diagnostics.dropReasons.tooShort, 1);
   assert.equal(diagnostics.dropReasons.meansOpener, 1);
   assert.deepEqual(diagnostics.missingSentenceFields.sort(), ['angry', 'moon', 'quickly', 'run']);
+});
+
+test('parseSceneDesignWithDiagnostics drops a sentence whose target word appears more than once (wordRepeated)', () => {
+  // "moon" appears twice → the answer would be visible on the clue itself.
+  // The element is dropped to picture-only rather than leaking the answer.
+  const payload = JSON.stringify({
+    structuredPrompt: 'scene with [TODAYS_MASCOT] looking at the moon',
+    elements: [
+      { word: 'apple', positionZone: 'top-left', sentence: 'A red apple sits on the counter.' },
+      { word: 'moon', positionZone: 'top-right', sentence: 'The pale moon lights up the other moon.' },
+    ],
+  });
+  const words = [{ text: 'apple' }, { text: 'moon' }];
+  const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, words as any);
+  assert.equal(diagnostics.validSentences, 1);
+  assert.equal(diagnostics.droppedSentences, 1);
+  assert.equal(diagnostics.dropReasons.wordRepeated, 1);
+  assert.deepEqual(diagnostics.missingSentenceFields, ['moon']);
+  const moonEl = design!.elements.find((e) => e.word === 'moon');
+  assert.equal(moonEl!.sentence, undefined); // dropped → picture-only
+});
+
+test('parseSceneDesignWithDiagnostics MERGES a duplicate sentence that contains both words into a two-blank pair', () => {
+  // Both "ball" and "shade" appear in the SAME sentence → instead of dropping
+  // one (picture-only) or leaking answers across two rows, MERGE into ONE
+  // element with pairWords → one row, two blanks.
+  const dup = 'A ball sits on the ground, half of it in the shade.';
+  const payload = JSON.stringify({
+    structuredPrompt: 'scene with [TODAYS_MASCOT] and a ball',
+    elements: [
+      { word: 'ball', positionZone: 'top-left', sentence: dup },
+      { word: 'shade', positionZone: 'top-right', sentence: dup },
+    ],
+  });
+  const words = [{ text: 'ball' }, { text: 'shade' }];
+  const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, words as any);
+  // No drop — both words are valid via the pair.
+  assert.equal(diagnostics.dropReasons.duplicateSentence, 0);
+  assert.equal(diagnostics.droppedSentences, 0);
+  assert.equal(diagnostics.validSentences, 2);
+  assert.deepEqual(diagnostics.missingSentenceFields, []);
+  // ball's element carries the shared sentence + shade as a pairWord.
+  const ballEl = design!.elements.find((e) => e.word === 'ball');
+  assert.equal(ballEl!.sentence, dup);
+  assert.deepEqual(ballEl!.pairWords, ['shade']);
+  // shade has NO separate element (it's covered by the pair — not a bare
+  // picture-only element either).
+  assert.equal(design!.elements.some((e) => e.word === 'shade'), false);
+});
+
+test('parseSceneDesignWithDiagnostics does NOT merge when the second word is absent from the shared sentence (caught as missingWord)', () => {
+  // "horse" is NOT in the sentence → validateSentence rejects it as missingWord
+  // before the duplicate/merge branch is reached. cow is accepted normally;
+  // horse is dropped (no pair formed). Confirms we never pair a word that
+  // doesn't actually appear in the sentence.
+  const dup = 'The cow is big and slow.';
+  const payload = JSON.stringify({
+    structuredPrompt: 'scene with [TODAYS_MASCOT]',
+    elements: [
+      { word: 'cow', positionZone: 'top-left', sentence: dup },
+      { word: 'horse', positionZone: 'top-right', sentence: dup },
+    ],
+  });
+  const words = [{ text: 'cow' }, { text: 'horse' }];
+  const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, words as any);
+  assert.equal(diagnostics.dropReasons.missingWord, 1);
+  assert.equal(diagnostics.dropReasons.duplicateSentence, 0);
+  assert.equal(design!.elements.find((e) => e.word === 'cow')!.pairWords, undefined);
+  assert.deepEqual(diagnostics.missingSentenceFields, ['horse']);
+});
+
+test('parseSceneDesignWithDiagnostics caps pairs at 2 words (a third colliding word is dropped, not paired)', () => {
+  // ball+shade already paired; a third word "ground" sharing the sentence may
+  // NOT join (max 2 words/sentence) → dropped as a duplicate.
+  const dup = 'A ball sits on the ground, half of it in the shade.';
+  const payload = JSON.stringify({
+    structuredPrompt: 'scene with [TODAYS_MASCOT]',
+    elements: [
+      { word: 'ball', sentence: dup },
+      { word: 'shade', sentence: dup },
+      { word: 'ground', sentence: dup },
+    ],
+  });
+  const words = [{ text: 'ball' }, { text: 'shade' }, { text: 'ground' }];
+  const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, words as any);
+  const ballEl = design!.elements.find((e) => e.word === 'ball');
+  assert.deepEqual(ballEl!.pairWords, ['shade']); // capped at 1 pairWord
+  assert.equal(diagnostics.dropReasons.duplicateSentence, 1); // ground dropped
+});
+
+test('parseSceneDesignWithDiagnostics merges near-identical sentences (case/punctuation) that share both words', () => {
+  const payload = JSON.stringify({
+    structuredPrompt: 'scene with [TODAYS_MASCOT]',
+    elements: [
+      { word: 'ball', positionZone: 'top-left', sentence: 'The ball sits on the ground.' },
+      { word: 'ground', positionZone: 'top-right', sentence: 'the ball sits on the ground' },
+    ],
+  });
+  const words = [{ text: 'ball' }, { text: 'ground' }];
+  const { design, diagnostics } = parseSceneDesignWithDiagnostics(payload, words as any);
+  assert.equal(diagnostics.dropReasons.duplicateSentence, 0); // merged, not dropped
+  assert.deepEqual(design!.elements.find((e) => e.word === 'ball')!.pairWords, ['ground']);
+});
+
+test('isValidSentence rejects a target word that appears twice (answer-leak guard)', () => {
+  assert.equal(isValidSentence('The boy kicks the ball past another ball.', 'ball'), false);
+  assert.equal(isValidSentence('A single ball rolls away.', 'ball'), true);
 });
 
 test('parseSceneDesignWithDiagnostics returns failReason on garbage input', () => {
@@ -1089,4 +1199,100 @@ test('parseSceneDesignWithDiagnostics keeps the design (drops invalid storyboard
   assert.equal(design!.storyboard, undefined);
   assert.equal(design!.elements.length, 5);
   assert.equal(design!.elements[0].sentence, 'A glossy red apple sits on the counter.');
+});
+
+// ----------------------------------------------------------------
+// backfillMissingSentences — the "no picture-only" guarantee
+// ----------------------------------------------------------------
+test('backfillMissingSentences fills a missing NOUN with a grammatical distinct sentence', () => {
+  const design: any = { structuredPrompt: 'p', elements: [{ word: 'moon' }] }; // no sentence
+  const filled = backfillMissingSentences(design, [{ text: 'moon', pos: 'noun' }] as any);
+  assert.equal(filled, 1);
+  assert.equal(typeof design.elements[0].sentence, 'string');
+  assert.ok(design.elements[0].sentence.length > 0);
+  // Noun template produces "Look at the moon in the picture." — contains moon exactly once.
+  assert.ok(/moon/i.test(design.elements[0].sentence));
+  assert.equal(validateSentence(design.elements[0].sentence, 'moon'), null);
+});
+
+test('backfillMissingSentences fills a missing ADJECTIVE ("red") grammatically — NOT "Look at the red"', () => {
+  // The whole point: "red" is an adjective, so "Look at the red." is wrong.
+  // It must get a predicate form like "Something in the picture is red."
+  const design: any = { structuredPrompt: 'p', elements: [{ word: 'red' }] };
+  const filled = backfillMissingSentences(design, [{ text: 'red', pos: 'adjective' }] as any);
+  assert.equal(filled, 1);
+  const s = design.elements[0].sentence;
+  assert.equal(validateSentence(s, 'red'), null); // red exactly once, valid
+  assert.ok(/is red\b|looks red|red thing|red object/i.test(s), `adjective backfill should be grammatical, got: "${s}"`);
+  assert.ok(!/^Look at the red\b/i.test(s), 'must NOT use the noun template for an adjective');
+});
+
+test('backfillMissingSentences fills a missing VERB grammatically', () => {
+  const design: any = { structuredPrompt: 'p', elements: [{ word: 'run' }] };
+  const filled = backfillMissingSentences(design, [{ text: 'run', pos: 'verb' }] as any);
+  assert.equal(filled, 1);
+  assert.equal(validateSentence(design.elements[0].sentence, 'run'), null);
+});
+
+test('backfillMissingSentences leaves existing sentences untouched and keeps all distinct', () => {
+  const design: any = {
+    structuredPrompt: 'p',
+    elements: [
+      { word: 'apple', sentence: 'A red apple sits on the counter.' }, // already has one
+      { word: 'red' }, // missing
+      { word: 'moon' }, // missing
+    ],
+  };
+  const filled = backfillMissingSentences(design, [
+    { text: 'apple', pos: 'noun' },
+    { text: 'red', pos: 'adjective' },
+    { text: 'moon', pos: 'noun' },
+  ] as any);
+  assert.equal(filled, 2);
+  assert.equal(design.elements[0].sentence, 'A red apple sits on the counter.'); // untouched
+  // All three sentences must be mutually distinct (different signatures).
+  const sigs = new Set(design.elements.map((e: any) => e.sentence.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()));
+  assert.equal(sigs.size, 3);
+  // Every element now has a valid sentence — i.e. ZERO picture-only.
+  for (const el of design.elements) {
+    assert.equal(validateSentence(el.sentence, el.word), null);
+  }
+});
+
+test('backfillMissingSentences is a no-op when every element already has a sentence', () => {
+  const design: any = {
+    structuredPrompt: 'p',
+    elements: [{ word: 'apple', sentence: 'The apple is sweet.' }],
+  };
+  const filled = backfillMissingSentences(design, [{ text: 'apple', pos: 'noun' }] as any);
+  assert.equal(filled, 0);
+  assert.equal(design.elements[0].sentence, 'The apple is sweet.');
+});
+
+test('backfillMissingSentences handles null / empty design safely', () => {
+  assert.equal(backfillMissingSentences(null, []), 0);
+  assert.equal(backfillMissingSentences({ structuredPrompt: 'p', elements: [] } as any, []), 0);
+});
+
+// ----------------------------------------------------------------
+// buildClozeGroups — one row per element, paired words share a row
+// ----------------------------------------------------------------
+test('buildClozeGroups emits one group per sentenced element; pairs fold into one 2-word group', () => {
+  const design: any = {
+    structuredPrompt: 'p',
+    elements: [
+      { word: 'ball', sentence: 'A ball sits on the ground, half in the shade.', pairWords: ['shade'] },
+      { word: 'moon', sentence: 'The pale moon glows.' },
+      { word: 'cow', /* no sentence */ },
+    ],
+  };
+  const groups = buildClozeGroups(design);
+  assert.equal(groups.length, 2); // cow (no sentence) skipped
+  assert.deepEqual(groups[0], { words: ['ball', 'shade'], sentence: 'A ball sits on the ground, half in the shade.' });
+  assert.deepEqual(groups[1], { words: ['moon'], sentence: 'The pale moon glows.' });
+});
+
+test('buildClozeGroups handles null / empty design safely', () => {
+  assert.deepEqual(buildClozeGroups(null), []);
+  assert.deepEqual(buildClozeGroups({ structuredPrompt: 'p', elements: [] } as any), []);
 });

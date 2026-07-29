@@ -124,6 +124,25 @@ export const normalizeAsset = (raw: any): SceneAsset => {
   if (storyboard) {
     asset.storyboard = storyboard;
   }
+  // Cloze rows. Prefer the server-emitted clozeGroups (supports 2-word merged
+  // pairs → one row, two blanks). For legacy rows that predate clozeGroups,
+  // derive one group per word from the per-word sentence index (1 word each),
+  // so old scenes render exactly as before.
+  const rawGroups = rawSceneDesign?.clozeGroups;
+  let clozeGroups: { words: string[]; sentence: string }[] | undefined;
+  if (Array.isArray(rawGroups) && rawGroups.length > 0) {
+    clozeGroups = rawGroups
+      .map((g: any) => ({
+        words: Array.isArray(g?.words) ? g.words.map((w: any) => String(w || '').trim()).filter(Boolean) : [],
+        sentence: typeof g?.sentence === 'string' ? g.sentence.trim() : '',
+      }))
+      .filter((g) => g.words.length > 0 && g.sentence.length > 0);
+  } else if (Object.keys(sentences).length > 0) {
+    clozeGroups = Object.entries(sentences).map(([word, sentence]) => ({ words: [word], sentence }));
+  }
+  if (clozeGroups && clozeGroups.length > 0) {
+    asset.clozeGroups = clozeGroups;
+  }
   return asset;
 };
 
@@ -151,6 +170,10 @@ export const parseSceneGenerateNdjsonStream = async (
   let finalAsset: SceneAsset | null = null;
   let finalSource: 'cache-hit' | 'generated' = 'generated';
   let finalDegraded = false;
+  // Track progress so a premature stream end (e.g. the edge function being
+  // killed by Supabase's wall-clock max_duration mid-pipeline) can be reported
+  // with a useful, actionable message instead of a generic "stream ended".
+  let lastStage = '';
   // roundRef from the legacy server-persist `done` event (the edge already
   // charged under it). The clientPersist path resolves its commitRef after
   // `finalize` runs. Cache hits leave this empty (free, never charged).
@@ -174,6 +197,7 @@ export const parseSceneGenerateNdjsonStream = async (
         continue;
       }
       const stage = String(event?.stage || '');
+      if (stage) lastStage = stage;
       console.log('[sceneGame] ndjson event', { stage, source: event?.source, fallbackReason: event?.fallbackReason || '', hasAsset: !!event?.asset, imageUrl: event?.asset?.imageUrl || event?.asset?.public_url || '' });
       if (stage === 'designed' && event?.fallbackReason) {
         console.warn('[sceneGame] director fallback reason:', event.fallbackReason);
@@ -182,6 +206,14 @@ export const parseSceneGenerateNdjsonStream = async (
         callbacks?.onStage?.(stage as ScenePipelineStage, event);
       } else if (stage === 'done') {
         callbacks?.onStage?.('done', event);
+        // Surface the img2img outcome so a wrong-mascot scene is diagnosable in
+        // the browser console (F12). Anything other than 'used' / 'not-attempted:
+        // no-reference-image' means the canonical mascot reference was NOT applied
+        // — the monster was drawn from the text prompt only.
+        const note = event?.pipeline?.img2imgNote;
+        if (typeof note === 'string' && note !== 'used' && note !== 'not-attempted:no-reference-image') {
+          console.warn(`[sceneGame] mascot reference NOT applied (img2img=${note}). The scene monster was generated from text only, so it won't match the canonical mascot. Provider used: ${event?.pipeline?.mascot ? event.pipeline.mascot : 'unknown'}; img2img=${event?.pipeline?.img2img}`);
+        }
         if (event?.clientPersist === true && typeof event?.imageDataUrl === 'string' && event?.pendingAsset) {
           // Client-persist path: edge returned raw PNG + metadata. Caller
           // (sceneGame.callSceneGenerate) runs compressToWebP + upload +
@@ -216,7 +248,19 @@ export const parseSceneGenerateNdjsonStream = async (
     }
   }
 
-  if (!finalAsset && !pendingClientPersist) throw new Error('scene-generate stream ended without done event');
+  if (!finalAsset && !pendingClientPersist) {
+    // The stream closed without ever sending `done` or `error`. The most common
+    // cause is the edge function being terminated by Supabase's wall-clock
+    // `max_duration` mid-pipeline (a cold first run is slow). Report the last
+    // stage we DID see so the failure points at the right step.
+    const where = lastStage ? `after "${lastStage}"` : 'before any stage completed';
+    const err = new Error(
+      `生成中途中断(${where})。最常见原因:冷启动首次请求超过了 Supabase Edge Function 的 max_duration 被平台终止。请在 Dashboard 给 scene-generate 调大 max_duration(建议 300s)。`,
+    );
+    (err as any).failedStage = lastStage || 'stream-truncated';
+    (err as any).streamTruncated = true;
+    throw err;
+  }
   if (pendingClientPersist) {
     return { source: finalSource, asset: null as any, degraded: finalDegraded, pendingClientPersist };
   }

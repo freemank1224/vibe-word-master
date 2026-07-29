@@ -94,6 +94,13 @@ export interface SceneDesignElement {
   positionZone?: PositionZone; // undefined when the director omitted/invalid zone
   /** Natural English description sentence containing `word` verbatim. */
   sentence?: string;
+  /**
+   * Other target word(s) that SHARE this element's sentence (a two-blank cloze).
+   * Capped at 1 by the parser → max 2 target words per sentence. Set only when a
+   * duplicate sentence genuinely contains both words, so they're rendered as ONE
+   * row with two blanks instead of two answer-leaking single-blank rows.
+   */
+  pairWords?: string[];
 }
 
 /**
@@ -156,6 +163,11 @@ export interface SceneDesignDiagnostics {
     missingWord: number;
     lazyTemplate: number;
     meansOpener: number;
+    /** Target word appears more than once → answer would leak on the sentence. */
+    wordRepeated: number;
+    /** Sentence is (near-)identical to another element's sentence → clues leak
+     *  each other's answer. */
+    duplicateSentence: number;
   };
   /** Element words (canonical form) that ended up without a sentence. */
   missingSentenceFields: string[];
@@ -342,7 +354,8 @@ export type SentenceInvalidReason =
   | 'tooLong'
   | 'missingWord'
   | 'lazyTemplate'
-  | 'meansOpener';
+  | 'meansOpener'
+  | 'wordRepeated';
 
 /**
  * Validate a cloze sentence for a target word.
@@ -373,8 +386,14 @@ export const validateSentence = (
   const target = String(word || '').trim().toLowerCase();
   if (!target) return 'missingWord';
   const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(^|[^a-z0-9])${escaped}(?=[^a-z0-9]|$)`, 'i');
-  if (!re.test(s)) return 'missingWord';
+  // Count word-boundary occurrences of the target. The target must appear
+  // EXACTLY ONCE — at the cloze blank. If it shows up elsewhere in the same
+  // sentence, the answer is literally written on the clue, so reject. (This
+  // is a stricter check than the old "exists at least once" `re.test`.)
+  const wordRe = new RegExp(`(^|[^a-z0-9])${escaped}(?=[^a-z0-9]|$)`, 'gi');
+  const occurrences = (s.match(wordRe) || []).length;
+  if (occurrences === 0) return 'missingWord';
+  if (occurrences > 1) return 'wordRepeated';
   if (LAZY_TEMPLATE_RE.test(s)) return 'lazyTemplate';
   const meansOpener = new RegExp(`^${escaped}\\s+means\\b`, 'i');
   if (meansOpener.test(s)) return 'meansOpener';
@@ -582,6 +601,8 @@ const emptyDropReasons = (): SceneDesignDiagnostics['dropReasons'] => ({
   missingWord: 0,
   lazyTemplate: 0,
   meansOpener: 0,
+  wordRepeated: 0,
+  duplicateSentence: 0,
 });
 
 const reasonKey: Record<SentenceInvalidReason, keyof SceneDesignDiagnostics['dropReasons']> = {
@@ -591,6 +612,130 @@ const reasonKey: Record<SentenceInvalidReason, keyof SceneDesignDiagnostics['dro
   missingWord: 'missingWord',
   lazyTemplate: 'lazyTemplate',
   meansOpener: 'meansOpener',
+  wordRepeated: 'wordRepeated',
+};
+
+// Normalize a sentence for duplicate detection: case-insensitive, strip all
+// punctuation, collapse whitespace. "A ball sits on the ground." and
+// "a ball sits on the ground" collide → treated as the same clue.
+const signatureOf = (sentence: string): string =>
+  sentence.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Count word-boundary occurrences of `word` in `sentence` (case-insensitive).
+// Mirrors the matcher in validateSentence so "appears exactly once" checks stay
+// consistent with what the validator permits.
+const countWordOccurrences = (sentence: string, word: string): number => {
+  const target = String(word || '').trim().toLowerCase();
+  if (!target) return 0;
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|[^a-z0-9])${escaped}(?=[^a-z0-9]|$)`, 'gi');
+  return (String(sentence || '').match(re) || []).length;
+};
+
+// ----------------------------------------------------------------
+// Last-resort deterministic backfill — GUARANTEES no "picture-only".
+//
+// After the director LLM has had its chances (initial call + retries), any
+// element still missing a valid cloze sentence gets a simple, grammatical,
+// mutually-distinct sentence generated from these templates. Templates are
+// POS-aware: a noun gets "Look at the {word}.", an ADJECTIVE like "red" gets
+// "Something in the picture is red." (NOT "Look at the red.", which is
+// ungrammatical), a verb gets "You can see someone {word}.".
+//
+// These are intentionally basic A1 clues — quality is the LLM's job; this just
+// closes the door on "picture-only" so a learner always has a text clue. For a
+// color/adjective the clue "something is red" is actually a good hint: it tells
+// the learner to look for the red thing in the scene.
+// ----------------------------------------------------------------
+const BACKFILL_TEMPLATES: { adjective: ((w: string) => string)[]; verb: ((w: string) => string)[]; noun: ((w: string) => string)[] } = {
+  adjective: [
+    (w) => `Something in the picture is ${w}.`,
+    (w) => `One thing here looks ${w}.`,
+    (w) => `A ${w} thing is easy to see.`,
+    (w) => `Can you find the ${w} object?`,
+  ],
+  verb: [
+    (w) => `You can see someone ${w} in the picture.`,
+    (w) => `Someone will ${w} very soon here.`,
+    (w) => `Look, they ${w} in the scene.`,
+  ],
+  noun: [
+    (w) => `Look at the ${w} in the picture.`,
+    (w) => `Can you see the ${w} here?`,
+    (w) => `Point to the ${w} in the scene.`,
+    (w) => `Find the ${w} in this picture.`,
+    (w) => `The ${w} is easy to spot.`,
+  ],
+};
+
+const backfillTemplateGroup = (pos: string): ((w: string) => string)[] => {
+  const p = (pos || '').trim().toLowerCase();
+  if (p.startsWith('adj')) return BACKFILL_TEMPLATES.adjective;
+  if (p.startsWith('v') || p === 'verb') return BACKFILL_TEMPLATES.verb;
+  return BACKFILL_TEMPLATES.noun; // noun, adverb, unknown → noun-style (most common)
+};
+
+/**
+ * Fill in a valid, distinct cloze sentence for every design element still
+ * missing one. Mutates `design.elements` in place. Returns the count filled.
+ * Call this ONLY after the LLM retry loop has run, so the LLM gets every
+ * chance to produce quality sentences first.
+ */
+export const backfillMissingSentences = (
+  design: SceneDesign | null,
+  words: SceneWordInput[] = [],
+): number => {
+  if (!design || !Array.isArray(design.elements)) return 0;
+  const posByWord = new Map<string, string>();
+  for (const w of words) {
+    if (w && typeof w.text === 'string') posByWord.set(normalizeWordKey(w.text), (w as any).pos || '');
+  }
+  // Collect signatures of already-accepted sentences so backfilled ones stay
+  // mutually distinct AND don't collide with the LLM's good sentences.
+  const seen = new Set<string>();
+  for (const el of design.elements) {
+    if (typeof el.sentence === 'string' && el.sentence.trim()) seen.add(signatureOf(el.sentence));
+  }
+  let filled = 0;
+  for (const el of design.elements) {
+    if (typeof el.sentence === 'string' && el.sentence.trim()) continue; // already has one
+    if (typeof el.word !== 'string' || !el.word.trim()) continue;
+    const word = el.word.trim();
+    const group = backfillTemplateGroup(posByWord.get(normalizeWordKey(word)) || '');
+    for (const make of group) {
+      const cand = make(word);
+      if (validateSentence(cand, word) !== null) continue; // failed length / word-count / template rules
+      const sig = signatureOf(cand);
+      if (seen.has(sig)) continue; // would duplicate another clue
+      el.sentence = cand;
+      seen.add(sig);
+      filled += 1;
+      break;
+    }
+  }
+  return filled;
+};
+
+/**
+ * Build the client-facing cloze groups from a parsed design. Each element with a
+ * sentence becomes ONE group: `[el.word, ...el.pairWords]` + its sentence. A
+ * paired element (pairWords set) yields a 2-word group → one row, two blanks.
+ * Elements without a sentence are skipped (the client treats those words as
+ * picture-only via the per-word `sentences` index). Order follows `elements`.
+ */
+export interface ClozeGroup {
+  words: string[];
+  sentence: string;
+}
+export const buildClozeGroups = (design: SceneDesign | null): ClozeGroup[] => {
+  if (!design || !Array.isArray(design.elements)) return [];
+  const groups: ClozeGroup[] = [];
+  for (const el of design.elements) {
+    if (typeof el.sentence !== 'string' || !el.sentence.trim()) continue;
+    if (typeof el.word !== 'string' || !el.word.trim()) continue;
+    groups.push({ words: [el.word.trim(), ...(el.pairWords || []).map((p) => p.trim())], sentence: el.sentence.trim() });
+  }
+  return groups;
 };
 
 const failDiagnostics = (
@@ -699,6 +844,10 @@ export const parseSceneDesignWithDiagnostics = (
   const elements: SceneDesignElement[] = [];
   const dropReasons = emptyDropReasons();
   const missingSentenceFields: string[] = [];
+  // Signatures of sentences already accepted, to reject duplicates across
+  // elements. Two identical clues with different target words reveal each
+  // other's answer, so the second (and any later) occurrence is dropped.
+  const seenSignatures = new Set<string>();
   let zonesAssigned = 0;
   let validSentences = 0;
 
@@ -730,8 +879,37 @@ export const parseSceneDesignWithDiagnostics = (
       : rawEl.sentence;
     const sentenceReason = validateSentence(scrubbedSentence, canonical);
     if (sentenceReason === null) {
-      el.sentence = (scrubbedSentence as string).trim();
-      validSentences += 1;
+      const sig = signatureOf(scrubbedSentence as string);
+      const acceptedSentenceStr = sig.length > 0 ? (scrubbedSentence as string).trim() : '';
+      if (sig.length > 0 && seenSignatures.has(sig)) {
+        // Duplicate of an already-accepted clue. Two identical single-blank rows
+        // would leak each other's answer. PREFER to MERGE: if this word also
+        // appears exactly once in the shared sentence, attach it as a pairWord
+        // of the already-accepted element → one row, two blanks, no leak.
+        // (Capped at 2 words/sentence.) Otherwise fall back to dropping it.
+        const acceptor = elements.find(
+          (e) => typeof e.sentence === 'string' && signatureOf(e.sentence!) === sig && (!e.pairWords || e.pairWords.length === 0),
+        );
+        const canPair =
+          !!acceptor &&
+          !!acceptedSentenceStr &&
+          countWordOccurrences(acceptedSentenceStr, canonical) === 1 &&
+          !acceptor.pairWords; // max 2 words per sentence
+        if (canPair) {
+          acceptor!.pairWords = [...(acceptor!.pairWords || []), canonical];
+          // The current element is covered by the pair — do NOT push a separate
+          // element, do NOT count a drop. Both words map to the one sentence.
+          validSentences += 1;
+          continue; // skip elements.push(el) below
+        }
+        // Not mergeable (other word absent, or acceptor already paired) → drop.
+        dropReasons.duplicateSentence += 1;
+        missingSentenceFields.push(canonical);
+      } else {
+        if (sig.length > 0) seenSignatures.add(sig);
+        el.sentence = acceptedSentenceStr;
+        validSentences += 1;
+      }
     } else {
       dropReasons[reasonKey[sentenceReason]] += 1;
       missingSentenceFields.push(canonical);
@@ -744,9 +922,16 @@ export const parseSceneDesignWithDiagnostics = (
   // entirely) gets a bare element (word only, no sentence) so the region map
   // still includes it. The client renders these as "Picture only" in PLAYING
   // and shows just the word in REVIEW.
+  // A word is "covered" if it is an element's own `word` OR appears in some
+  // element's `pairWords` (two-blank pair). Only uncovered words get a bare
+  // (picture-only) element so the region map still includes them.
+  const isCovered = (k: string) =>
+    elements.some(
+      (e) => normalizeWordKey(e.word) === k || (e.pairWords || []).some((p) => normalizeWordKey(p) === k),
+    );
   for (const w of words) {
     const key = normalizeWordKey(w.text);
-    if (!elements.some((e) => normalizeWordKey(e.word) === key)) {
+    if (!isCovered(key)) {
       elements.push({
         word: w.text,
         // No sentence — client handles gracefully.
@@ -890,11 +1075,29 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     'for each target word, ONE fill-in-the-blank sentence you write. The sentence must',
     'help the learner guess the word by describing something VISIBLE in the scene.',
     '',
+    '╔═════════════════════════════════════════════════════════════════════╗',
+    '║  THREE HARD RULES — every sentence MUST satisfy ALL of them        ║',
+    '╚═════════════════════════════════════════════════════════════════════╝',
+    ' 1. EXACTLY ONCE — the target word appears ONE time in its sentence (it will be',
+    '    blanked). Never twice: a second copy leaks the answer on the clue itself.',
+    ' 2. ALL DISTINCT — no two sentences may be the same or near-identical. Two clues',
+    '    that read alike but blank different words reveal each other\'s answer. Each',
+    '    sentence is built around its OWN word and reads differently from every other.',
+    ' 3. REAL CLUE — a short A1–A2 scene description containing the word. Never a',
+    '    definition, template, or translation.',
+    ' These are verified after generation ONLY as a safety net. You are expected to',
+    ' satisfy them on the FIRST try — do not rely on retries. Get it right once.',
+    '',
     '═══════════════════════════════════════════════════════════════════',
     'STAGE 1 — CLOZE SENTENCES (your PRIMARY deliverable; write this FIRST)',
     '═══════════════════════════════════════════════════════════════════',
     'For EACH input word, write ONE English sentence that:',
     '  • contains the word verbatim (case-insensitive, but keep spelling exact)',
+    '  • contains the target word EXACTLY ONCE. The word will be blanked out to',
+    '    make the cloze — if it appears anywhere else in the same sentence the',
+    '    answer is leaked on the clue itself. So never repeat the target word',
+    '    inside its own sentence (e.g. "The ball rolls past another ball." is',
+    '    FORBIDDEN for the word "ball").',
     '  • is 6–12 words long (short, beginner-friendly sentences)',
     '  • uses ONLY common English words from the CEFR A1–A2 list (~1000 most',
     '    frequent English words). The target word itself is exempt — every OTHER',
@@ -918,6 +1121,31 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     '  "Apple means a red fruit."                                      ← dictionary definition',
     '  "In this scene there is an apple."                              ← filler template',
     '  "苹果 means apple in English."                                   ← bilingual translation',
+    '  "The red apple and the red ball."                               ← target word "red" repeated',
+    '',
+    'WRITE THE SENTENCE BY PART OF SPEECH (use each word\'s `pos`):',
+    '  • NOUN (apple, cow, moon): name ONE visible instance.',
+    '      "The cow stands by the wooden fence."',
+    '  • ADJECTIVE — especially COLORS (red, big, angry): apply it to ONE visible',
+    '    object as "The {noun} is {adj}." or "a {adj} {noun}". Use the adjective ONE',
+    '    time; do not describe several objects that share it.',
+    '      "red"   → "The apple is red."            (NOT "The red ball by the red box")',
+    '      "angry" → "The angry man hits the table."',
+    '  • VERB (run, eat, jump): "The boy {verb}s …" or "You can see someone {verb}."',
+    '      "run" → "Two kids run across the wet grass."',
+    '  • ADVERB (quickly, softly): "Someone {verb}s {adv}."',
+    '      "quickly" → "The boy quickly eats his food."',
+    '  • DETERMINER / PRONOUN (this, that, these, those): point at visible things.',
+    '      "these" → "These boxes are full of old toys."',
+    '',
+    'TWO WORDS, ONE OBJECT → STILL TWO DIFFERENT SENTENCES:',
+    '  If two target words both fit the same visible thing, do NOT give them the same',
+    '  sentence. Build a fresh sentence around EACH word so all sentences stay distinct:',
+    '    words "cow" + "these" →',
+    '      cow   → "The brown cow looks right at us."',
+    '      these → "These boxes are full of old toys."',
+    '    (WRONG: writing "A cow stands near these boxes." for BOTH — that one sentence',
+    '     reused for two words makes the two clues reveal each other\'s answer.)',
     '',
     '═══════════════════════════════════════════════════════════════════',
     'STAGE 2 — STORYBOARD (connective prose; derived from your sentences)',
@@ -983,6 +1211,11 @@ export const buildSceneDirectorSystemPrompt = (): string => {
     ' • The `sentence` field is REQUIRED on every element. If you omit it, the',
     '   learner sees no clue and the round is broken. structuredPrompt is downstream',
     '   from the sentences — write sentences first, then derive the prompt.',
+    ' • Every elements[].sentence MUST be mutually distinct. NEVER reuse the same',
+    '   sentence (or a near-identical one) for two different words — two clues that',
+    '   read the same but blank different words reveal each other\'s answer. Each',
+    '   sentence must be built around its OWN target word and read differently.',
+    ' • Each target word appears EXACTLY ONCE in its own sentence (see STAGE 1).',
     ' • DO NOT add floating captions, subtitles, UI labels, or watermarks to the image.',
     ' • DO NOT describe the mascot\'s colors, shape, or features inside structuredPrompt.',
     '',

@@ -193,6 +193,11 @@ export interface SceneAsset {
    *  cloze sentences are derived from). Surfaced in the PREPARING stage so the
    *  player can preview the scene idea before play. */
   storyboard?: string;
+  /** Cloze rows the client renders. Each group = ONE sentence with 1 or 2 target
+   *  words (2 = a merged pair, rendered as one row with two blanks to avoid
+   *  answer-leaking duplicate rows). Built by normalizeAsset from
+   *  scene_design.clozeGroups, or derived per-word for legacy rows. */
+  clozeGroups?: { words: string[]; sentence: string }[];
 }
 
 export interface SceneCardResult {

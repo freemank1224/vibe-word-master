@@ -259,7 +259,14 @@ export const selectSceneWords = (
 // ----------------------------------------------------------------
 // Scene generation request
 // ----------------------------------------------------------------
-const SCENE_GENERATION_TIMEOUT_MS = 240_000; // ① director (up to 55s) + ② render (up to 115s) + margin
+// Generous on purpose: a COLD first request pays edge-function cold start +
+// cold director LLM + cold image provider, and the render chain can try img2img
+// (115s) then text-only (115s) before succeeding. This MUST be set >= the edge
+// function's `max_duration` (set that to 300s in the Supabase Dashboard) so the
+// client is still listening when the (allowed-to-run-longer) cold call completes
+// — otherwise the client gives up while the function is still working, which is
+// exactly the "first attempt fails, retry succeeds" symptom.
+const SCENE_GENERATION_TIMEOUT_MS = 305_000;
 
 // Static env-var access (vite.config.ts `define` replaces these at build time,
 // mirroring lib/supabaseClient.ts). Needed because raw `fetch` bypasses the

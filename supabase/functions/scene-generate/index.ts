@@ -5,6 +5,8 @@ import {
   buildSceneDirectorSystemPrompt,
   buildSceneDirectorUserPayload,
   buildFusionResult,
+  backfillMissingSentences,
+  buildClozeGroups,
   deriveRegionsFromElements,
   parseSceneDesign,
   parseSceneDesignWithDiagnostics,
@@ -318,9 +320,15 @@ const tryGenerateByProvider = async (
     /** Optional reference image (data URL) for img2img via /v1/images/edits. */
     referenceImage?: { dataUrl: string; label?: string } | null;
   },
-): Promise<{ dataUrl: string; providerId: ProviderId; model: string; attemptedUrl: string; img2Img: boolean } | { error: ProviderAttemptFailure }> => {
+): Promise<{ dataUrl: string; providerId: ProviderId; model: string; attemptedUrl: string; img2Img: boolean; img2imgNote: string } | { error: ProviderAttemptFailure }> => {
   const urls = getImageGenerationUrls(provider.baseUrl);
   if (urls.length === 0) return { error: { providerId: provider.id, url: provider.baseUrl, message: 'Invalid provider base URL' } };
+
+  // Track WHY img2img did or didn't run, so the client can surface it (e.g.
+  // "fell-back:http-404" tells us the gateway doesn't implement /v1/images/edits).
+  let img2imgNote = options?.referenceImage
+    ? (isImg2ImgEnabled() ? 'fell-back:unspecified' : 'not-attempted:disabled')
+    : 'not-attempted:no-reference-image';
 
   // When a reference image is supplied AND img2img isn't disabled, FIRST try
   // /v1/images/edits (multipart). On any failure (4xx / network / endpoint
@@ -329,7 +337,11 @@ const tryGenerateByProvider = async (
   if (options?.referenceImage && isImg2ImgEnabled()) {
     const blob = dataUrlToBlob(options.referenceImage.dataUrl);
     const editUrls = getImageEditsUrls(provider.baseUrl);
-    if (blob && editUrls.length > 0) {
+    if (!blob) {
+      img2imgNote = 'not-attempted:blob-conversion-failed';
+    } else if (editUrls.length === 0) {
+      img2imgNote = 'not-attempted:no-edit-url';
+    } else {
       for (const url of editUrls) {
         try {
           const timeoutMs = isPrimary ? 115000 : 80000;
@@ -358,19 +370,23 @@ const tryGenerateByProvider = async (
           if (response.ok) {
             const b64 = data?.data?.[0]?.b64_json;
             if (typeof b64 === 'string' && b64.length > 0) {
-              return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true };
+              img2imgNote = 'used';
+              return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote };
             }
             const imageUrl = data?.data?.[0]?.url;
             if (typeof imageUrl === 'string' && imageUrl.length > 0) {
               const dataUrl = await convertImageUrlToDataUrl(imageUrl);
-              if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true };
+              if (dataUrl) { img2imgNote = 'used'; return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote }; }
             }
+            img2imgNote = 'fell-back:ok-no-image';
             console.warn(`[scene-generate] img2img @ ${url} OK but no image; falling back to text-only`);
           } else {
+            img2imgNote = `fell-back:http-${response.status}`;
             console.warn(`[scene-generate] img2img @ ${url} HTTP ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}; falling back to text-only`);
           }
         } catch (error) {
           const isTimeout = error instanceof Error && error.message.includes('timeout');
+          img2imgNote = isTimeout ? 'fell-back:timeout' : 'fell-back:exception';
           console.warn(`[scene-generate] img2img @ ${url} threw: ${isTimeout ? 'timeout' : (error instanceof Error ? error.message : String(error))}; falling back to text-only`);
         }
       }
@@ -382,7 +398,7 @@ const tryGenerateByProvider = async (
     try {
       const timeoutMs = isPrimary ? 115000 : 80000;
       const requestBody = JSON.stringify({ model: provider.model, prompt, n: 1, size: '1024x1024', response_format: 'b64_json' });
-      console.log(`[scene-generate] image ${provider.id} @ ${url} timeout=${timeoutMs}ms`);
+      console.log(`[scene-generate] image ${provider.id} @ ${url} timeout=${timeoutMs}ms (img2img=${img2imgNote})`);
       const response = await withTimeout(
         fetch(url, {
           method: 'POST',
@@ -394,21 +410,25 @@ const tryGenerateByProvider = async (
       );
 
       const data = await parseResponseJson(response);
+      const bodySnippet = JSON.stringify(data).slice(0, 180);
       if (!response.ok) {
-        lastFailure = { providerId: provider.id, url, status: response.status, message: data?.error?.message || `${response.status} ${response.statusText}` };
+        lastFailure = { providerId: provider.id, url, status: response.status, message: data?.error?.message || `${response.status} ${response.statusText}` + ` (body: ${bodySnippet})` };
         continue;
       }
 
       const b64 = data?.data?.[0]?.b64_json;
       if (typeof b64 === 'string' && b64.length > 0) {
-        return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false };
+        return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
       }
       const imageUrl = data?.data?.[0]?.url;
       if (typeof imageUrl === 'string' && imageUrl.length > 0) {
         const dataUrl = await convertImageUrlToDataUrl(imageUrl);
-        if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false };
+        if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
       }
-      lastFailure = { providerId: provider.id, url, message: 'response has no b64_json/url' };
+      // 200 but no image — usually means we hit the WRONG endpoint (the host
+      // returned an HTML page / status JSON / empty data instead of the image
+      // API). Surface what actually came back so it's diagnosable.
+      lastFailure = { providerId: provider.id, url, message: `response has no b64_json/url (body: ${bodySnippet})` };
     } catch (error) {
       const isTimeout = error instanceof Error && error.message.includes('timeout');
       lastFailure = { providerId: provider.id, url, message: isTimeout ? `Request timeout after ${isPrimary ? '115s' : '80s'}` : (error instanceof Error ? error.message : String(error)) };
@@ -461,7 +481,7 @@ const designScene = async (
   let lastRawHead: string | undefined;
   let lastException: string | undefined;
 
-  const call = async (useJsonMode: boolean): Promise<string> => {
+  const call = async (useJsonMode: boolean, feedback?: string): Promise<string> => {
     const url = chatCompletionsUrl(cfg.baseUrl);
     if (!url) return '';
     const userContent = JSON.stringify(userPayload) +
@@ -470,8 +490,10 @@ const designScene = async (
       'The object MUST contain keys: storyboard (string), sceneTitle (string), sceneConcept (string), structuredPrompt (string), elements (array). ' +
       'EVERY entry in elements[] MUST include a non-empty "sentence" string — this is the cloze clue shown to the learner and there is no fallback inside the element. ' +
       'Every sentence MUST use ONLY common CEFR A1–A2 English words (except the target word), be 6–12 words long, and use simple Subject-Verb-Object grammar. ' +
+      'CRITICAL: every elements[].sentence MUST be mutually distinct (never reuse the same sentence for two words) and each target word MUST appear EXACTLY ONCE in its own sentence (at the blank position — never elsewhere). ' +
       `The structuredPrompt MUST contain EXACTLY ONE ${MASCOT_PLACEHOLDER} token. ` +
-      `The storyboard MUST contain ⌈N/2⌉–N sentences; every sentence must include 1–2 of the input target words verbatim, and every input word must appear at least once across the storyboard.`;
+      `The storyboard MUST contain ⌈N/2⌉–N sentences; every sentence must include 1–2 of the input target words verbatim, and every input word must appear at least once across the storyboard.` +
+      (feedback ? `\n\n${feedback}` : '');
     const body: Record<string, unknown> = {
       model: cfg.model,
       // Reasoning-style models (DeepSeek-R1, MiniMax-M1, Qwen-QwQ, etc.)
@@ -552,8 +574,28 @@ const designScene = async (
     return { design: null, diagnostics: parsed.diagnostics, failReason, httpStatus: lastHttpStatus, rawHead: lastRawHead };
   }
 
+  // NOTE: we deliberately do NOT retry the director here. An earlier version
+  // re-prompted up to 2× when sentences had drops, but each extra director call
+  // (~10–55s) pushed the whole function past Supabase's wall-clock max_duration
+  // and got it killed mid-stream (client saw ERR_CONNECTION_CLOSED). The director
+  // PROMPT is now the primary mechanism for first-try compliance (three hard
+  // rules + POS-by-POS guide + anti-duplicate example). Cheap, no-extra-call
+  // safety nets handle the rare miss: duplicate sentences → merged into a
+  // two-blank pair; any word still without a sentence → POS-aware backfill below.
+
   const design = parsed.design;
   const diagnostics = parsed.diagnostics;
+  if ((diagnostics?.droppedSentences || 0) > 0) {
+    // GUARANTEE no "picture-only": backfill a simple, POS-aware, distinct
+    // sentence for every element the LLM still left without one. Adjectives
+    // (e.g. "red") get "Something in the picture is red.", nouns get "Look at
+    // the {word}.", verbs get "You can see someone {word}." — grammatical and
+    // mutually distinct. This is the floor; the LLM (via the prompt) is the ceiling.
+    const filled = backfillMissingSentences(design, words);
+    if (filled > 0) {
+      console.log(`[scene-generate] backfilled ${filled} sentence(s) the LLM could not produce → eliminating picture-only (e.g. adjective "red" → "Something in the picture is red.")`);
+    }
+  }
   console.log(`[scene-generate] design ok: ${design.elements.length}/${words.length} elements, ${diagnostics.zonesAssigned} zones, ${diagnostics.validSentences}/${diagnostics.inputWordCount} sentences valid, mascotPlaceholder=${diagnostics.mascotPlaceholder.count}, title="${(design.sceneTitle || '').substring(0, 40)}"`);
   console.log(`[scene-generate] design diagnostics: ${JSON.stringify(diagnostics)}`);
   return { design, diagnostics, failReason: null };
@@ -963,7 +1005,14 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
             body: JSON.stringify({
               model: cfg.model,
-              max_tokens: 800,
+              // Must mirror the main pipeline's 4000-token budget: reasoning
+              // directors (Minimax-m3, DeepSeek-R1, MiniMax-M1, Qwen-QwQ) emit a
+              // <think>…</think> block BEFORE the JSON, and that block counts toward
+              // max_tokens. With 800 the reasoning ate the whole budget and the JSON
+              // was truncated → "unparseable-json" (non-reasoning models like
+              // qwen-max were unaffected, which is why Aliyun passed but Minimax
+              // failed). 4000 leaves room for reasoning + the small probe JSON.
+              max_tokens: 4000,
               temperature: 0.7,
               messages: [
                 { role: 'system', content: sysPrompt },
@@ -971,8 +1020,8 @@ serve(async (req) => {
               ],
             }),
           }),
-          30000,
-          'probe timeout after 30s',
+          55000,
+          'probe timeout after 55s',
         );
         const latencyMs = Date.now() - startedAt;
         if (!response.ok) {
@@ -1473,6 +1522,9 @@ serve(async (req) => {
           storyboard: design.storyboard || null,
           structuredPrompt: design.structuredPrompt, // preserve original (with placeholder) for reproducibility
           elements: design.elements,
+          // One row per element; a paired element (pairWords) → one 2-word group
+          // → client renders ONE row with two blanks (no answer leak).
+          clozeGroups: buildClozeGroups(design),
           source: 'director',
           // Which director actually produced this design (purely additive to
           // the JSONB — no schema change). Lets us audit which model ran even
@@ -1504,6 +1556,7 @@ serve(async (req) => {
             positionZone: null,
           })),
           sentences: fallbackResult.sentences,
+          clozeGroups: [], // fallback sentences are empty (picture-only) — no groups
           source: 'fallback',
           fallbackReason: designResult.failReason,
           // Record which director was *attempted* before falling back.
@@ -1552,6 +1605,10 @@ serve(async (req) => {
         sceneTitle: design?.sceneTitle || null,
         storyboard: storyboardForEvent,
         elements: elementsForEvent,
+        // Cloze rows (1 or 2 words each). Forwarded early so a client could
+        // preview pairs during PREPARING; the authoritative copy rides in
+        // pendingAsset.sceneDesign / DB scene_design.
+        clozeGroups: buildClozeGroups(design),
         diagnostics: designDiagnostics || undefined,
         mascot: {
           referenceImageAvailable: !!mascotDataUrl,
@@ -1574,19 +1631,37 @@ serve(async (req) => {
         : null;
 
       const failures: ProviderAttemptFailure[] = [];
-      let generated: { dataUrl: string; providerId: ProviderId; model: string; img2Img: boolean } | null = null;
+      let generated: { dataUrl: string; providerId: ProviderId; model: string; img2Img: boolean; img2imgNote: string } | null = null;
       for (let i = 0; i < providers.length; i++) {
         const result = await tryGenerateByProvider(providers[i], prompt, providers.length > 1 && i === 0, { referenceImage });
         if ('error' in result) { failures.push(result.error); continue; }
-        generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model, img2Img: result.img2Img };
+        generated = { dataUrl: result.dataUrl, providerId: result.providerId, model: result.model, img2Img: result.img2Img, img2imgNote: result.img2imgNote };
         break;
       }
       if (!generated) {
-        send({ stage: 'error', failedStage: 'rendered', error: 'All image providers failed', failures });
+        // Surface per-provider failure detail in the message itself so the UI
+        // (and the player) can see WHICH provider failed and HOW (HTTP status or
+        // short reason) — instead of a generic "all failed". e.g.
+        // "All image providers failed: newapi→HTTP 403; letsmakesail→HTTP 429; tokendance→Request timeout after 80s"
+        const detail = failures
+          .map((f) => {
+            const shortUrl = f.url ? ' @ ' + f.url.replace(/^https?:\/\//, '').slice(0, 48) : '';
+            return `${f.providerId}→${f.status ? `HTTP ${f.status}` : (f.message || 'unknown error')}${shortUrl}`;
+          })
+          .join('; ');
+        send({
+          stage: 'error',
+          failedStage: 'rendered',
+          error: `All image providers failed${detail ? `: ${detail}` : ''}`,
+          failures,
+        });
         return;
       }
-      // → emit rendered (real evidence: image dataUrl exists)
-      send({ stage: 'rendered', providerId: generated.providerId, img2Img: generated.img2Img });
+      // → emit rendered (real evidence: image dataUrl exists). Surface the img2img
+      // outcome so a wrong-mascot result is diagnosable: if img2img fell back to
+      // text-only (gateway doesn't support /v1/images/edits), the monster is drawn
+      // from the text prompt only — not the canonical reference image.
+      send({ stage: 'rendered', providerId: generated.providerId, img2Img: generated.img2Img, img2imgNote: generated.img2imgNote });
 
       // Regions — DEFAULT path: derive from director zones (no extra model call).
       let regions = deriveRegionsFromElements(
@@ -1732,6 +1807,7 @@ serve(async (req) => {
             regions: regionsSource,
             vision: visionEnabled ? (visionModelUsed || 'on') : 'off',
             img2img: generated.img2Img,
+            img2imgNote: generated.img2imgNote,
             mascot: mascotFetch.source,
             placeholderReplacedCount: placeholderSubstitution?.replacedCount ?? 0,
           },
