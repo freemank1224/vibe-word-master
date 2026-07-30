@@ -211,6 +211,39 @@ const describePreparingError = (err: unknown, reachedStage: number): PreparingEr
   };
 };
 
+/**
+ * Preload an image URL to completion (decoded and in the browser cache) before
+ * we rely on it being visible. Resolves true on a successful load, false on
+ * error or timeout. Works for both `data:` URLs (near-instant) and `https:`.
+ *
+ * The round's `<img>` only mounts in the PLAYING phase, so without preloading
+ * the download doesn't even begin until the game timer starts — leaving the
+ * left panel blank for the first seconds of play. We therefore await this
+ * BEFORE entering COUNTDOWN, so the countdown (and thus the timer) cannot
+ * start until the picture is genuinely fully loaded.
+ */
+const preloadSceneImage = (url: string, timeoutMs = 30000): Promise<boolean> =>
+  new Promise((resolve) => {
+    if (!url) {
+      resolve(false);
+      return;
+    }
+    const img = new Image();
+    let settled = false;
+    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      img.onload = null;
+      img.onerror = null;
+      resolve(ok);
+    };
+    img.onload = () => finish(true);
+    img.onerror = () => finish(false);
+    img.src = url;
+  });
+
 const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onComplete, onCancel, coinBalance = Infinity, onInsufficientCoins, onCoinsSpent, onNotify }) => {
   const dayIndex = new Date().getDay();
   const monsterImg = `/monsterImages/M${dayIndex}.webp`;
@@ -483,6 +516,11 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       console.log('[SceneGameMode] asset received', { source: res.source, imageUrl: res.asset.imageUrl, regionCount: res.asset.regions.length });
       setAsset(res.asset);
       setDegraded(res.degraded);
+      // Kick the image download into the browser cache the INSTANT its URL is
+      // known — in parallel with TTS prefetch and the charge bookkeeping below
+      // — so by the time we reach the 3-2-1 countdown the picture is already
+      // local and renders instantly when PLAYING mounts the <img>.
+      const imgLoadPromise = preloadSceneImage(res.asset.imageUrl);
       // Option C: the charge landed inside `finalize`. Stash the refund handle
       // (consumed on first successful image load, refunded on load failure) and
       // refresh the header balance. A cache hit has no commitRef (free) — leave
@@ -502,6 +540,25 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
       // (prefetchSentenceAudios never throws).
       if (ttsPromise) {
         try { await ttsPromise; } catch { /* unreachable — prefetch never throws */ }
+      }
+      // The image preload was started the moment the asset URL arrived, in
+      // parallel with TTS — so by now it is almost always already in the
+      // browser cache. Await it as the final gate before COUNTDOWN: the 3-2-1
+      // (and thus the timer) must not start until the picture is genuinely local.
+      const imgLoaded = await imgLoadPromise;
+      if (controller.signal.aborted) return;
+      if (!imgLoaded) {
+        // Generation succeeded but the image wouldn't render. Refund the charge
+        // (it was deducted at finalize) and surface the failure in PREPARING
+        // instead of starting a blind round with a blank panel.
+        handleImageError();
+        setPreparingError({
+          stageKey: 'rendered',
+          titleZh: '画面加载失败 — 图片未能成功加载，已自动退款，请重试',
+          titleEn: 'The scene image failed to load. Your coins were refunded. Please retry.',
+          detail: '',
+        });
+        return;
       }
       // No MODE_SELECT any more — go straight to COUNTDOWN → PLAYING.
       setPhase('COUNTDOWN');
@@ -992,7 +1049,7 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
    * is a fresh attempt at the same scene, and each completed attempt writes
    * a new row to the leaderboard.
    */
-  const replaySameScene = () => {
+  const replaySameScene = async () => {
     // Stop any audio that's currently playing.
     if (sharedAudioRef.current) {
       sharedAudioRef.current.pause();
@@ -1008,6 +1065,15 @@ const SceneGameMode: React.FC<SceneGameModeProps> = ({ allWords, sessions, onCom
     setFlashStatus('idle');
     finalizeGuardRef.current = false;
 
+    // Same gate as the fresh-generation path: ensure the image is actually
+    // loaded before countdown. On replay the browser usually has it cached, so
+    // this resolves near-instantly; if it was evicted and won't reload, don't
+    // start a blind round with a blank panel.
+    const replayUrl = asset?.imageUrl;
+    if (replayUrl && !(await preloadSceneImage(replayUrl))) {
+      onNotify?.('画面重新加载失败，请重试', 'error');
+      return;
+    }
     // Jump straight to COUNTDOWN — no PREPARING since the asset is already loaded.
     setPhase('COUNTDOWN');
     setCountdownValue(3);

@@ -72,7 +72,7 @@ describe('Offline Sync Queue', () => {
 
       const result = getPendingSyncs();
       expect(result).toHaveLength(1);
-      expect(result[0].toMatchObject({
+      expect(result[0]).toMatchObject({
         date: '2025-02-13',
         testCount: 10,
         correctCount: 6,

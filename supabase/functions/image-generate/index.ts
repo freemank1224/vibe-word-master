@@ -219,6 +219,158 @@ const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, timeoutError: st
   ]);
 };
 
+// ---------------------------------------------------------------------------
+// Robust image extraction — accepts MANY gateway response shapes, not just the
+// OpenAI `data[0].b64_json` / `data[0].url`. Relays (NewAPI, tokendance, custom
+// gateways) return images in inconsistent places; this tries every known path
+// and reports which one matched so a "response has no b64_json/url" failure is
+// diagnosable instead of a guess.
+// ---------------------------------------------------------------------------
+const DIAG_PATHS = [
+  'data[0].b64_json', 'data[0].b64', 'data[0].url',
+  'data.b64_json', 'data.b64', 'data.url', 'data',
+  'images[0].b64_json', 'images[0].b64', 'images[0].url', 'images',
+  'result.b64_json', 'result.url', 'result.image', 'result',
+  'output.b64_json', 'output.url', 'output',
+  'url', 'b64_json', 'b64', 'image', 'image_url', 'imageUrl',
+  'choices[0].message.images[0].url',
+  'choices[0].message.content',
+];
+
+const getPath = (obj: any, path: string): any => {
+  const parts = path.split(/\.|\[(\d+)\]/).filter((p) => p !== undefined && p !== '');
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+};
+
+/** Classify a leaf value as an http(s)/data URL, raw base64, or nothing. */
+const classifyLeaf = (val: any): { kind: 'url' | 'b64'; value: string } | null => {
+  if (val == null) return null;
+  if (typeof val !== 'string') return null;
+  const v = val.trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v) || v.startsWith('data:image')) return { kind: 'url', value: v };
+  // markdown image or bare URL embedded in text
+  const md = v.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)/i);
+  if (md) return { kind: 'url', value: md[1] };
+  const m = v.match(/(https?:\/\/[^\s"'<>]+\.(?:png|jpe?g|webp))/i);
+  if (m) return { kind: 'url', value: m[1] };
+  // raw base64 blob (must be long enough to plausibly be an image)
+  const compact = v.replace(/\s/g, '');
+  if (compact.length > 200 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    return { kind: 'b64', value: `data:image/png;base64,${compact}` };
+  }
+  return null;
+};
+
+const extractImageFromResponse = (data: any): { found: boolean; kind: string; path?: string; value: string } => {
+  if (typeof data === 'string') {
+    const c = classifyLeaf(data);
+    return c ? { found: true, kind: `string-${c.kind}`, value: c.value } : { found: false, kind: 'string-no-image', value: data.slice(0, 120) };
+  }
+  if (data == null || typeof data !== 'object') {
+    return { found: false, kind: 'non-object', value: String(data).slice(0, 120) };
+  }
+  for (const path of DIAG_PATHS) {
+    const c = classifyLeaf(getPath(data, path));
+    if (c) return { found: true, kind: `${path}:${c.kind}`, path, value: c.value };
+  }
+  return { found: false, kind: 'no-image-in-known-paths', value: '' };
+};
+
+// ---------------------------------------------------------------------------
+// Diagnostic probe (`action: 'diag'`). Calls a configured provider with the
+// REAL Edge Function secret + the REAL model, tries BOTH /v1/images/generations
+// and /images/generations, and reports status / content-type / timing / RAW body
+// / every extraction attempt. This is how we learn WHY a provider returns
+// {"error":{"message":"OK"}} instead of guessing.
+// ---------------------------------------------------------------------------
+const DIAG_TEST_PROMPT = 'a cute red apple on a clean white table, soft flat illustration, centered, no text';
+
+const buildCandidateGenUrls = (baseUrl: string): string[] => {
+  const s = normalizeUrl(baseUrl);
+  if (!s) return [];
+  if (s.endsWith('/images/generations')) return [s];
+  if (s.endsWith('/images')) return [`${s}/generations`];
+  // OpenAI canonical /v1 route first, then the bare route some gateways use.
+  return [`${s}/v1/images/generations`, `${s}/images/generations`];
+};
+
+const diagJson = (obj: any, status = 200): Response =>
+  new Response(JSON.stringify(obj, null, 2), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+const runDiag = async (body: any): Promise<Response> => {
+  const tiers = getProviderConfigs();
+  const tier = typeof body?.tier === 'string' ? body.tier.trim().toLowerCase() : 'primary';
+  let provider: ProviderConfig | null = null;
+  if (tier === 'secondary') provider = tiers.find((p) => p.id === 'newapi') || tiers[1] || null;
+  else if (tier === 'backup') provider = tiers.find((p) => p.id === 'tokendance') || tiers[2] || null;
+  else provider = tiers[0] || null;
+  if (!provider) {
+    return diagJson({
+      error: `No provider configured for tier "${tier}"`,
+      configuredTiers: tiers.map((p) => ({ id: p.id, model: p.model })),
+    }, 503);
+  }
+  const model = typeof body?.model === 'string' && body.model.trim() ? body.model.trim() : provider.model;
+  const prompt = typeof body?.prompt === 'string' && body.prompt.trim() ? body.prompt.trim() : DIAG_TEST_PROMPT;
+  const timeoutMs = Number.isFinite(body?.timeoutMs) ? Math.min(Math.max(body.timeoutMs, 10000), 300000) : 240000;
+  const urls = buildCandidateGenUrls(provider.baseUrl);
+
+  const attempts: any[] = [];
+  for (const url of urls) {
+    const start = Date.now();
+    const attempt: any = { url };
+    try {
+      const resp = await withTimeout(
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${provider.apiKey}`,
+            'User-Agent': 'Supabase-Edge-Function-diag',
+          },
+          body: JSON.stringify({ model, prompt, n: 1, size: '1024x1024', response_format: 'b64_json' }),
+        }),
+        timeoutMs,
+        `timeout after ${timeoutMs}ms`,
+      );
+      attempt.status = resp.status;
+      attempt.contentType = resp.headers.get('content-type') || '';
+      const text = await resp.text();
+      attempt.elapsedMs = Date.now() - start;
+      attempt.rawBodyLength = text.length;
+      attempt.rawBody = text.slice(0, 2000);
+      let parsed: any = null;
+      try { parsed = JSON.parse(text); } catch (e) { attempt.parseError = e instanceof Error ? e.message : String(e); }
+      attempt.extraction = parsed != null ? extractImageFromResponse(parsed) : { found: false, kind: 'non-json' };
+      attempts.push(attempt);
+      if (attempt.extraction?.found) break; // success — no need to try the next URL
+    } catch (e) {
+      attempt.elapsedMs = Date.now() - start;
+      attempt.fetchError = e instanceof Error ? e.message : String(e);
+      attempts.push(attempt);
+    }
+  }
+
+  return diagJson({
+    ok: true,
+    tier,
+    providerId: provider.id,
+    configuredModel: provider.model,
+    requestedModel: model,
+    baseUrlHost: (() => { try { return new URL(provider!.baseUrl).host; } catch { return provider!.baseUrl; } })(),
+    prompt,
+    timeoutMs,
+    candidateUrls: urls,
+    attempts,
+  }, 200);
+};
+
 const tryGenerateByProvider = async (
   provider: ProviderConfig,
   prompt: string,
@@ -551,6 +703,16 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
+
+    // Diagnostic probe: call a configured provider with the REAL prod secret +
+    // REAL model, try every candidate URL, and report status/headers/timing/raw
+    // body/extraction. Use this to diagnose "response has no b64_json/url" without
+    // guessing. Invoke: { action: 'diag', tier: 'primary'|'secondary'|'backup',
+    // model?, prompt?, timeoutMs? }
+    if (body?.action === 'diag') {
+      return await runDiag(body);
+    }
+
     const word = typeof body?.word === 'string' ? body.word.trim() : '';
     const promptOverride = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
     const language = typeof body?.language === 'string' ? body.language.trim() : 'en';

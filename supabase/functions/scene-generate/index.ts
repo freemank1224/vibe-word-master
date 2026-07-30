@@ -312,6 +312,56 @@ const extractChatContent = (data: any): string => {
   return '';
 };
 
+// ---------------------------------------------------------------------------
+// Robust image extraction — accepts MANY gateway response shapes, not just the
+// OpenAI `data[0].b64_json` / `data[0].url`. Relays (NewAPI, tokendance, custom
+// gateways) return images in inconsistent places; this tries every known path
+// and reports which one matched so a "response has no image" failure points at
+// the real cause instead of being a guess.
+// Returns { found, kind, value } where value is a `data:` URL (b64) or http(s).
+// ---------------------------------------------------------------------------
+const IMG_EXTRACT_PATHS = [
+  'data[0].b64_json', 'data[0].b64', 'data[0].url',
+  'data.b64_json', 'data.b64', 'data.url', 'data',
+  'images[0].b64_json', 'images[0].b64', 'images[0].url', 'images',
+  'result.b64_json', 'result.url', 'result',
+  'output.b64_json', 'output.url', 'output',
+  'url', 'b64_json', 'b64', 'image', 'image_url', 'imageUrl',
+];
+const getNestedPath = (obj: any, path: string): any => {
+  const parts = path.split(/\.|\[(\d+)\]/).filter((p) => p !== undefined && p !== '');
+  let cur = obj;
+  for (const p of parts) { if (cur == null) return undefined; cur = cur[p]; }
+  return cur;
+};
+const classifyImageLeaf = (val: any): { kind: 'url' | 'b64'; value: string } | null => {
+  if (val == null || typeof val !== 'string') return null;
+  const v = val.trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v) || v.startsWith('data:image')) return { kind: 'url', value: v };
+  const md = v.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)/i);
+  if (md) return { kind: 'url', value: md[1] };
+  const m = v.match(/(https?:\/\/[^\s"'<>]+\.(?:png|jpe?g|webp))/i);
+  if (m) return { kind: 'url', value: m[1] };
+  const compact = v.replace(/\s/g, '');
+  if (compact.length > 200 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    return { kind: 'b64', value: `data:image/png;base64,${compact}` };
+  }
+  return null;
+};
+const extractImageFromResponse = (data: any): { found: boolean; kind: string; value: string } => {
+  if (typeof data === 'string') {
+    const c = classifyImageLeaf(data);
+    return c ? { found: true, kind: `string-${c.kind}`, value: c.value } : { found: false, kind: 'string-no-image', value: '' };
+  }
+  if (data == null || typeof data !== 'object') return { found: false, kind: 'non-object', value: '' };
+  for (const path of IMG_EXTRACT_PATHS) {
+    const c = classifyImageLeaf(getNestedPath(data, path));
+    if (c) return { found: true, kind: `${path}:${c.kind}`, value: c.value };
+  }
+  return { found: false, kind: 'no-image-in-known-paths', value: '' };
+};
+
 const tryGenerateByProvider = async (
   provider: ProviderConfig,
   prompt: string,
@@ -368,18 +418,18 @@ const tryGenerateByProvider = async (
           );
           const data = await parseResponseJson(response);
           if (response.ok) {
-            const b64 = data?.data?.[0]?.b64_json;
-            if (typeof b64 === 'string' && b64.length > 0) {
-              img2imgNote = 'used';
-              return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote };
-            }
-            const imageUrl = data?.data?.[0]?.url;
-            if (typeof imageUrl === 'string' && imageUrl.length > 0) {
-              const dataUrl = await convertImageUrlToDataUrl(imageUrl);
-              if (dataUrl) { img2imgNote = 'used'; return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote }; }
+            const ex = extractImageFromResponse(data);
+            if (ex.found) {
+              if (ex.kind.endsWith(':url') || ex.kind === 'string-url') {
+                const dataUrl = await convertImageUrlToDataUrl(ex.value);
+                if (dataUrl) { img2imgNote = 'used'; return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote }; }
+              } else {
+                img2imgNote = 'used';
+                return { dataUrl: ex.value, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: true, img2imgNote };
+              }
             }
             img2imgNote = 'fell-back:ok-no-image';
-            console.warn(`[scene-generate] img2img @ ${url} OK but no image; falling back to text-only`);
+            console.warn(`[scene-generate] img2img @ ${url} OK but no image (${ex.kind}); falling back to text-only`);
           } else {
             img2imgNote = `fell-back:http-${response.status}`;
             console.warn(`[scene-generate] img2img @ ${url} HTTP ${response.status}: ${JSON.stringify(data?.error || data)?.substring(0, 200)}; falling back to text-only`);
@@ -393,48 +443,65 @@ const tryGenerateByProvider = async (
     }
   }
 
-  let lastFailure: ProviderAttemptFailure | null = null;
+  const imgTimeoutMs = isPrimary
+    ? (Number(Deno.env.get('PRIMARY_IMAGE_GEN_TIMEOUT_MS')) || 180000)
+    : (Number(Deno.env.get('IMAGE_GEN_TIMEOUT_MS')) || 120000);
+  const perUrlFailures: ProviderAttemptFailure[] = [];
   for (const url of urls) {
     try {
-      const timeoutMs = isPrimary ? 115000 : 80000;
       const requestBody = JSON.stringify({ model: provider.model, prompt, n: 1, size: '1024x1024', response_format: 'b64_json' });
-      console.log(`[scene-generate] image ${provider.id} @ ${url} timeout=${timeoutMs}ms (img2img=${img2imgNote})`);
+      console.log(`[scene-generate] image ${provider.id} @ ${url} timeout=${imgTimeoutMs}ms (img2img=${img2imgNote})`);
       const response = await withTimeout(
         fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}`, 'User-Agent': 'Supabase-Edge-Function' },
           body: requestBody,
         }),
-        timeoutMs,
-        `Provider ${provider.id} timeout after ${timeoutMs}ms`,
+        imgTimeoutMs,
+        `Provider ${provider.id} timeout after ${imgTimeoutMs}ms`,
       );
 
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
       const data = await parseResponseJson(response);
       const bodySnippet = JSON.stringify(data).slice(0, 180);
       if (!response.ok) {
-        lastFailure = { providerId: provider.id, url, status: response.status, message: data?.error?.message || `${response.status} ${response.statusText}` + ` (body: ${bodySnippet})` };
+        perUrlFailures.push({ providerId: provider.id, url, status: response.status, message: data?.error?.message || `${response.status} ${response.statusText} (body: ${bodySnippet})` });
         continue;
       }
-
-      const b64 = data?.data?.[0]?.b64_json;
-      if (typeof b64 === 'string' && b64.length > 0) {
-        return { dataUrl: `data:image/png;base64,${b64}`, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
+      // Detect HTML / non-JSON — e.g. hitting the gateway's admin SPA on a bare
+      // `/images/generations` route (no `/v1`). That returns 200 + text/html and
+      // must not be misread as "model returned no image".
+      const looksLikeHtml = contentType.includes('text/html') || (typeof data?.error?.message === 'string' && data.error.message.trim().startsWith('<'));
+      if (looksLikeHtml) {
+        perUrlFailures.push({ providerId: provider.id, url, status: response.status, message: `Endpoint returned HTML (wrong URL / admin SPA), not an image API — Content-Type: ${contentType || 'unknown'}` });
+        continue;
       }
-      const imageUrl = data?.data?.[0]?.url;
-      if (typeof imageUrl === 'string' && imageUrl.length > 0) {
-        const dataUrl = await convertImageUrlToDataUrl(imageUrl);
-        if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
+      const ex = extractImageFromResponse(data);
+      if (ex.found) {
+        if (ex.kind.endsWith(':url') || ex.kind === 'string-url') {
+          const dataUrl = await convertImageUrlToDataUrl(ex.value);
+          if (dataUrl) return { dataUrl, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
+        } else {
+          return { dataUrl: ex.value, providerId: provider.id, model: provider.model, attemptedUrl: url, img2Img: false, img2imgNote };
+        }
       }
-      // 200 but no image — usually means we hit the WRONG endpoint (the host
-      // returned an HTML page / status JSON / empty data instead of the image
-      // API). Surface what actually came back so it's diagnosable.
-      lastFailure = { providerId: provider.id, url, message: `response has no b64_json/url (body: ${bodySnippet})` };
+      // 200 but no image in any known field. Surface what came back so the real
+      // cause is visible instead of a generic "no b64_json".
+      perUrlFailures.push({ providerId: provider.id, url, message: `response has no image in any known field (${ex.kind}; body: ${bodySnippet})` });
     } catch (error) {
       const isTimeout = error instanceof Error && error.message.includes('timeout');
-      lastFailure = { providerId: provider.id, url, message: isTimeout ? `Request timeout after ${isPrimary ? '115s' : '80s'}` : (error instanceof Error ? error.message : String(error)) };
+      perUrlFailures.push({ providerId: provider.id, url, message: isTimeout ? `Request timeout after ${Math.round(imgTimeoutMs / 1000)}s` : (error instanceof Error ? error.message : String(error)) });
     }
   }
-  return { error: lastFailure || { providerId: provider.id, url: provider.baseUrl, message: 'generation failed' } };
+  // Non-lossy: surface EVERY url tried, so a real error on the canonical route
+  // (e.g. HTTP 503 model_not_found) isn't hidden behind a later bare-route "no
+  // image" stub. Prefer a real HTTP status for the summary `status` field.
+  const withStatus = perUrlFailures.find((f) => f.status);
+  const base = withStatus || perUrlFailures[0] || { url: provider.baseUrl };
+  const summary = perUrlFailures
+    .map((f) => `${f.url.replace(/^https?:\/\//, '').slice(0, 48)} → ${f.status ? `HTTP ${f.status}` : (f.message || 'unknown error')}`)
+    .join(' | ');
+  return { error: { providerId: provider.id, url: base.url, status: withStatus?.status, message: summary } };
 };
 
 // ----------------------------------------------------------------
