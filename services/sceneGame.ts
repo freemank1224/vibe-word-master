@@ -47,6 +47,53 @@ const MAX_SCORING_OVERLAP_RATE = 0.8;
 export const MIN_SCENE_WORDS = 5;
 export const MAX_SCENE_WORDS = 10;
 
+/**
+ * English closed-class / function words that make MEANINGLESS cloze targets —
+ * articles, be/auxiliary verbs, pronouns, core prepositions, conjunctions.
+ * Forcing one of these into a fill-in blank yields awkward or broken clues, so
+ * they are never selected for the scene game. Content words (go, run, red,
+ * apple, very, back, just, ...) are intentionally NOT listed — those are
+ * legitimate vocabulary.
+ *
+ * Comparison is case-insensitive on letters/apostrophes only, so "The",
+ * "the.", "THE" all match.
+ */
+const SCENE_FUNCTION_WORDS = new Set([
+  // articles
+  'a', 'an', 'the',
+  // be + auxiliary / modal verbs
+  'be', 'am', 'is', 'are', 'was', 'were', 'been', 'being',
+  'do', 'does', 'did',
+  'have', 'has', 'had',
+  'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must', 'ought',
+  // pronouns
+  'i', 'me', 'my', 'mine', 'myself',
+  'you', 'your', 'yours', 'yourself', 'yourselves',
+  'he', 'him', 'his', 'himself',
+  'she', 'her', 'hers', 'herself',
+  'it', 'its', 'itself',
+  'we', 'us', 'our', 'ours', 'ourselves',
+  'they', 'them', 'their', 'theirs', 'themselves',
+  'this', 'that', 'these', 'those',
+  'who', 'whom', 'whose', 'which', 'what',
+  // core prepositions / particles
+  'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from', 'about',
+  'into', 'onto', 'upon', 'over', 'under', 'above', 'below', 'between',
+  'among', 'through', 'during', 'before', 'after', 'up', 'down', 'out',
+  'off', 'than', 'as',
+  // conjunctions
+  'and', 'or', 'but', 'if', 'so', 'because', 'although', 'though', 'while',
+  'since', 'until', 'till', 'yet', 'nor', 'unless', 'whereas',
+  // negation / affirm
+  'not', 'no', 'yes',
+]);
+
+/** True iff `text` is a function word excluded from scene-game selection. */
+export const isSceneFunctionWord = (text: string): boolean => {
+  const w = String(text || '').trim().toLowerCase().replace(/[^a-z']/g, '');
+  return w.length > 0 && SCENE_FUNCTION_WORDS.has(w);
+};
+
 interface SceneDailySelectionHistory {
   date: string;
   rounds: string[][];
@@ -191,12 +238,14 @@ const calculateMaxOverlapRate = (selectedWords: WordEntry[], previousRounds: str
 // ----------------------------------------------------------------
 // Word selection
 // ----------------------------------------------------------------
-/** Candidate pool: non-deleted, deduped by normalized text. No image gate —
- *  the scene generates its own fused image. */
+/** Candidate pool: non-deleted, deduped by normalized text, with function words
+ *  (a/an/the/of/is/...) excluded — they make meaningless cloze targets. No image
+ *  gate — the scene generates its own fused image. */
 export const getSceneCandidateWords = (words: WordEntry[]): WordEntry[] => {
   const uniqueWords = new Map<string, WordEntry>();
   words
     .filter((word) => !word.deleted)
+    .filter((word) => !isSceneFunctionWord(word.text))
     .forEach((word) => {
       const key = normalizeText(word.text);
       if (!uniqueWords.has(key)) uniqueWords.set(key, word);
