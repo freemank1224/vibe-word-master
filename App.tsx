@@ -4424,6 +4424,14 @@ const InputMode: React.FC<{
     return trimmedSuggestion.toLowerCase() === trimmedRaw.toLowerCase() ? trimmedSuggestion : trimmedRaw;
   };
 
+  // Collapse runs of internal whitespace into a single space and trim edges.
+  // Used for the drill target text and the repeat-input comparison so a
+  // multi-word phrase typed with a stray double-space or tab still matches.
+  // The UI hides these extra spaces (HTML collapses them in the placeholder
+  // and rendered text), so without this the mismatch is invisible and the
+  // user sees a baffling "Type X again!" on every repeat.
+  const collapseWhitespace = (s: string) => s.replace(/\s+/g, ' ').trim();
+
   const buildFallbackMeaningOption = (text: string, details?: Partial<ResolvedDictionaryDetails>): WordMeaningOption => {
     const meaningZh = details?.definition_cn?.trim() || fallbackMeaning;
     return {
@@ -4484,12 +4492,16 @@ const InputMode: React.FC<{
   };
 
   const startWordDrill = (text: string, details?: ResolvedDictionaryDetails) => {
-    const normalizedMeaningOptions = normalizeMeaningOptions(text, details);
+    // Normalize internal whitespace before storing/using the drill target.
+    // This keeps the saved word text clean AND makes the repeat comparison
+    // resilient to accidental double-spaces/tabs in a phrase.
+    const drillText = collapseWhitespace(text);
+    const normalizedMeaningOptions = normalizeMeaningOptions(drillText, details);
     const selectedMeaningKey = details?.selected_meaning_key && normalizedMeaningOptions.some(option => option.key === details.selected_meaning_key)
       ? details.selected_meaning_key
       : normalizedMeaningOptions[0]?.key || null;
 
-    setTargetWord(text);
+    setTargetWord(drillText);
     setTargetDefinitionCn(details?.definition_cn || normalizedMeaningOptions[0]?.meaningZh || fallbackMeaning);
     setTargetDefinitionEn(details?.definition_en || null);
     setTargetMeaningOptions(normalizedMeaningOptions);
@@ -4498,10 +4510,10 @@ const InputMode: React.FC<{
     setInputValue('');
     setInputStatus('correct');
     playDing();
-    playWordAudio(text);
+    playWordAudio(drillText);
 
     if (repeatCount === 1) {
-      finishAddingWord(text, details);
+      finishAddingWord(drillText, details);
     }
   };
 
@@ -4680,7 +4692,7 @@ const InputMode: React.FC<{
 
     // --- PHASE 2: Drill Repetition ---
     if (targetWord) {
-        if (trimmed.toLowerCase() === targetWord.toLowerCase()) {
+        if (collapseWhitespace(trimmed).toLowerCase() === collapseWhitespace(targetWord).toLowerCase()) {
             // Correct
             const newProgress = drillProgress + 1;
             setDrillProgress(newProgress);
