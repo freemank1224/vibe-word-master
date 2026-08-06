@@ -32,6 +32,7 @@ import { aiService } from './services/ai';
 import { compressToWebP } from './utils/imageUtils';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
 import { fetchDictionaryData, fetchWordMeaningOptions, playWordAudio as playWordAudioService } from './services/dictionaryService';
+import { detectWordFamily } from './services/wordFamilyService';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordIds } from './services/imageCache';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
@@ -4372,6 +4373,23 @@ const InputMode: React.FC<{
     selectedKey: string;
   } | null>(null);
 
+  // Word-family drill. When the user enters an inflected form (went/shoes/...),
+  // `familySuggestion` holds the prompt banner data (user picks one of three).
+  // After they choose "add all", `familyQueue` drives the sequential 3× drill
+  // across each form. Both null in the normal single-word flow.
+  const [familySuggestion, setFamilySuggestion] = useState<{
+    inputText: string;
+    headword: string;
+    forms: string[];
+    reason: string;
+  } | null>(null);
+  const [familyQueue, setFamilyQueue] = useState<{
+    headword: string;
+    forms: string[];
+    detailsMap: Record<string, ResolvedDictionaryDetails>;
+    index: number;
+  } | null>(null);
+
   // Feature 2: Audio
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
 
@@ -4648,6 +4666,36 @@ const InputMode: React.FC<{
           return;
         }
 
+        const normalizedInput = normalizeAcceptedInput(trimmed, validation.suggestion);
+
+        // Word-family detection (single words only — mutually exclusive with the
+        // 2-word collocation check below). If the input is an inflected form, we
+        // surface its family (go/went/gone) so the user can choose to practise
+        // and store all forms. detectWordFamily never throws (returns null on
+        // any internal failure), so a lib hiccup just skips this branch silently.
+        if (!isPhrase) {
+          const family = detectWordFamily(normalizedInput);
+          if (family?.isFamilyMember && family.forms && family.forms.length > 1) {
+            const existingLower = new Set<string>([
+              ...currentWords.map(w => w.text.toLowerCase()),
+              ...allWords.map(w => w.text.toLowerCase()),
+            ]);
+            const freshForms = family.forms.filter(f => !existingLower.has(f.toLowerCase()));
+            // Only prompt if ≥2 forms are new — otherwise the family is already
+            // covered and a normal single-word add reads better.
+            if (freshForms.length >= 2) {
+              setFamilySuggestion({
+                inputText: normalizedInput,
+                headword: family.headword!,
+                forms: freshForms,
+                reason: family.reason!,
+              });
+              playBuzzer();
+              return;
+            }
+          }
+        }
+
         // Handle 2-word phrase collocation check
         if (validation.needsCollocationCheck) {
           try {
@@ -4670,7 +4718,6 @@ const InputMode: React.FC<{
           }
         }
 
-        const normalizedInput = normalizeAcceptedInput(trimmed, validation.suggestion);
         setValidationStage('GENERATING_CHINESE_MEANING');
         const dictionaryDetails = await resolveDictionaryDetails(normalizedInput);
         setValidationStage('GENERATING_PRONUNCIATION');
@@ -4701,12 +4748,20 @@ const InputMode: React.FC<{
             playDing();
             
             if (newProgress >= repeatCount) {
+              if (familyQueue && familyQueue.index < familyQueue.forms.length - 1) {
+                // Family drill: move to the next form (don't pop the meaning modal).
+                advanceFamilyToNextForm();
+              } else if (familyQueue) {
+                // Family drill: last form done → batch-create all forms.
+                finishFamilyDrill();
+              } else {
                 finishAddingWord(targetWord, {
                   definition_cn: targetDefinitionCn || fallbackMeaning,
                   definition_en: targetDefinitionEn || undefined,
                   meaning_options: targetMeaningOptions,
                   selected_meaning_key: targetSelectedMeaningKey || undefined,
                 });
+              }
             }
         } else {
             // Wrong
@@ -4762,6 +4817,129 @@ const InputMode: React.FC<{
        setPendingPhrase(null);
        startWordDrill(pendingPhrase, dictionaryDetails);
     }
+  };
+
+  // ─── Word-family drill handlers ───────────────────────────────────────────
+  // enterFamilyFormDrill sets up `target*` for ONE form of the family and starts
+  // its 3× drill. It mirrors startWordDrill's body but deliberately does NOT
+  // short-circuit on repeatCount===1 (startWordDrill would call finishAddingWord
+  // and pop the meaning modal — wrong for the family flow).
+  const enterFamilyFormDrill = (form: string, details: ResolvedDictionaryDetails) => {
+    const drillText = collapseWhitespace(form);
+    const normalizedMeaningOptions = normalizeMeaningOptions(drillText, details);
+    const selectedMeaningKey = details?.selected_meaning_key && normalizedMeaningOptions.some(o => o.key === details.selected_meaning_key)
+      ? details.selected_meaning_key
+      : normalizedMeaningOptions[0]?.key || null;
+    setTargetWord(drillText);
+    setTargetDefinitionCn(details?.definition_cn || normalizedMeaningOptions[0]?.meaningZh || fallbackMeaning);
+    setTargetDefinitionEn(details?.definition_en || null);
+    setTargetMeaningOptions(normalizedMeaningOptions);
+    setTargetSelectedMeaningKey(selectedMeaningKey);
+    setDrillProgress(1);
+    setInputValue('');
+    setInputStatus('correct');
+    playDing();
+    playWordAudio(drillText);
+  };
+
+  // Fire-and-forget: pre-resolve dictionary details for an upcoming form so the
+  // advance feels instant. The merge into detailsMap is idempotent.
+  const prefetchFamilyDetails = (form: string) => {
+    void resolveDictionaryDetails(form)
+      .then(d => setFamilyQueue(prev => prev ? { ...prev, detailsMap: { ...prev.detailsMap, [form.toLowerCase()]: d } } : prev))
+      .catch(() => { /* resolveDictionaryDetails already falls back internally */ });
+  };
+
+  // Banner → "一起加入": begin the sequential family drill across all forms.
+  const startFamilyDrill = async () => {
+    if (!familySuggestion) return;
+    const { forms, headword } = familySuggestion;
+    setFamilySuggestion(null);
+    const firstDetails = await resolveDictionaryDetails(forms[0]);
+    setFamilyQueue({
+      headword,
+      forms,
+      detailsMap: { [forms[0].toLowerCase()]: firstDetails },
+      index: 0,
+    });
+    enterFamilyFormDrill(forms[0], firstDetails);
+    if (forms.length > 1) prefetchFamilyDetails(forms[1]);
+  };
+
+  // PHASE 2: current form's repeats complete → advance to the next form.
+  const advanceFamilyToNextForm = async () => {
+    if (!familyQueue) return;
+    const nextIndex = familyQueue.index + 1;
+    const nextForm = familyQueue.forms[nextIndex];
+    let nextDetails = familyQueue.detailsMap[nextForm.toLowerCase()];
+    setFamilyQueue(prev => prev ? { ...prev, index: nextIndex } : prev);
+    if (!nextDetails) {
+      try { nextDetails = await resolveDictionaryDetails(nextForm); }
+      catch { nextDetails = { definition_cn: fallbackMeaning, definition_en: undefined, meaning_options: normalizeMeaningOptions(nextForm, undefined), selected_meaning_key: undefined }; }
+      setFamilyQueue(prev => prev ? { ...prev, detailsMap: { ...prev.detailsMap, [nextForm.toLowerCase()]: nextDetails! } } : prev);
+    }
+    enterFamilyFormDrill(nextForm, nextDetails!);
+    const lookahead = familyQueue.forms[nextIndex + 1];
+    if (lookahead) prefetchFamilyDetails(lookahead);
+  };
+
+  // PHASE 2: last form done → batch-create every form's entry. Bypasses the
+  // per-word meaning modal (auto-selects each form's default meaning; the user
+  // can refine on the card later).
+  const finishFamilyDrill = async () => {
+    if (!familyQueue) return;
+    const queue = familyQueue;
+    const resolved: Array<{ text: string; details: ResolvedDictionaryDetails }> = [];
+    for (const form of queue.forms) {
+      let details = queue.detailsMap[form.toLowerCase()];
+      if (!details) {
+        try { details = await resolveDictionaryDetails(form); }
+        catch { details = { definition_cn: fallbackMeaning, definition_en: undefined, meaning_options: normalizeMeaningOptions(form, undefined), selected_meaning_key: undefined }; }
+      }
+      resolved.push({ text: form, details: details! });
+    }
+    const newEntries = resolved.map(({ text, details }) => {
+      const meaningOptions = normalizeMeaningOptions(text, details);
+      const selected = (details.selected_meaning_key && meaningOptions.find(o => o.key === details.selected_meaning_key)) || meaningOptions[0];
+      return createEditableWord({
+        text,
+        imageBase64: undefined,
+        hasImage: false,
+        imageGenerating: true,
+        definition_cn: selected?.meaningZh || fallbackMeaning,
+        definition_en: details.definition_en || selected?.definitionEn || undefined,
+        meaning_options: meaningOptions,
+        selected_meaning_key: selected?.key,
+        language: 'en',
+      });
+    });
+    setCurrentWords(prev => [...prev, ...newEntries]);
+    newEntries.forEach(entry => triggerDraftImageGeneration(entry.tempId, entry.text, 'en'));
+    setFamilyQueue(null);
+    setTargetWord(null);
+    setTargetDefinitionCn(null);
+    setTargetDefinitionEn(null);
+    setTargetMeaningOptions([]);
+    setTargetSelectedMeaningKey(null);
+    setDrillProgress(0);
+    setInputValue('');
+    setTimeout(() => setInputStatus('idle'), 1000);
+    playDing();
+  };
+
+  // Banner → "只加当前词": drop the family, run the normal single-word flow.
+  const addCurrentOnlyFromFamily = async () => {
+    if (!familySuggestion) return;
+    const text = familySuggestion.inputText;
+    setFamilySuggestion(null);
+    const dictionaryDetails = await resolveDictionaryDetails(text);
+    startWordDrill(text, dictionaryDetails);
+  };
+
+  // Banner → "取消".
+  const cancelFamilySuggestion = () => {
+    setFamilySuggestion(null);
+    setInputValue('');
   };
 
   const initiateDelete = (index: number) => {
@@ -5009,6 +5187,17 @@ const InputMode: React.FC<{
       <div className="relative flex flex-col items-center">
         {/* Drill Indicators */}
         <div className="flex gap-3 mb-3 h-7 items-end">
+            {familyQueue && (
+              <div className="self-center flex items-center gap-2 mr-2 px-3 py-1 rounded-full bg-electric-blue/10 border border-electric-blue/30">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-electric-blue">Family · {familyQueue.headword}</span>
+                <span className="font-mono text-xs text-white">{familyQueue.index + 1}/{familyQueue.forms.length}</span>
+                <div className="flex gap-1 ml-1">
+                  {familyQueue.forms.map((f, i) => (
+                    <span key={f} className={`w-1.5 h-1.5 rounded-full transition-all ${i < familyQueue.index ? 'bg-electric-green' : i === familyQueue.index ? 'bg-electric-blue animate-pulse' : 'bg-mid-charcoal'}`} />
+                  ))}
+                </div>
+              </div>
+            )}
             {targetWord && Array.from({ length: repeatCount }).map((_, i) => (
                 <div 
                     key={i} 
@@ -5129,6 +5318,44 @@ const InputMode: React.FC<{
             </div>
           </div>
         )}
+
+        {familySuggestion && !collocationWarning && !serviceErrorWord && (
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-4 flex justify-center animate-in slide-in-from-top-2 z-50 w-full max-w-md">
+            <div className="bg-amber-900/90 border-2 border-amber-500 text-white px-8 py-6 rounded-2xl flex flex-col items-center gap-4 shadow-[0_0_40px_rgba(245,158,11,0.3)] w-full text-center backdrop-blur-sm">
+               <div className="flex items-center gap-3 text-amber-400 mb-1">
+                  <span className="material-symbols-outlined text-3xl">hub</span>
+                  <span className="font-headline text-xl uppercase tracking-widest"><HoverTranslationText text="Word Family" translation="词族检测" /></span>
+               </div>
+               <p className="font-mono text-sm text-text-light leading-relaxed">
+                  <span className="text-electric-blue">"{familySuggestion.inputText}"</span> <HoverTranslationText text="belongs to the word family" translation="属于词族" /> <span className="text-electric-blue">{familySuggestion.headword}</span>
+               </p>
+               <p className="font-serif text-lg text-white tracking-wide">
+                  {familySuggestion.forms.join('  ·  ')}
+               </p>
+               <p className="text-xs text-text-dark"><HoverTranslationText text="Practise every form to master the family?" translation="把每个形式都加入练习吗？" /></p>
+               <div className="flex gap-3 w-full">
+                  <button
+                    onClick={cancelFamilySuggestion}
+                    className="flex-1 py-3 px-2 rounded-xl border border-mid-charcoal hover:bg-mid-charcoal transition-all font-mono text-xs uppercase tracking-widest"
+                  >
+                    <HoverTranslationText text="Cancel" translation="取消" />
+                  </button>
+                  <button
+                    onClick={addCurrentOnlyFromFamily}
+                    className="flex-1 py-3 px-2 rounded-xl border border-amber-500/50 text-amber-300 hover:bg-amber-500/10 transition-all font-mono text-xs uppercase tracking-widest"
+                  >
+                    <HoverTranslationText text="Just This" translation="只加当前" />
+                  </button>
+                  <button
+                    onClick={startFamilyDrill}
+                    className="flex-[1.4] py-3 px-2 rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-all font-sans font-bold text-sm shadow-lg shadow-amber-900/20"
+                  >
+                    <HoverTranslationText text={`Add All (${familySuggestion.forms.length})`} translation={`一起加入 (${familySuggestion.forms.length})`} />
+                  </button>
+               </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap justify-center gap-6 mt-8">
@@ -5232,11 +5459,11 @@ const InputMode: React.FC<{
       <div className="flex flex-col items-center gap-4 pt-4 pb-8">
         <button 
             onClick={handleSubmitSession}
-            disabled={currentWords.length === 0 || !!targetWord || !!pendingMeaningSelection}
+            disabled={currentWords.length === 0 || !!targetWord || !!pendingMeaningSelection || !!familyQueue}
             className={`w-full max-w-md py-6 rounded-2xl font-headline text-3xl transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:transform-none bg-mid-charcoal text-text-light hover:bg-electric-green hover:text-charcoal border-2 border-transparent hover:border-white`}
         >
             <span className="material-symbols-outlined text-4xl">check_circle</span>
-            {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : pendingMeaningSelection ? <HoverTranslationText text="SELECT MEANING FIRST" translation="请先选择释义" /> : (initialWords.length > 0 ? <HoverTranslationText text="UPDATE SESSION" translation="更新本次批次" /> : <HoverTranslationText text="FINISH & SAVE" translation="完成并保存" />)}
+            {targetWord || familyQueue ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : pendingMeaningSelection ? <HoverTranslationText text="SELECT MEANING FIRST" translation="请先选择释义" /> : (initialWords.length > 0 ? <HoverTranslationText text="UPDATE SESSION" translation="更新本次批次" /> : <HoverTranslationText text="FINISH & SAVE" translation="完成并保存" />)}
         </button>
       </div>
 
@@ -5372,11 +5599,11 @@ const InputMode: React.FC<{
                             setShowUnsavedWarning(false);
                             await handleSubmitSession();
                         }}
-                        disabled={!!targetWord}
+                        disabled={!!targetWord || !!familyQueue || !!pendingMeaningSelection}
                         className="w-full py-4 rounded-xl bg-electric-green text-charcoal hover:bg-white transition-all font-headline tracking-wider text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
                         <span className="material-symbols-outlined">save</span>
-                        {targetWord ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : <HoverTranslationText text="SAVE & UPDATE" translation="保存并更新" />}
+                        {targetWord || familyQueue ? <HoverTranslationText text="FINISH WORD FIRST" translation="请先完成当前单词" /> : pendingMeaningSelection ? <HoverTranslationText text="SELECT MEANING FIRST" translation="请先选择释义" /> : <HoverTranslationText text="SAVE & UPDATE" translation="保存并更新" />}
                     </button>
                     <button 
                         onClick={() => {

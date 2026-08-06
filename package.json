@@ -17,8 +17,10 @@
     "dictionary-en": "^4.0.0",
     "motion": "^12.42.2",
     "nspell": "^2.1.5",
+    "pluralize": "^8.0.0",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "wink-lemmatizer": "^3.0.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
