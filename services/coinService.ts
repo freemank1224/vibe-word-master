@@ -121,6 +121,32 @@ export const awardPuzzleCoins = async (roundId: string, score: number): Promise<
 };
 
 /**
+ * Award coins for a WORD STRIKE round. Same scale as puzzle
+ * (Math.round(score/100)); idempotent via roundId, which comes from
+ * record_word_strike_round — never fabricate a client-side reference here,
+ * otherwise the "awarded once" guarantee is lost.
+ */
+export const awardWordStrikeCoins = async (roundId: string, score: number): Promise<number> => {
+  const delta = Math.round(score / 100);
+  if (delta <= 0) return 0;
+  try {
+    const { data, error } = await supabase.rpc('award_game_coins', {
+      p_type: 'word_strike_score',
+      p_reference: roundId,
+      p_delta: delta,
+    });
+    if (error) {
+      console.error('[coinService] awardWordStrikeCoins error:', error.message);
+      return 0;
+    }
+    return data?.awarded ? delta : 0;
+  } catch (e) {
+    console.error('[coinService] awardWordStrikeCoins exception:', e);
+    return 0;
+  }
+};
+
+/**
  * Award +10 for unlocking an achievement. Idempotent via achievementId.
  * Safe to call for pre-existing achievements (backfill path).
  */

@@ -65,7 +65,7 @@ export interface CompletedTestSummary {
   slowestWordTimeMs: number | null;
 }
 
-export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'SCENE';
+export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'SCENE' | 'STRIKE';
 
 export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'REVIEW' | 'RESULT';
 
@@ -244,6 +244,72 @@ export interface SceneLeaderboardEntry {
   accuracy_rate: number;
   speed_score: number;
   play_mode: ScenePlayMode;
+  words_total: number;
+  words_correct: number;
+  time_used_seconds: number;
+  played_date: string;
+  display_name?: string;
+  email_masked?: string;
+  is_current_user?: boolean;
+}
+
+// ================================================================
+// WORD STRIKE — physics typing-shooter (falling letter-brick game).
+// Mirrors the Puzzle block: phases/selection reuse PuzzleGameSelectionMode,
+// summary keeps the ranking-eligibility contract, leaderboard entries mirror
+// PuzzleLeaderboardEntry with combo_score in place of no_hint_score.
+// ================================================================
+
+export type WordStrikeGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'REVIEW' | 'RESULT';
+
+export interface WordStrikeGameConfig {
+  kind: 'STRIKE';
+}
+
+export interface WordStrikeCardResult {
+  wordId: string;
+  wordText: string;
+  correct: boolean;
+  attemptsUsed: number;
+  lettersHit: number;
+  lettersMissed: number;
+  hintUsed: boolean;
+  solvedAtMs: number | null;
+  activatedAtMs: number | null;
+}
+
+export interface WordStrikeGameSummary {
+  totalScore: number;
+  accuracyRate: number;
+  speedScore: number;
+  comboScore: number;
+  wordsCorrect: number;
+  wordsTotal: number;
+  livesLost: number;
+  livesRemaining: number;
+  maxCombo: number;
+  lettersHit: number;
+  lettersFired: number;
+  timeUsedSeconds: number;
+  selectionMode: PuzzleGameSelectionMode;
+  overlapRate: number;
+  rankingEligible: boolean;
+  rankingIneligibleReason?: string | null;
+  results: WordStrikeCardResult[];
+}
+
+export type WordStrikeLeaderboardScope = 'daily' | 'all_time';
+
+export type WordStrikeLeaderboardMetric = 'total_score' | 'accuracy_rate' | 'speed_score' | 'combo_score';
+
+export interface WordStrikeLeaderboardEntry {
+  user_id: string;
+  rank_position: number;
+  metric_value: number;
+  total_score: number;
+  accuracy_rate: number;
+  speed_score: number;
+  combo_score: number;
   words_total: number;
   words_correct: number;
   time_used_seconds: number;

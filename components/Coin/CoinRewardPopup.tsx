@@ -5,7 +5,7 @@ import { playCoinReward } from '../../utils/audioFeedback';
 
 interface CoinRewardPopupProps {
   amount: number;
-  source: 'quiz' | 'puzzle' | 'achievement_bonus';
+  source: 'quiz' | 'puzzle' | 'word_strike' | 'achievement_bonus';
   onClose: () => void;
 }
 
@@ -46,6 +46,8 @@ export const CoinRewardPopup: React.FC<CoinRewardPopupProps> = ({ amount, source
     ? 'Quiz Reward'
     : source === 'puzzle'
     ? 'Puzzle Reward'
+    : source === 'word_strike'
+    ? 'Word Strike Reward'
     : 'All Achievements Bonus!';
 
   return (

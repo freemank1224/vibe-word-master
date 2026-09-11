@@ -8,6 +8,10 @@ import {
   PuzzleLeaderboardScope,
   WordEntry,
   WordMeaningOption,
+  WordStrikeGameSummary,
+  WordStrikeLeaderboardEntry,
+  WordStrikeLeaderboardMetric,
+  WordStrikeLeaderboardScope,
 } from '../types';
 import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
@@ -982,6 +986,61 @@ export const fetchPuzzleGameLeaderboard = async (
   }
 
   return (data || []) as PuzzleLeaderboardEntry[];
+};
+
+export const recordWordStrikeRound = async (summary: WordStrikeGameSummary) => {
+  const clientDate = getShanghaiDateString();
+
+  const { data, error } = await supabase.rpc('record_word_strike_round', {
+    p_total_score: summary.totalScore,
+    p_accuracy_rate: summary.accuracyRate,
+    p_speed_score: summary.speedScore,
+    p_combo_score: summary.comboScore,
+    p_time_used_seconds: summary.timeUsedSeconds,
+    p_lives_lost: summary.livesLost,
+    p_lives_remaining: summary.livesRemaining,
+    p_max_combo: summary.maxCombo,
+    p_letters_hit: summary.lettersHit,
+    p_letters_fired: summary.lettersFired,
+    p_words_total: summary.wordsTotal,
+    p_words_correct: summary.wordsCorrect,
+    p_selection_mode: summary.selectionMode,
+    p_client_date: clientDate,
+  });
+
+  if (error) {
+    console.error('[recordWordStrikeRound] Failed to record word strike round:', error.message);
+    throw error;
+  }
+
+  return Array.isArray(data) && data.length > 0 ? data[0] : data;
+};
+
+export const fetchWordStrikeLeaderboard = async (
+  scope: WordStrikeLeaderboardScope,
+  metric: WordStrikeLeaderboardMetric,
+  date?: Date,
+  limit: number = 3,
+): Promise<WordStrikeLeaderboardEntry[]> => {
+  const targetDate = date || new Date();
+  const year = targetDate.getFullYear();
+  const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const day = String(targetDate.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  const { data, error } = await supabase.rpc('get_word_strike_leaderboard', {
+    p_scope: scope,
+    p_metric: metric,
+    p_date: dateStr,
+    p_limit: limit,
+  });
+
+  if (error) {
+    console.error('[fetchWordStrikeLeaderboard] Failed to fetch word strike leaderboard:', error.message);
+    throw error;
+  }
+
+  return (data || []) as WordStrikeLeaderboardEntry[];
 };
 
 export const updateWordStatus = async (wordId: string, correct: boolean) => {

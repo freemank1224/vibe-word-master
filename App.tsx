@@ -3,7 +3,7 @@ import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { Auth } from './components/Auth';
 import { PasswordReset } from './components/PasswordReset';
 import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats, healDoubleEncodedImageUrls } from './services/dataService';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats, healDoubleEncodedImageUrls } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
 import {
@@ -18,7 +18,7 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, SceneGameConfig, SceneGameSummary, WordEntry, WordMeaningOption } from './types';
+import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, SceneGameConfig, SceneGameSummary, WordEntry, WordMeaningOption, WordStrikeGameConfig, WordStrikeGameSummary } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
@@ -26,6 +26,8 @@ import { MeaningFlipCard } from './components/MeaningFlipCard';
 import TestModeV2 from './components/TestModeV2';
 import PuzzleGameMode from './components/PuzzleGameMode';
 import SceneGameMode from './components/SceneGameMode';
+import WordStrikeGameMode from './components/WordStrikeGameMode';
+import { GameModePickerModal } from './components/GameModePickerModal';
 import { posOf, recordSceneGameRound } from './services/sceneGame';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
@@ -46,6 +48,7 @@ import {
   claimDailyLoginReward,
   awardQuizCoins,
   awardPuzzleCoins,
+  awardWordStrikeCoins,
   awardAchievementCoins,
   awardAllAchievementsBonus,
   getCoinBalance,
@@ -120,7 +123,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) 
                                     );
                                 };
 
-type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | SceneGameConfig;
+type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | SceneGameConfig | WordStrikeGameConfig;
 
 type EditableWord = {
   tempId: string;
@@ -334,6 +337,9 @@ const App: React.FC = () => {
   // Test Mode Configuration State
   const [testConfig, setTestConfig] = useState<TestConfig | null>(null);
   const [showQuickTestModal, setShowQuickTestModal] = useState(false);
+  // GAME MODE picker — hosts Word Strike, Puzzle and Scene (games left the
+  // QUICK TEST modal so it stays a pure test-range chooser).
+  const [showGamePickerModal, setShowGamePickerModal] = useState(false);
   
   // Multi-Select State for Dashboard Testing
   const [selectedDashboardSessionIds, setSelectedDashboardSessionIds] = useState<Set<string>>(new Set());
@@ -431,7 +437,7 @@ const App: React.FC = () => {
   const [coinBalance, setCoinBalance] = useState(-1);
   const [dailyLoginReward, setDailyLoginReward] = useState<DailyLoginReward | null>(null);
   const [showInsufficientCoins, setShowInsufficientCoins] = useState(false);
-  const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
+  const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'word_strike' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
 
   // Monotonic sequence guarding setCoinBalance against stale fetches. Each
   // refreshCoinBalance call increments this and only applies its result if it
@@ -1938,6 +1944,11 @@ const App: React.FC = () => {
     setMode('TEST');
   };
 
+  const handleStartWordStrike = () => {
+    setTestConfig({ kind: 'STRIKE' });
+    setMode('TEST');
+  };
+
   if (!isSupabaseConfigured) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-dark-charcoal p-4 text-center animate-in fade-in duration-700">
@@ -2238,6 +2249,7 @@ const App: React.FC = () => {
             onStartEdit={handleStartEdit}
             onOpenLibrary={() => setMode('LIBRARY')}
             onQuickTest={() => setShowQuickTestModal(true)}
+            onOpenGamePicker={() => setShowGamePickerModal(true)}
             onDeleteSessions={(ids) => {
                 setIdsToDelete(ids);
                 setShowDeleteConfirm(true);
@@ -2266,7 +2278,56 @@ const App: React.FC = () => {
           />
         )}
         {mode === 'TEST' && (
-          testConfig?.kind === 'PUZZLE' ? (
+          testConfig?.kind === 'STRIKE' ? (
+            <WordStrikeGameMode
+              allWords={visibleWords}
+              sessions={sessions}
+              onComplete={async (summary: WordStrikeGameSummary) => {
+                if (!summary.rankingEligible) {
+                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
+                  return;
+                }
+
+                try {
+                  // Same contract as Puzzle: sync per-word stats BEFORE the
+                  // round record so a stats failure doesn't block recording.
+                  try {
+                    await syncGameResultsToWordStats(
+                      summary.results.map(r => ({
+                        wordId: r.wordId,
+                        correct: r.correct,
+                        hintUsed: r.hintUsed,
+                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
+                          ? r.solvedAtMs - r.activatedAtMs
+                          : null,
+                      })),
+                    );
+                  } catch (statsErr) {
+                    console.error('[WordStrikeGameMode] word stats sync failed (non-blocking):', statsErr);
+                  }
+                  const round: any = await recordWordStrikeRound(summary);
+                  const roundId = round?.round_id || round?.id;
+                  if (roundId) {
+                    const awarded = await awardWordStrikeCoins(roundId, summary.totalScore);
+                    if (awarded > 0) {
+                      void refreshCoinBalance();
+                      setPendingCoinReward({ amount: awarded, source: 'word_strike' });
+                    } else {
+                      showNotification(`🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
+                    }
+                  } else {
+                    showNotification(`🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
+                  }
+                } catch (error) {
+                  // Migration not applied yet (RPC 42883) lands here — the game
+                  // stays playable and the round just isn't ranked.
+                  console.error('[WordStrikeGameMode] Failed to record word strike round:', error);
+                  showNotification('⚠️ 射击成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
+                }
+              }}
+              onCancel={() => setMode('DASHBOARD')}
+            />
+          ) : testConfig?.kind === 'PUZZLE' ? (
             <PuzzleGameMode
               allWords={visibleWords}
               sessions={sessions}
@@ -2551,57 +2612,9 @@ const App: React.FC = () => {
                             <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70"><HoverTranslationText text={`A comprehensive test of all ${visibleWords.length} words in your vault.`} translation={`对你词库中的全部 ${visibleWords.length} 个单词进行综合测试。`} /></span>
                         </button>
 
-                          <button
-                            onClick={() => {
-                              handleStartPuzzleGame();
-                              setShowQuickTestModal(false);
-                            }}
-                            disabled={visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length < 9}
-                            className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
-                              visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length >= 9
-                                ? 'bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal'
-                                : 'bg-mid-charcoal/50 border border-dashed border-mid-charcoal text-text-dark cursor-not-allowed'
-                            }`}
-                          >
-                            <span className={`text-sm font-mono uppercase tracking-widest ${
-                              visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length >= 9
-                                ? 'text-electric-blue group-hover:text-charcoal'
-                                : 'text-text-dark'
-                            }`}><HoverTranslationText text="Option 3" translation="选项 3" /></span>
-                            <span className="text-xl font-headline"><HoverTranslationText text="PUZZLE GAME" translation="字谜游戏" /></span>
-                            <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70">
-                              <HoverTranslationText
-                                text={`A 90-second 3x3 audio puzzle using 9 image words. Ready words: ${visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length}.`}
-                                translation={`用 9 个带图单词进行 90 秒九宫格听音字谜。当前可用带图词：${visibleWords.filter(w => (w.image_url || w.image_path) && !w.deleted).length}。`}
-                              />
-                            </span>
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              handleStartSceneGame();
-                              setShowQuickTestModal(false);
-                            }}
-                            disabled={visibleWords.filter(w => !w.deleted).length < 5}
-                            className={`transition-all p-6 rounded-2xl flex flex-col items-start gap-1 group text-left ${
-                              visibleWords.filter(w => !w.deleted).length >= 5
-                                ? 'bg-mid-charcoal hover:bg-purple-500 hover:text-white'
-                                : 'bg-mid-charcoal/50 border border-dashed border-mid-charcoal text-text-dark cursor-not-allowed'
-                            }`}
-                          >
-                            <span className={`text-sm font-mono uppercase tracking-widest ${
-                              visibleWords.filter(w => !w.deleted).length >= 5
-                                ? 'text-purple-400 group-hover:text-white'
-                                : 'text-text-dark'
-                            }`}><HoverTranslationText text="Option 4" translation="选项 4" /></span>
-                            <span className="text-xl font-headline"><HoverTranslationText text="SCENE FUSION GAME" translation="场景融合游戏" /></span>
-                            <span className="text-xs opacity-50 font-body group-hover:text-white/70">
-                              <HoverTranslationText
-                                text={`AI fuses 5-10 words into one isometric scene with today's monster and writes a cloze sentence per word. Fill the blank for each. Available words: ${visibleWords.filter(w => !w.deleted).length}.`}
-                                translation={`AI 把 5-10 个单词融合成一张等轴场景图（含当日小怪兽），并为每个单词生成一句填空描述。把挖空的词填出来。当前可用单词：${visibleWords.filter(w => !w.deleted).length}。`}
-                              />
-                            </span>
-                          </button>
+                        {/* Games moved out of QUICK TEST — they now live in the
+                            GAME MODE picker (handleStartPuzzleGame /
+                            handleStartSceneGame are wired there). */}
 
                         <button
                             onClick={() => setShowQuickTestModal(false)}
@@ -2612,6 +2625,17 @@ const App: React.FC = () => {
                     </div>
                 </div>
             </div>
+        )}
+
+        {/* Game Mode Picker Modal */}
+        {showGamePickerModal && (
+            <GameModePickerModal
+                visibleWords={visibleWords}
+                onSelectStrike={() => { handleStartWordStrike(); setShowGamePickerModal(false); }}
+                onSelectPuzzle={() => { handleStartPuzzleGame(); setShowGamePickerModal(false); }}
+                onSelectScene={() => { handleStartSceneGame(); setShowGamePickerModal(false); }}
+                onClose={() => setShowGamePickerModal(false)}
+            />
         )}
         
         {/* Achievement Unlock Modal */}
@@ -3124,13 +3148,14 @@ const Dashboard: React.FC<{
   onStartEdit: (sId: string) => void,
   onOpenLibrary: () => void,
   onQuickTest: () => void,
+  onOpenGamePicker: () => void,
   onDeleteSessions: (ids: string[]) => void,
   onManualSync?: (id: string) => void,
   syncingSessionId?: string | null,
   highlightRecentSessions?: boolean,
   onDismissRecentSessionsHighlight?: () => void,
   persistedUnlocks?: Set<string>,
-}> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight, persistedUnlocks }) => {
+}> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onOpenGamePicker, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight, persistedUnlocks }) => {
   const t = useT();
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
@@ -3319,32 +3344,40 @@ const Dashboard: React.FC<{
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-6">
-          <button 
+        <div className="flex flex-col lg:flex-row gap-4 md:gap-6">
+          <button
             onClick={onStartInput}
-            className="flex-1 bg-mid-charcoal border-2 border-electric-green text-electric-green font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-electric-green hover:text-charcoal transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
+            className="flex-1 bg-mid-charcoal border-2 border-electric-green text-electric-green font-headline text-2xl md:text-3xl py-7 md:py-8 px-6 md:px-10 rounded-2xl hover:bg-electric-green hover:text-charcoal transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
           >
             <span className="material-symbols-outlined text-4xl">add_circle</span>
             {t.addWords}
           </button>
-          
+
           {selectedSessionIds.size > 0 ? (
-             <button 
+             <button
                 onClick={() => onStartTest(Array.from(selectedSessionIds))}
-                className="flex-1 bg-electric-blue text-charcoal font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-white transition-all transform hover:-translate-y-1 hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] flex items-center justify-center gap-4 animate-in fade-in"
+                className="flex-1 bg-electric-blue text-charcoal font-headline text-2xl md:text-3xl py-7 md:py-8 px-6 md:px-10 rounded-2xl hover:bg-white transition-all transform hover:-translate-y-1 hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] flex items-center justify-center gap-4 animate-in fade-in"
              >
                 <span className="material-symbols-outlined text-4xl">checklist</span>
                 {t.testSelected(selectedSessionIds.size)}
              </button>
           ) : (
-             <button 
-                className="flex-1 bg-electric-green text-charcoal font-headline text-3xl py-8 px-10 rounded-2xl hover:bg-electric-blue transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
+             <button
+                className="flex-1 bg-electric-green text-charcoal font-headline text-2xl md:text-3xl py-7 md:py-8 px-6 md:px-10 rounded-2xl hover:bg-electric-blue transition-all transform hover:-translate-y-1 hover:shadow-2xl flex items-center justify-center gap-4"
                 onClick={() => (sessions && sessions.length > 0) ? onQuickTest() : onStartInput()}
              >
                 <span className="material-symbols-outlined text-4xl">play_arrow</span>
                 {t.quickTest}
              </button>
           )}
+
+          <button
+            onClick={onOpenGamePicker}
+            className="flex-1 bg-mid-charcoal border-2 border-electric-purple text-electric-purple font-headline text-2xl md:text-3xl py-7 md:py-8 px-6 md:px-10 rounded-2xl hover:bg-electric-purple hover:text-white transition-all transform hover:-translate-y-1 hover:shadow-[0_0_25px_rgba(187,0,255,0.35)] flex items-center justify-center gap-4"
+          >
+            <span className="material-symbols-outlined text-4xl">sports_esports</span>
+            {t.gameMode}
+          </button>
         </div>
 
         {/* Adaptive Session Matrix Section */}

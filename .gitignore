@@ -39,3 +39,4 @@ scene-*.png
 /*.png
 /*.jpg
 /*.jpeg
+.gstack/
