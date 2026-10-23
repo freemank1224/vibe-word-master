@@ -2,8 +2,11 @@
  * Phase E: Unit Tests for Version Comparison and Merge
  */
 
-import { compareVersions, mergeStats, resolveStatsUpdate, isLocalNewer } from '../../utils/versionMerge';
-import { DayStats, DayStatsWithVersion } from '../../types';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { compareVersions, mergeStats, resolveStatsUpdate, isLocalNewer } from '../../utils/versionMerge.ts';
+import type { DayStats, DayStatsWithVersion } from '../../types.ts';
 
 describe('Version Comparison', () => {
   describe('compareVersions', () => {
@@ -26,10 +29,10 @@ describe('Version Comparison', () => {
 
       const result = compareVersions(local, server);
 
-      expect(result.hasConflict).toBe(false);
-      expect(result.resolution).toBe('none');
-      expect(result.localVersion).toBe(1);
-      expect(result.serverVersion).toBe(1);
+      assert.equal(result.hasConflict, false);
+      assert.equal(result.resolution, 'none');
+      assert.equal(result.localVersion, 1);
+      assert.equal(result.serverVersion, 1);
     });
 
     it('should detect conflict when versions differ', () => {
@@ -51,10 +54,10 @@ describe('Version Comparison', () => {
 
       const result = compareVersions(local, server);
 
-      expect(result.hasConflict).toBe(true);
-      expect(result.resolution).toBe('merged');
-      expect(result.localVersion).toBe(1);
-      expect(result.serverVersion).toBe(2);
+      assert.equal(result.hasConflict, true);
+      assert.equal(result.resolution, 'merged');
+      assert.equal(result.localVersion, 1);
+      assert.equal(result.serverVersion, 2);
     });
 
     it('should return server resolution when no local version exists', () => {
@@ -69,10 +72,10 @@ describe('Version Comparison', () => {
 
       const result = compareVersions(local, server);
 
-      expect(result.hasConflict).toBe(false);
-      expect(result.resolution).toBe('server');
-      expect(result.localVersion).toBeUndefined();
-      expect(result.serverVersion).toBe(2);
+      assert.equal(result.hasConflict, false);
+      assert.equal(result.resolution, 'server');
+      assert.equal(result.localVersion, undefined);
+      assert.equal(result.serverVersion, 2);
     });
   });
 
@@ -96,12 +99,12 @@ describe('Version Comparison', () => {
 
       const merged = mergeStats(local, server);
 
-      expect(merged.total).toBe(20);  // MAX(10, 20)
-      expect(merged.correct).toBe(12);  // MAX(6, 12)
-      expect(merged.points).toBe(30.0);  // MAX(15, 30)
-      expect(merged.version).toBe(2);  // MAX(1, 2)
-      expect(merged._conflict).toBe(true);
-      expect(merged._resolved).toBe('merged');
+      assert.equal(merged.total, 20);  // MAX(10, 20)
+      assert.equal(merged.correct, 12);  // MAX(6, 12)
+      assert.equal(merged.points, 30.0);  // MAX(15, 30)
+      assert.equal(merged.version, 2);  // MAX(1, 2)
+      assert.equal(merged._conflict, true);
+      assert.equal(merged._resolved, 'merged');
     });
 
     it('should include server metadata', () => {
@@ -122,8 +125,8 @@ describe('Version Comparison', () => {
 
       const merged = mergeStats(local, server);
 
-      expect(merged.updated_at).toBe('2025-02-13T12:00:00Z');
-      expect(merged.is_frozen).toBe(false);
+      assert.equal(merged.updated_at, '2025-02-13T12:00:00Z');
+      assert.equal(merged.is_frozen, false);
     });
   });
 
@@ -142,9 +145,9 @@ describe('Version Comparison', () => {
 
       const result = resolveStatsUpdate(local, serverStats);
 
-      expect(result['2025-02-13']).toBeDefined();
-      expect(result['2025-02-13'].total).toBe(20);
-      expect(result['2025-02-13'].version).toBe(2);
+      assert.notEqual(result['2025-02-13'], undefined);
+      assert.equal(result['2025-02-13'].total, 20);
+      assert.equal(result['2025-02-13'].version, 2);
     });
 
     it('should merge conflicting stats', () => {
@@ -170,9 +173,9 @@ describe('Version Comparison', () => {
 
       const result = resolveStatsUpdate(local, serverStats);
 
-      expect(result['2025-02-13']._conflict).toBe(true);
-      expect(result['2025-02-13']._resolved).toBe('merged');
-      expect(result['2025-02-13'].total).toBe(20);  // Merged MAX
+      assert.equal(result['2025-02-13']._conflict, true);
+      assert.equal(result['2025-02-13']._resolved, 'merged');
+      assert.equal(result['2025-02-13'].total, 20);  // Merged MAX
     });
 
     it('should preserve non-conflicting dates', () => {
@@ -205,9 +208,9 @@ describe('Version Comparison', () => {
 
       const result = resolveStatsUpdate(local, serverStats);
 
-      expect(result['2025-02-12'].total).toBe(5);  // Unchanged
-      expect(result['2025-02-13']._conflict).toBe(true);  // Merged
-      expect(result['2025-02-13'].total).toBe(20);
+      assert.equal(result['2025-02-12'].total, 5);  // Unchanged
+      assert.equal(result['2025-02-13']._conflict, true);  // Merged
+      assert.equal(result['2025-02-13'].total, 20);
     });
   });
 
@@ -229,7 +232,7 @@ describe('Version Comparison', () => {
         updated_at: '2025-02-13T11:00:00Z'
       };
 
-      expect(isLocalNewer(local, server)).toBe(true);
+      assert.equal(isLocalNewer(local, server), true);
     });
 
     it('should return false when server version is higher', () => {
@@ -249,7 +252,7 @@ describe('Version Comparison', () => {
         updated_at: '2025-02-13T12:00:00Z'
       };
 
-      expect(isLocalNewer(local, server)).toBe(false);
+      assert.equal(isLocalNewer(local, server), false);
     });
 
     it('should compare timestamps when versions are equal', () => {
@@ -269,7 +272,7 @@ describe('Version Comparison', () => {
         updated_at: '2025-02-13T12:00:00Z'
       };
 
-      expect(isLocalNewer(local, server)).toBe(true);
+      assert.equal(isLocalNewer(local, server), true);
     });
   });
 });

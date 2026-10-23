@@ -17,6 +17,10 @@ import { compressToWebP } from '../utils/imageUtils';
 import { aiService } from './ai';
 import { getShanghaiDateString } from '../utils/timezone';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { overlayLearningProgress } from './learningRecordStore';
+import { parseTestStatsReceipt, validateTestStatsEvent } from './testStatsEvents';
+import { adaptiveWordSelector } from './adaptiveWordSelector';
+import { updateReviewState, getReviewSchedule, type ReviewState } from './reviewScheduler';
 
 let wordsMeaningFieldsSupported: boolean | null = null;
 
@@ -504,6 +508,7 @@ export const fetchUserData = async (userId: string) => {
     last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
     phonetic: w.phonetic || null,
     audio_url: w.audio_url || null,
+    language: w.language || 'en',
     lexeme_id: w.lexeme_id || null,
     definition_cn: w.definition_cn || null,
     definition_en: w.definition_en || null,
@@ -511,7 +516,9 @@ export const fetchUserData = async (userId: string) => {
     selected_meaning_key: w.selected_meaning_key || null,
     deleted: w.deleted || false,
     tags: w.tags || ['Custom'],
-    consecutive_correct: w.consecutive_correct || 0
+    consecutive_correct: w.consecutive_correct || 0,
+    review_state: w.review_state || null,
+    learning_revision: w.learning_revision || 0
   }));
 
   // Batch-resolve image URLs from shared image_assets
@@ -524,7 +531,7 @@ export const fetchUserData = async (userId: string) => {
       .eq('status', 'ready');
 
     if (assets && assets.length > 0) {
-      const assetUrlMap = new Map(assets.map((a: any) => [a.id, a.public_url]));
+      const assetUrlMap = new Map<string, string>(assets.map((a: { id: string; public_url: string }) => [a.id, a.public_url]));
       for (const word of words) {
         if (word.image_asset_id) {
           const assetUrl = assetUrlMap.get(word.image_asset_id);
@@ -536,7 +543,7 @@ export const fetchUserData = async (userId: string) => {
     }
   }
 
-  return { sessions, words };
+  return { sessions, words: overlayLearningProgress(userId, words) };
 };
 
 export const saveSessionData = async (
@@ -601,7 +608,7 @@ export const saveSessionData = async (
   // 3. Bulk Insert Words
   let wordsData = [];
   if (wordsPayload.length > 0) {
-    const { data, error: wordsError } = await executeWordsMutationWithCompatibility(
+    const { data, error: wordsError } = await executeWordsMutationWithCompatibility<Record<string, unknown>[]>(
       () => supabase
         .from('words')
         .insert(wordsPayload)
@@ -617,7 +624,7 @@ export const saveSessionData = async (
         console.error("Error inserting words:", wordsError.message);
         throw wordsError;
     }
-    wordsData = data;
+    wordsData = data || [];
 
     if (wordsData?.length) {
       triggerPronunciationBatch(wordsData.map((w: any) => ({ text: w.text, language: w.language })));
@@ -714,7 +721,7 @@ export const modifySession = async (
         }
 
         if (wordsPayload.length > 0) {
-          const { data, error: insError } = await executeWordsMutationWithCompatibility(
+          const { data, error: insError } = await executeWordsMutationWithCompatibility<Record<string, unknown>[]>(
             () => supabase
               .from('words')
               .insert(wordsPayload)
@@ -852,68 +859,31 @@ export const syncDailyStats = async () => {
  * @returns The updated aggregated statistics
  */
 export const recordTestAndSyncStats = async (
-    testCount: number,
-    correctCount: number,
+  testCount: number,
+  correctCount: number,
   points: number,
-  expectedVersion?: number
+  expectedVersion: number | undefined,
+  event: { eventId: string; occurredAt: number; userId: string },
 ) => {
-    const offsetHours = Math.round(-(new Date().getTimezoneOffset() / 60));
-
-    // ✅ Get client's calculated date using unified Shanghai timezone
-    const clientDate = getShanghaiDateString();  // Uses Asia/Shanghai timezone (UTC+8)
-
-    // Get current user ID
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user?.id) {
-        throw new Error('User not authenticated');
-    }
-
-    // Call the new RPC function that records the test and syncs stats
-    const { data, error } = await supabase.rpc('record_test_and_sync_stats', {
-        p_test_count: testCount,
-        p_correct_count: correctCount,
-        p_points: points,
-        p_timezone_offset_hours: offsetHours,
-      p_client_date: clientDate,
-      p_expected_version: expectedVersion ?? null
-    });
-
-    if (error) {
-        console.error("Error recording test and syncing stats:", error.message);
-        // Fallback to old method
-        console.warn("Falling back to legacy sync method");
-        await syncDailyStats();
-        return null;
-    }
-
-    const result = Array.isArray(data) && data.length > 0 ? data[0] : data;
-
-    // ✅ Check for date mismatch warning from server
-    if (result?.date_mismatch) {
-        console.error('[recordTestAndSyncStats] ⚠️ Date mismatch detected!', {
-            client: clientDate,
-            server: result.synced_date
-        });
-        // TODO: Show user notification if needed
-    }
-
-    // ✅ Phase E: Handle conflict detection (server-side merge)
-    if (result?.conflict_detected) {
-        console.warn('[recordTestAndSyncStats] ⚠️ Version conflict detected and auto-merged by server:', {
-            date: result.synced_date,
-            expectedVersion,
-            serverVersion: result.version
-        });
-
-        // Mark as server-merged
-        return {
-            ...result,
-            _conflict: true,
-            _resolved: 'merged' as const
-        };
-    }
-
-    return result;
+  const item = {
+    id: event.eventId, userId: event.userId, timestamp: event.occurredAt,
+    date: getShanghaiDateString(event.occurredAt), testCount, correctCount, points,
+    expectedVersion: expectedVersion ?? 0,
+  };
+  validateTestStatsEvent(item);
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || user?.id !== event.userId) throw new Error('统计记录与当前登录账号不匹配。');
+  const { data, error } = await supabase.rpc('record_test_event_v1', {
+    p_expected_user_id: event.userId,
+    p_event_id: event.eventId,
+    p_occurred_at: new Date(event.occurredAt).toISOString(),
+    p_test_count: testCount,
+    p_correct_count: correctCount,
+    p_points: points,
+  });
+  // Retrying a non-idempotent legacy RPC can award a completed test twice.
+  if (error) throw new Error(`统计记录仍待同步：${error.message}`);
+  return parseTestStatsReceipt(data, item);
 };
 
 /**
@@ -1151,14 +1121,23 @@ export const updateWordStatusV2 = async (
     definition_en?: string,
     // New parameters for error decay
     hasUsedHint?: boolean,
-    consecutiveCorrect?: number
+    consecutiveCorrect?: number,
+    hadMistake?: boolean,
+    occurredAt?: number,
+    reviewState?: ReviewState
   }
 ) => {
-  const { data: currentWord } = await supabase
+  const { data: currentWord, error: readError } = await supabase
     .from('words')
-    .select('error_count, best_time_ms, consecutive_correct, tags')
+    .select('*')
     .eq('id', wordId)
     .single();
+
+  if (readError || !currentWord) throw new Error(readError?.message || 'Word progress was not found');
+  const reviewedAt = updates.occurredAt || Date.now();
+  const reviewWord = { ...currentWord, last_tested: currentWord.last_tested ? new Date(currentWord.last_tested).getTime() : null };
+  const nextReview = updates.reviewState || updateReviewState(reviewWord, !updates.correct ? 'incorrect' : updates.hasUsedHint || updates.hadMistake ? 'assisted' : 'independent', reviewedAt);
+  const spacedRecall = nextReview.repetitions > (getReviewSchedule(reviewWord, reviewedAt).state?.repetitions || 0);
 
   const currentErrorCount = currentWord?.error_count || 0;
   const currentConsecutiveCorrect = currentWord?.consecutive_correct || 0;
@@ -1169,11 +1148,13 @@ export const updateWordStatusV2 = async (
   let shouldRemoveMistakeTag = false;
 
   // Error Decay Logic: Only apply if correct AND no hint was used
-  if (updates.correct && !updates.hasUsedHint && updates.score && updates.score >= 3) {
-    const decayResult = await applyErrorDecay(wordId, new_error_count, new_consecutive_correct);
-    new_error_count = decayResult.newErrorCount;
-    new_consecutive_correct = decayResult.newConsecutiveCorrect;
-    shouldRemoveMistakeTag = decayResult.shouldRemoveMistakeTag;
+  if (updates.correct && !updates.hasUsedHint && !updates.hadMistake && updates.score && updates.score >= 3) {
+    if (spacedRecall) {
+      const decayResult = await applyErrorDecay(wordId, new_error_count, new_consecutive_correct);
+      new_error_count = decayResult.newErrorCount;
+      new_consecutive_correct = decayResult.newConsecutiveCorrect;
+      shouldRemoveMistakeTag = decayResult.shouldRemoveMistakeTag;
+    }
   } else {
     // Reset consecutive_correct on incorrect answer or hint usage
     if (new_consecutive_correct > 0) {
@@ -1195,11 +1176,15 @@ export const updateWordStatusV2 = async (
     correct: updates.correct,
     score: updates.score,
     tested: true,
-    last_tested: new Date().toISOString(),
+    last_tested: new Date(updates.occurredAt || Date.now()).toISOString(),
     error_count: new_error_count,
     best_time_ms: new_best_time,
     consecutive_correct: new_consecutive_correct
   };
+
+  if (currentWord && Object.hasOwn(currentWord, 'review_state')) {
+    payload.review_state = nextReview;
+  }
 
   if (updates.phonetic) payload.phonetic = updates.phonetic;
   if (updates.audio_url) payload.audio_url = updates.audio_url;
@@ -1212,7 +1197,7 @@ export const updateWordStatusV2 = async (
     .update(payload)
     .eq('id', wordId);
 
-  if (error) console.error("Error updating word status V2:", error.message);
+  if (error) throw new Error(`Failed to save word progress: ${error.message}`);
 
   // Remove Mistake tag if error_count reached 0
   if (shouldRemoveMistakeTag) {
@@ -1240,12 +1225,12 @@ export interface GameWordResult {
 }
 
 /**
- * Sync per-word results from a game mode (Scene / Puzzle / future modes)
+ * Sync per-word results from a game mode (Puzzle / Word Strike / future modes)
  * into the words table, triggering the SAME error-decay + consecutive_correct
  * + last_tested updates that CLASSIC mode performs via updateWordStatusV2.
  *
  * Why this exists: before this helper, only CLASSIC mode wrote word stats.
- * Scene and Puzzle just recorded round-level scores to their leaderboard
+ * Games only recorded round-level scores to their leaderboard
  * tables, so the adaptive word selector kept picking the same high-error
  * words forever — answering them right in a game mode never lowered their
  * weight. This helper fixes that by giving every game mode a single line
@@ -1308,20 +1293,22 @@ export const updateWordMetadata = async (wordId: string, updates: {
   language?: string,
   meaning_options?: WordMeaningOption[] | null,
   selected_meaning_key?: string | null,
-}) => {
-  const { error } = await executeWordsMutationWithCompatibility(
+}, expectedUserId?: string) => {
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user || (expectedUserId && user.id !== expectedUserId)) throw new Error('单词信息与当前账号不匹配。');
+  const { data, error } = await executeWordsMutationWithCompatibility<Array<{ id: string }>>(
     () => supabase
       .from('words')
       .update(updates)
-      .eq('id', wordId),
+      .eq('id', wordId).eq('user_id', user.id).select('id'),
     () => supabase
       .from('words')
       .update(stripMeaningFields(updates))
-      .eq('id', wordId),
+      .eq('id', wordId).eq('user_id', user.id).select('id'),
     'updateWordMetadata'
   );
     
-  if (error) console.error("Error updating word metadata:", error.message);
+  if (error || !data?.length) throw new Error(error?.message || '单词信息未保存，可能已删除或账号发生变化。');
 };
 
 export const generateSRSQueue = (
@@ -1329,48 +1316,9 @@ export const generateSRSQueue = (
     selectedWordIds: string[],
     targetSize: number = 20
 ): WordEntry[] => {
-    // 1. Core Selection (70%)
-    const selectedWords = allWords.filter(w => selectedWordIds.includes(w.id));
-    const coreCount = Math.floor(targetSize * 0.7);
-    const shuffledSelected = [...selectedWords].sort(() => Math.random() - 0.5).slice(0, coreCount);
-
-    // 2. Error Recall (30%) - Words not in initial selection
-    const pool = allWords.filter(w => !selectedWordIds.includes(w.id));
-    const adaptiveConfig = WORD_LEARNING_CONFIG.adaptiveSelection;
-
-    // Calculate weights for all words in pool
-    // Weight = error_count * legacyErrorWeight + (time since last tested in days)
-    const scoredPool = pool.map(w => {
-        const daysSinceLast = w.last_tested
-            ? (Date.now() - w.last_tested) / (1000 * 60 * 60 * 24)
-            : adaptiveConfig.defaultDaysSinceLastTest; // Use config for default days
-
-        const score = (w.error_count * adaptiveConfig.legacyErrorWeight) + daysSinceLast;
-        return { word: w, score };
-    });
-
-    // Sort by score descending and take the top
-    const errorRecallCount = targetSize - shuffledSelected.length;
-    const errorRecallPool = scoredPool
-        .sort((a, b) => b.score - a.score)
-        .slice(0, errorRecallCount * 2); // Get a slightly larger pool to sample from
-
-    const shuffledErrorRecall = errorRecallPool
-        .sort(() => Math.random() - 0.5)
-        .slice(0, errorRecallCount)
-        .map(item => item.word);
-
-    // 3. Combine and Final Shuffle with priority
-    // Priority: Higher error_count words should generally appear earlier
-    const finalQueue = [...shuffledSelected, ...shuffledErrorRecall].sort((a, b) => {
-        // We want a mix but weighted towards higher error count
-        // Random element to keep it fresh (use legacy random bonus from config)
-        const valA = (a.error_count * 2) + Math.random() * adaptiveConfig.legacyRandomBonus;
-        const bValB = (b.error_count * 2) + Math.random() * adaptiveConfig.legacyRandomBonus;
-        return bValB - valA;
-    });
-
-    return finalQueue;
+    const ids = new Set(selectedWordIds);
+    const pool = ids.size ? allWords.filter(word => ids.has(word.id)) : allWords;
+    return adaptiveWordSelector.calculateQueue(allWords, pool, targetSize);
 };
 
 export interface DeleteProgress {

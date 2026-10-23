@@ -7,8 +7,18 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:scene": "node --test __tests__/scene/*.test.ts",
-    "test:wordStrike": "node --test __tests__/wordStrike/*.test.ts"
+    "test:wordStrike": "node --test __tests__/wordStrike/*.test.ts",
+    "test:review": "node --test __tests__/review/*.test.ts",
+    "test:puzzle": "node --test __tests__/puzzle/*.test.ts",
+    "test:wordOrbit": "node --test __tests__/wordOrbit/*.test.ts",
+    "typecheck": "npm run typecheck:app && npm run typecheck:node && npm run typecheck:tests && npm run typecheck:edge",
+    "typecheck:app": "tsc --noEmit -p tsconfig.json",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "typecheck:edge": "deno check --config supabase/functions/deno.json --lock supabase/functions/deno.lock supabase/functions/*/index.ts",
+    "test": "node scripts/run-tests.mjs",
+    "test:all": "npm test",
+    "verify": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@google/genai": "^1.34.0",
@@ -25,11 +35,24 @@
     "wink-lemmatizer": "^3.0.4"
   },
   "devDependencies": {
+    "@tailwindcss/aspect-ratio": "^0.4.2",
+    "@tailwindcss/forms": "^0.5.11",
+    "@tailwindcss/typography": "^0.5.20",
     "@types/matter-js": "^0.20.2",
     "@types/node": "^22.14.0",
     "@types/nspell": "^2.1.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.6.1",
+    "deno": "^2.9.6",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
   }
 }

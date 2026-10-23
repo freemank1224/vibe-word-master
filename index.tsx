@@ -1,8 +1,17 @@
 
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { LanguageProvider } from './contexts/LanguageContext';
+import { prepareIconFont, revealApplication } from './services/startup';
+import './styles/global.css';
+
+function StartupReady() {
+  useLayoutEffect(() => { revealApplication(document); }, []);
+  return null;
+}
+
+prepareIconFont(document);
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -14,6 +23,7 @@ root.render(
   <React.StrictMode>
     <LanguageProvider>
       <App />
+      <StartupReady />
     </LanguageProvider>
   </React.StrictMode>
 );

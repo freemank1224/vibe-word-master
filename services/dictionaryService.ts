@@ -1,6 +1,6 @@
-
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import type { WordMeaningOption } from '../types';
+import { createDictionaryLookupCache, withinDeadline } from './dictionaryLookupCache';
 
 export interface DictionaryData {
   phonetic?: string;
@@ -93,311 +93,161 @@ const PROPER_NOUN_TRANSLATIONS: Record<string, string> = {
   december: '十二月',
 };
 
-const toTitleCase = (value: string) => {
-  const lowered = value.toLowerCase();
-  return lowered.charAt(0).toUpperCase() + lowered.slice(1);
-};
+export interface DictionaryLookupOptions { signal?: AbortSignal }
 
-const buildQueryVariants = (value: string): string[] => {
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  const lower = trimmed.toLowerCase();
-  return Array.from(new Set([trimmed, lower, toTitleCase(trimmed)]));
-};
+const dictionaryCache = createDictionaryLookupCache<DictionaryData>({ isUsable: data => !!data.definition_cn });
+const meaningCache = createDictionaryLookupCache<WordMeaningOption[]>();
+const globalCache = createDictionaryLookupCache<DictionaryData>({ isUsable: data => !!data.definition_cn });
+const apiCache = createDictionaryLookupCache<DictionaryApiEntry[]>({ timeoutMs: 2500 });
+const translationCache = createDictionaryLookupCache<string>({ timeoutMs: 3500 });
+const keyFor = (word: string, lang: string) => JSON.stringify([lang.toLowerCase(), normalizeWordKey(word)]);
 
-const lookupProperNounTranslation = (value: string): string | undefined => {
-  const key = value.trim().toLowerCase();
-  return PROPER_NOUN_TRANSLATIONS[key];
-};
+interface DictionaryApiEntry {
+  phonetic?: string;
+  phonetics?: Array<{ text?: string }>;
+  meanings?: Array<{ partOfSpeech?: string; definitions?: Array<{ definition?: string }> }>;
+}
 
-const fetchWithTimeout = async (input: string, timeoutMs: number, init?: RequestInit): Promise<Response> => {
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...(init || {}), signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
-};
+const jsonRequest = <T>(url: string, signal: AbortSignal, init?: RequestInit): Promise<T> =>
+  withinDeadline(async requestSignal => {
+    const response = await fetch(url, { ...init, signal: requestSignal });
+    if (!response.ok) throw new Error(`Dictionary source returned ${response.status}`);
+    return await response.json() as T;
+  }, 2000, signal);
 
-const fetchUapisTranslation = async (text: string): Promise<string | undefined> => {
-  try {
-    const response = await fetchWithTimeout(`${uapisTranslateEndpoint}?to_lang=zh`, 2500, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(uapisApiKey ? {
-          Authorization: `Bearer ${uapisApiKey}`,
-          'x-api-key': uapisApiKey,
-        } : {}),
-      },
-      body: JSON.stringify({ text }),
-    });
+const fetchGlobalLexemeData = (word: string, lang: string, signal: AbortSignal) =>
+  globalCache(keyFor(word, lang), async sharedSignal => {
+    if (!isSupabaseConfigured) return null;
+    return withinDeadline(async requestSignal => {
+      const { data: lexeme, error } = await supabase.from('lexeme_entries')
+        .select('id, phonetic, definition_en').eq('normalized_text', normalizeWordKey(word))
+        .eq('language', lang).abortSignal(requestSignal).maybeSingle();
+      if (error || !lexeme?.id) return null;
+      const { data: meanings, error: meaningsError } = await supabase.from('lexeme_meanings')
+        .select('meaning_zh, part_of_speech, source_provider, confidence, is_verified, created_at')
+        .eq('lexeme_id', lexeme.id).order('is_verified', { ascending: false })
+        .order('confidence', { ascending: false }).order('created_at', { ascending: true })
+        .limit(10).abortSignal(requestSignal);
+      const meaningOptions = meaningsError ? [] : dedupeMeaningOptions((meanings || []).map(item => ({
+        key: buildMeaningOptionKey(item.meaning_zh, item.part_of_speech),
+        meaningZh: item.meaning_zh, partOfSpeech: item.part_of_speech, sourceProvider: item.source_provider,
+      })));
+      const data: DictionaryData = {
+        phonetic: normalizeMeaning(lexeme.phonetic), definition_en: normalizeMeaning(lexeme.definition_en),
+        definition_cn: meaningOptions[0]?.meaningZh, meaningOptions,
+      };
+      return data.definition_cn || data.definition_en || data.phonetic ? data : null;
+    }, 2000, sharedSignal);
+  }, signal);
 
-    if (!response.ok) return undefined;
-
-    const data = await response.json().catch(() => ({}));
-    return normalizeMeaning(data?.translated_text);
-  } catch (error) {
-    console.warn('UAPIs translation failed:', error);
-    return undefined;
-  }
-};
-
-const fetchDictionaryDataViaEdge = async (word: string, lang: string): Promise<DictionaryData | null> => {
+const fetchDictionaryDataViaEdge = async (word: string, lang: string, signal: AbortSignal): Promise<DictionaryData | null> => {
   if (!isSupabaseConfigured) return null;
-
   try {
-    const { data, error } = await supabase.functions.invoke('dictionary-lookup', {
-      body: {
-        word,
-        lang,
-      },
+    return await withinDeadline(async requestSignal => {
+      const { data, error } = await supabase.functions.invoke('dictionary-lookup', { body: { word, lang }, signal: requestSignal });
+      if (error) return null;
+      const result = {
+        phonetic: normalizeMeaning(data?.phonetic), definition_en: normalizeMeaning(data?.definition_en),
+        definition_cn: normalizeMeaning(data?.definition_cn),
+      };
+      return result.definition_cn || result.definition_en || result.phonetic ? result : null;
+    }, 2000, signal);
+  } catch { return null; }
+};
+
+const fetchDictionaryApi = (word: string, signal: AbortSignal) => apiCache(keyFor(word, 'en'), async requestSignal => {
+  const data = await jsonRequest<DictionaryApiEntry[]>(
+    `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalizeWordKey(word))}`, requestSignal,
+  );
+  return Array.isArray(data) && data.length ? data : null;
+}, signal);
+
+const fetchChineseTranslation = (word: string, lang: string, signal: AbortSignal) =>
+  translationCache(keyFor(word, lang), async requestSignal => {
+    const local = lang === 'en' ? PROPER_NOUN_TRANSLATIONS[normalizeWordKey(word)] : undefined;
+    if (local) return local;
+    // Independent sources race within one budget; failed/CORS sources cannot serialize delays.
+    const uapis = jsonRequest<{ translated_text?: string }>(`${uapisTranslateEndpoint}?to_lang=zh`, requestSignal, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(uapisApiKey ? {
+        Authorization: `Bearer ${uapisApiKey}`, 'x-api-key': uapisApiKey,
+      } : {}) }, body: JSON.stringify({ text: word }),
+    }).then(data => normalizeMeaning(data.translated_text));
+    const google = jsonRequest<unknown>(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(lang)}&tl=zh-CN&dt=t&q=${encodeURIComponent(word)}`,
+      requestSignal,
+    ).then(data => {
+      const rows = Array.isArray(data) ? data[0] : undefined;
+      return normalizeMeaning(Array.isArray(rows) ? rows.map(row => Array.isArray(row) ? row[0] : '').join('') : undefined);
     });
-
-    if (error) {
-      console.warn('Dictionary edge lookup failed:', error.message);
-      return null;
-    }
-
-    const definition_cn = normalizeMeaning(data?.definition_cn);
-    const definition_en = normalizeMeaning(data?.definition_en);
-    const phonetic = normalizeMeaning(data?.phonetic);
-
-    if (!definition_cn && !definition_en && !phonetic) {
-      return null;
-    }
-
-    return {
-      phonetic,
-      definition_en,
-      definition_cn,
-      audioUrl: undefined,
-    };
-  } catch (error) {
-    console.warn('Dictionary edge invocation threw error:', error);
-    return null;
-  }
-};
-
-const fetchGlobalLexemeData = async (word: string, lang: string): Promise<DictionaryData | null> => {
-  if (!isSupabaseConfigured) return null;
-
-  const normalizedWord = normalizeWordKey(word);
-  if (!normalizedWord) return null;
-
-  try {
-    const { data: lexeme, error: lexemeError } = await supabase
-      .from('lexeme_entries')
-      .select('id, phonetic, definition_en')
-      .eq('normalized_text', normalizedWord)
-      .eq('language', lang)
-      .maybeSingle();
-
-    if (lexemeError) {
-      console.warn('Global lexeme lookup failed:', lexemeError.message);
-      return null;
-    }
-
-    if (!lexeme?.id) return null;
-
-    const { data: meanings, error: meaningsError } = await supabase
-      .from('lexeme_meanings')
-      .select('meaning_zh, is_verified, confidence, created_at')
-      .eq('lexeme_id', lexeme.id)
-      .order('is_verified', { ascending: false })
-      .order('confidence', { ascending: false })
-      .order('created_at', { ascending: true })
-      .limit(5);
-
-    if (meaningsError) {
-      console.warn('Global lexeme meanings lookup failed:', meaningsError.message);
-      return null;
-    }
-
-    const definition_cn = normalizeMeaning(meanings?.[0]?.meaning_zh);
-    if (!definition_cn && !lexeme.phonetic && !lexeme.definition_en) {
-      return null;
-    }
-
-    return {
-      phonetic: normalizeMeaning(lexeme.phonetic),
-      definition_en: normalizeMeaning(lexeme.definition_en),
-      definition_cn,
-      audioUrl: undefined,
-    };
-  } catch (error) {
-    console.warn('Global lexeme fetch threw error:', error);
-    return null;
-  }
-};
-
-const fetchGlobalLexemeMeaningOptions = async (word: string, lang: string): Promise<WordMeaningOption[]> => {
-  if (!isSupabaseConfigured) return [];
-
-  const normalizedWord = normalizeWordKey(word);
-  if (!normalizedWord) return [];
-
-  try {
-    const { data: lexeme, error: lexemeError } = await supabase
-      .from('lexeme_entries')
-      .select('id')
-      .eq('normalized_text', normalizedWord)
-      .eq('language', lang)
-      .maybeSingle();
-
-    if (lexemeError || !lexeme?.id) {
-      return [];
-    }
-
-    const { data: meanings, error: meaningsError } = await supabase
-      .from('lexeme_meanings')
-      .select('meaning_zh, part_of_speech, source_provider, confidence, is_verified, created_at')
-      .eq('lexeme_id', lexeme.id)
-      .order('is_verified', { ascending: false })
-      .order('confidence', { ascending: false })
-      .order('created_at', { ascending: true })
-      .limit(10);
-
-    if (meaningsError) {
-      return [];
-    }
-
-    return dedupeMeaningOptions((meanings || []).map((item: any) => ({
-      key: buildMeaningOptionKey(item.meaning_zh, item.part_of_speech),
-      meaningZh: item.meaning_zh,
-      partOfSpeech: item.part_of_speech,
-      sourceProvider: item.source_provider,
-    })));
-  } catch (error) {
-    console.warn('Global lexeme meaning options fetch failed:', error);
-    return [];
-  }
-};
-
-const fetchChineseTranslation = async (text: string, fallbackText?: string): Promise<string | undefined> => {
-  const query = text.trim();
-  if (!query) return undefined;
-
-  const localFallback = lookupProperNounTranslation(query);
-  if (localFallback) return localFallback;
-
-  const googleTargets = Array.from(new Set([
-    ...buildQueryVariants(query),
-    ...buildQueryVariants(fallbackText || ''),
-  ])).filter((item): item is string => !!item?.trim());
-
-  for (const target of googleTargets) {
-    const translated = await fetchUapisTranslation(target);
-    if (translated) return translated;
-  }
-
-  for (const target of googleTargets) {
     try {
-      const response = await fetchWithTimeout(
-        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(target)}`
-      , 2000
+      return await Promise.any([uapis, google].map(request => request.then(value => {
+        if (!value) throw new Error('Empty translation');
+        return value;
+      })));
+    } catch {
+      if (requestSignal.aborted) return null;
+      const fallback = await jsonRequest<{ responseData?: { translatedText?: string } }>(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=${encodeURIComponent(lang)}|zh-CN`, requestSignal,
       );
-
-      if (response.ok) {
-        const data = await response.json();
-        const translated = Array.isArray(data?.[0])
-          ? data[0].map((segment: any) => segment?.[0]).filter(Boolean).join('')
-          : undefined;
-        const normalized = normalizeMeaning(translated);
-        if (normalized) return normalized;
-      }
-    } catch (error) {
-      console.warn('Google translation failed:', error);
+      return normalizeMeaning(fallback.responseData?.translatedText) || null;
     }
-  }
+  }, signal);
 
-  try {
-    const response = await fetchWithTimeout(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(query)}&langpair=en|zh-CN`
-    , 2000
-    );
-
-    if (!response.ok) return localFallback;
-
-    const data = await response.json();
-    return normalizeMeaning(data?.responseData?.translatedText) || localFallback;
-  } catch (error) {
-    console.warn('Fallback translation failed:', error);
-    return localFallback;
-  }
+/** Basic lookup does not eagerly translate every meaning; full alternatives are loaded on demand. */
+export const fetchDictionaryData = (
+  word: string, lang: string = 'en', options: DictionaryLookupOptions = {},
+): Promise<DictionaryData | null> => {
+  if (!normalizeWordKey(word)) return Promise.resolve(null);
+  return dictionaryCache(keyFor(word, lang), async signal => {
+    const shared = await fetchGlobalLexemeData(word, lang, signal);
+    if (shared?.definition_cn) return shared;
+    const [edge, entries, translated] = await Promise.all([
+      fetchDictionaryDataViaEdge(word, lang, signal),
+      lang === 'en' ? fetchDictionaryApi(word, signal) : Promise.resolve(null),
+      fetchChineseTranslation(word, lang, signal),
+    ]);
+    const entry = entries?.[0];
+    const result: DictionaryData = {
+      phonetic: shared?.phonetic || edge?.phonetic || normalizeMeaning(entry?.phonetic)
+        || normalizeMeaning(entry?.phonetics?.find(item => item.text)?.text),
+      definition_en: shared?.definition_en || edge?.definition_en || normalizeMeaning(entry?.meanings?.[0]?.definitions?.[0]?.definition),
+      definition_cn: shared?.definition_cn || edge?.definition_cn || translated || undefined,
+      meaningOptions: shared?.meaningOptions || [],
+    };
+    return result.definition_cn || result.definition_en || result.phonetic ? result : null;
+  }, options.signal);
 };
 
-const fetchDictionaryApiMeaningOptions = async (word: string): Promise<WordMeaningOption[]> => {
-  try {
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word.toLowerCase()}`);
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    if (!Array.isArray(data) || data.length === 0) return [];
-
-    const candidates: Array<{ partOfSpeech?: string; definitionEn: string }> = [];
-
-    for (const entry of data) {
-      for (const meaning of entry.meanings || []) {
-        for (const definition of (meaning.definitions || []).slice(0, 2)) {
-          const definitionEn = normalizeMeaning(definition?.definition);
-          if (!definitionEn) continue;
-          candidates.push({
-            partOfSpeech: meaning.partOfSpeech,
-            definitionEn,
-          });
-          if (candidates.length >= 10) break;
-        }
-        if (candidates.length >= 10) break;
-      }
-      if (candidates.length >= 10) break;
-    }
-
-    const translatedOptions = await Promise.all(candidates.map(async (candidate) => {
-      const meaningZh = await fetchChineseTranslation(candidate.definitionEn, word);
-      if (!meaningZh) return null;
-
-      const partOfSpeech = normalizePartOfSpeech(candidate.partOfSpeech);
-      return {
-        key: buildMeaningOptionKey(meaningZh, partOfSpeech),
-        meaningZh,
-        partOfSpeech: partOfSpeech || null,
-        definitionEn: candidate.definitionEn,
+/** The expensive alternative-meaning path is only used when opening the meaning picker. */
+export const fetchWordMeaningOptions = (
+  word: string, lang: string = 'en', fallbackDefinitionEn?: string, options: DictionaryLookupOptions = {},
+): Promise<WordMeaningOption[]> => {
+  if (!normalizeWordKey(word)) return Promise.resolve([]);
+  return meaningCache(JSON.stringify([keyFor(word, lang), fallbackDefinitionEn || '']), async signal => {
+    const shared = await fetchGlobalLexemeData(word, lang, signal);
+    if (shared?.meaningOptions?.length) return shared.meaningOptions;
+    const entries = lang === 'en' ? await fetchDictionaryApi(word, signal) : null;
+    const candidates = (entries || []).flatMap(entry => (entry.meanings || []).flatMap(meaning =>
+      (meaning.definitions || []).slice(0, 2).map(definition => ({
+        definitionEn: normalizeMeaning(definition.definition), partOfSpeech: normalizePartOfSpeech(meaning.partOfSpeech),
+      })),
+    )).filter(item => item.definitionEn).slice(0, 4);
+    const options = await Promise.all(candidates.map(async candidate => {
+      const meaningZh = await fetchChineseTranslation(candidate.definitionEn!, 'en', signal);
+      return meaningZh ? {
+        key: buildMeaningOptionKey(meaningZh, candidate.partOfSpeech), meaningZh,
+        partOfSpeech: candidate.partOfSpeech || null, definitionEn: candidate.definitionEn || null,
         sourceProvider: 'dictionaryapi.dev',
-      } as WordMeaningOption;
+      } : null;
     }));
-
-    return dedupeMeaningOptions(translatedOptions.filter((item): item is WordMeaningOption => !!item)).slice(0, 8);
-  } catch (error) {
-    console.warn('Dictionary API meaning options fetch failed:', error);
-    return [];
-  }
-};
-
-export const fetchWordMeaningOptions = async (word: string, lang: string = 'en', fallbackDefinitionEn?: string): Promise<WordMeaningOption[]> => {
-  const globalOptions = await fetchGlobalLexemeMeaningOptions(word, lang);
-  if (globalOptions.length > 0) {
-    return globalOptions;
-  }
-
-  if (lang === 'en') {
-    const dictionaryOptions = await fetchDictionaryApiMeaningOptions(word);
-    if (dictionaryOptions.length > 0) {
-      return dictionaryOptions;
-    }
-  }
-
-  const fallbackMeaning = await fetchChineseTranslation(word, fallbackDefinitionEn || word);
-  if (!fallbackMeaning) return [];
-
-  return [{
-    key: buildMeaningOptionKey(fallbackMeaning, null),
-    meaningZh: fallbackMeaning,
-    partOfSpeech: null,
-    definitionEn: normalizeMeaning(fallbackDefinitionEn) || null,
-    sourceProvider: 'translation-fallback',
-  }];
+    const meanings = dedupeMeaningOptions(options.filter((item): item is NonNullable<typeof item> => !!item));
+    if (meanings.length) return meanings;
+    const translated = await fetchChineseTranslation(word, lang, signal);
+    return translated ? [{
+      key: buildMeaningOptionKey(translated), meaningZh: translated, partOfSpeech: null,
+      definitionEn: normalizeMeaning(fallbackDefinitionEn) || null, sourceProvider: 'translation-fallback',
+    }] : null;
+  }, options.signal).then(options => options || []);
 };
 
 /**
@@ -453,89 +303,5 @@ export const preloadWordAudio = async (
   } catch (error) {
     console.error('Preload pronunciation error:', error);
     return false;
-  }
-};
-
-export const fetchDictionaryData = async (word: string, lang: string = 'en'): Promise<DictionaryData | null> => {
-  const meaningOptions = await fetchWordMeaningOptions(word, lang);
-
-  const globalLexemeData = await fetchGlobalLexemeData(word, lang);
-  if (globalLexemeData?.definition_cn || globalLexemeData?.phonetic || globalLexemeData?.definition_en) {
-    return {
-      ...globalLexemeData,
-      definition_cn: globalLexemeData.definition_cn || meaningOptions[0]?.meaningZh,
-      meaningOptions,
-    };
-  }
-
-  const edgeData = await fetchDictionaryDataViaEdge(word, lang);
-  if (edgeData?.definition_cn || edgeData?.phonetic || edgeData?.definition_en) {
-    return {
-      ...edgeData,
-      definition_cn: edgeData.definition_cn || meaningOptions[0]?.meaningZh,
-      meaningOptions,
-    };
-  }
-
-  if (lang !== 'en') {
-    const definition_cn = await fetchChineseTranslation(word);
-    return {
-      audioUrl: undefined,
-      definition_cn,
-      meaningOptions,
-    };
-  }
-
-  try {
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word.toLowerCase()}`);
-    
-    if (!response.ok) {
-      return {
-        audioUrl: undefined,
-        meaningOptions,
-      };
-    }
-    
-    const data = await response.json();
-    if (!Array.isArray(data) || data.length === 0) {
-      return { audioUrl: undefined, meaningOptions };
-    }
-
-    const entry = data[0];
-    
-    // Find phonetic
-    let phonetic = entry.phonetic;
-
-    if (!phonetic && entry.phonetics && entry.phonetics.length > 0) {
-      const phoneticEntry = entry.phonetics.find((p: any) => p.text && p.text.length > 0);
-      if (phoneticEntry) phonetic = phoneticEntry.text;
-    }
-
-    // Find first definition
-    let definition_en = '';
-    if (entry.meanings && entry.meanings.length > 0) {
-      const firstMeaning = entry.meanings[0];
-      if (firstMeaning.definitions && firstMeaning.definitions.length > 0) {
-        definition_en = firstMeaning.definitions[0].definition;
-      }
-    }
-
-    const definition_cn = await fetchChineseTranslation(word, definition_en);
-
-    return {
-      phonetic,
-      audioUrl: undefined, // 不再提供音频 URL，使用本地 TTS
-      definition_en,
-      definition_cn: definition_cn || meaningOptions[0]?.meaningZh,
-      meaningOptions,
-    };
-  } catch (error) {
-    console.error("Error fetching dictionary data:", error);
-    const definition_cn = await fetchChineseTranslation(word);
-    return {
-      audioUrl: undefined,
-      definition_cn,
-      meaningOptions,
-    };
   }
 };

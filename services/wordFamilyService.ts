@@ -1,5 +1,6 @@
 /**
- * Local word-family detection — no LLM, no network.
+ * Local word-family detection — no LLM or remote dictionary lookup.
+ * The bundled verb lemma tables load only when an unresolved "-ed" form needs them.
  *
  * When a user types an inflected form (e.g. "went", "shoes", "takes", "walked"),
  * we want to surface the rest of the family ("go / went / gone") so they can
@@ -17,7 +18,7 @@
  * Irregular-verb bases ARE surfaced, because their family can't be derived.
  */
 
-import wl from 'wink-lemmatizer';
+import { createLazyResource } from '../utils/lazyResource.ts';
 import pluralize from 'pluralize';
 // Vendored irregular-verb table (Apache-2.0, Ludan Stoecklé — see the data file).
 // Shape: { [baseForm: string]: Array<[past, pastParticiple]> }. Some verbs list
@@ -79,68 +80,78 @@ function uniqueForms(forms: Array<string | undefined | null>): string[] {
 }
 
 /**
- * Detect the word family for a single input token.
+ * Create a detector with one shared, retryable verb-table loader.
  *
- * @returns `null` only when the detector itself is unavailable (libs threw);
- *          `{ isFamilyMember: false }` when the word has no useful family.
- *          Callers treat both the same (skip the prompt, fall back to the
- *          normal single-word flow).
+ * The returned detector resolves to `null` when its libraries are unavailable,
+ * or `{ isFamilyMember: false }` when a word has no useful family. Both let the
+ * caller skip the prompt and continue the normal single-word flow.
  */
-export function detectWordFamily(input: string): FamilyResult | null {
-  const word = (input || '').trim().toLowerCase();
-  // Empty, multi-word, or whitespace-containing inputs are not single tokens.
-  if (!word || /\s/.test(word)) return null;
+export function createWordFamilyDetector(loadVerb: () => Promise<(word: string) => string | undefined>) {
+  const getVerb = createLazyResource(loadVerb);
+  return async function detect(input: string): Promise<FamilyResult | null> {
+    const word = (input || '').trim().toLowerCase();
+    // Empty, multi-word, or whitespace-containing inputs are not single tokens.
+    if (!word || /\s/.test(word)) return null;
 
-  try {
-    // 1. Irregular verb — direct hit on any principal form, or via singularizing
-    //    a 3rd-person "-s" form (pluralize turns "goes"/"takes" → "go"/"take").
-    let verb = REVERSE_VERB[word];
-    if (!verb) {
-      const singularized = pluralize.singular(word);
-      if (singularized && singularized.toLowerCase() !== word) {
-        verb = REVERSE_VERB[singularized.toLowerCase()];
+    try {
+      // 1. Irregular verb — direct hit on any principal form, or via singularizing
+      //    a 3rd-person "-s" form (pluralize turns "goes"/"takes" → "go"/"take").
+      let verb = REVERSE_VERB[word];
+      if (!verb) {
+        const singularized = pluralize.singular(word);
+        if (singularized && singularized.toLowerCase() !== word) {
+          verb = REVERSE_VERB[singularized.toLowerCase()];
+        }
       }
-    }
-    if (verb) {
-      return {
-        isFamilyMember: true,
-        headword: verb.base,
-        forms: uniqueForms([verb.base, verb.past, verb.part]),
-        reason: 'irregular-verb',
-      };
-    }
-
-    // 2. Regular verb — only on a clear "-ed" past form. We do NOT conjugate:
-    //    the input itself is one of the forms, the lemma is the other.
-    if (/ed$/.test(word) && word.length > 3) {
-      const lemma = wl.verb(word);
-      if (lemma && lemma.toLowerCase() !== word) {
+      if (verb) {
         return {
           isFamilyMember: true,
-          headword: lemma,
-          forms: uniqueForms([lemma, word]),
-          reason: 'regular-verb',
+          headword: verb.base,
+          forms: uniqueForms([verb.base, verb.past, verb.part]),
+          reason: 'irregular-verb',
         };
       }
-    }
 
-    // 3. Plural noun — "shoes" → ["shoe", "shoes"], "children" → ["child", "children"].
-    if (pluralize.isPlural(word)) {
-      const singular = pluralize.singular(word);
-      if (singular && singular.toLowerCase() !== word) {
-        return {
-          isFamilyMember: true,
-          headword: singular,
-          forms: uniqueForms([singular, word]),
-          reason: 'plural-noun',
-        };
+      // 2. Regular verb — only on a clear "-ed" past form. We do NOT conjugate:
+      //    the input itself is one of the forms, the lemma is the other.
+      if (/ed$/.test(word) && word.length > 3) {
+        const lemmatizeVerb = await getVerb();
+        const lemma = lemmatizeVerb(word);
+        if (lemma && lemma.toLowerCase() !== word) {
+          return {
+            isFamilyMember: true,
+            headword: lemma,
+            forms: uniqueForms([lemma, word]),
+            reason: 'regular-verb',
+          };
+        }
       }
-    }
 
-    return { isFamilyMember: false };
-  } catch (error) {
-    // A throw inside the libs should never block the add-word flow.
-    console.warn('[wordFamilyService] detect failed:', error);
-    return null;
-  }
+      // 3. Plural noun — "shoes" → ["shoe", "shoes"], "children" → ["child", "children"].
+      if (pluralize.isPlural(word)) {
+        const singular = pluralize.singular(word);
+        if (singular && singular.toLowerCase() !== word) {
+          return {
+            isFamilyMember: true,
+            headword: singular,
+            forms: uniqueForms([singular, word]),
+            reason: 'plural-noun',
+          };
+        }
+      }
+
+      return { isFamilyMember: false };
+    } catch (error) {
+      // A throw inside the libs should never block the add-word flow.
+      console.warn('[wordFamilyService] detect failed:', error);
+      return null;
+    }
+  };
 }
+
+// Keep the documented package entry point. Common inputs use only the small
+// irregular-verb table and plural rules; no WordNet tables are fetched for them.
+export const detectWordFamily = createWordFamilyDetector(async () => {
+  const { default: lemmatizer } = await import('wink-lemmatizer');
+  return word => lemmatizer.verb(word);
+});

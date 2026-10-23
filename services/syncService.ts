@@ -4,28 +4,14 @@
  */
 
 import { supabase } from '../lib/supabaseClient';
-import { WordEntry, InputSession } from '../types';
+import type { WordEntry, InputSession } from '../types';
+import { createLocalBackupStore, indexedBackupKey, isOwnedLocalBackup, localBackupKey, mapCloudWord, newWordRow, requireBackupOwner, wordMetadata } from './sessionSyncModel.ts';
+import type { LocalBackup, OwnedLocalBackup, SessionWithSync, SyncStatus } from './sessionSyncModel.ts';
+export type { LocalBackup, SessionWithSync, SyncStatus } from './sessionSyncModel.ts';
 
 // ============================================================================
 // 类型定义
 // ============================================================================
-
-export type SyncStatus = 'synced' | 'pending' | 'syncing' | 'failed' | 'conflict';
-
-export interface SessionWithSync extends InputSession {
-  syncStatus: SyncStatus;
-  lastSyncAttempt?: number;
-  conflictData?: {
-    cloud: InputSession;
-    local: InputSession;
-  };
-}
-
-export interface LocalBackup {
-  sessions: SessionWithSync[];
-  words: WordEntry[];
-  version: number; // 用于检测本地数据格式版本
-}
 
 export interface SyncResult {
   success: boolean;
@@ -45,11 +31,9 @@ export interface SyncResult {
 // 常量
 // ============================================================================
 
-const LOCAL_STORAGE_KEY = 'vocab_local_backup';
 const INDEXED_DB_NAME = 'vocab-monster-local';
 const INDEXED_DB_VERSION = 1;
 const INDEXED_DB_STORE = 'backup_store';
-const INDEXED_DB_BACKUP_KEY = 'session_backup';
 const SYNC_THRESHOLD_TOLERANCE = 1000; // 1秒内的差异视为同时更新
 const STORAGE_CLEANUP_KEYS = [
   'vibe_audio_cache',
@@ -74,13 +58,7 @@ let backupDbPromise: Promise<IDBDatabase | null> | null = null;
  */
 const getContentHash = (words: WordEntry[]): string => {
   const sorted = [...words].sort((a, b) => a.text.localeCompare(b.text));
-  return sorted.map(w => `${w.text}:${w.correct ? '1' : '0'}`).join('|');
-};
-
-const isValidLocalBackup = (value: unknown): value is LocalBackup => {
-  if (!value || typeof value !== 'object') return false;
-  const backup = value as Partial<LocalBackup>;
-  return Array.isArray(backup.sessions) && Array.isArray(backup.words);
+  return sorted.map(w => JSON.stringify({ id: w.id, ...wordMetadata(w) })).join('|');
 };
 
 const canUseIndexedDB = (): boolean => (
@@ -117,7 +95,7 @@ const openBackupDatabase = async (): Promise<IDBDatabase | null> => {
   return backupDbPromise;
 };
 
-const loadBackupFromIndexedDB = async (): Promise<LocalBackup | null> => {
+const loadBackupFromIndexedDB = async (userId: string): Promise<unknown> => {
   const db = await openBackupDatabase();
   if (!db) return null;
 
@@ -125,18 +103,11 @@ const loadBackupFromIndexedDB = async (): Promise<LocalBackup | null> => {
     try {
       const transaction = db.transaction(INDEXED_DB_STORE, 'readonly');
       const store = transaction.objectStore(INDEXED_DB_STORE);
-      const request = store.get(INDEXED_DB_BACKUP_KEY);
+      const request = store.get(indexedBackupKey(userId));
 
       request.onsuccess = () => {
         const result = request.result;
         if (!result) {
-          resolve(null);
-          return;
-        }
-
-        if (!isValidLocalBackup(result)) {
-          console.warn('[SyncService] Invalid IndexedDB backup format, clearing...');
-          void clearBackupFromIndexedDB();
           resolve(null);
           return;
         }
@@ -155,7 +126,7 @@ const loadBackupFromIndexedDB = async (): Promise<LocalBackup | null> => {
   });
 };
 
-const saveBackupToIndexedDB = async (backup: LocalBackup): Promise<boolean> => {
+const saveBackupToIndexedDB = async (backup: OwnedLocalBackup): Promise<boolean> => {
   const db = await openBackupDatabase();
   if (!db) return false;
 
@@ -170,7 +141,7 @@ const saveBackupToIndexedDB = async (backup: LocalBackup): Promise<boolean> => {
         resolve(false);
       };
 
-      store.put(backup, INDEXED_DB_BACKUP_KEY);
+      store.put(backup, indexedBackupKey(backup.ownerId));
     } catch (error) {
       console.error('[SyncService] IndexedDB write failed:', error);
       resolve(false);
@@ -178,7 +149,7 @@ const saveBackupToIndexedDB = async (backup: LocalBackup): Promise<boolean> => {
   });
 };
 
-const clearBackupFromIndexedDB = async (): Promise<void> => {
+const clearBackupFromIndexedDB = async (userId: string): Promise<void> => {
   const db = await openBackupDatabase();
   if (!db) return;
 
@@ -188,35 +159,22 @@ const clearBackupFromIndexedDB = async (): Promise<void> => {
       const store = transaction.objectStore(INDEXED_DB_STORE);
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => resolve();
-      store.delete(INDEXED_DB_BACKUP_KEY);
+      store.delete(indexedBackupKey(userId));
     } catch {
       resolve();
     }
   });
 };
 
-const loadBackupFromLocalStorage = (): LocalBackup | null => {
-  try {
-    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!data) return null;
-
-    const backup = JSON.parse(data);
-    if (!isValidLocalBackup(backup)) {
-      console.warn('[SyncService] Invalid legacy local backup format, clearing...');
-      localStorage.removeItem(LOCAL_STORAGE_KEY);
-      return null;
-    }
-
-    return backup;
-  } catch (error) {
-    console.error('[SyncService] Failed to load localStorage backup:', error);
-    return null;
-  }
+const loadBackupFromLocalStorage = (userId: string): unknown => {
+  const data = localStorage.getItem(localBackupKey(userId));
+  // A malformed scoped backup must remain visible as an error, not be replaced.
+  return data ? JSON.parse(data) : null;
 };
 
-const saveBackupToLocalStorage = (backup: LocalBackup): boolean => {
+const saveBackupToLocalStorage = (backup: OwnedLocalBackup): boolean => {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
+    localStorage.setItem(localBackupKey(backup.ownerId), JSON.stringify(backup));
     console.log(`[SyncService] Saved ${backup.sessions.length} sessions to localStorage backup`);
     return true;
   } catch (error) {
@@ -247,7 +205,7 @@ const saveBackupToLocalStorage = (backup: LocalBackup): boolean => {
         console.warn('[SyncService] Cleared non-critical localStorage keys:', reclaimedKeys);
 
         try {
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(backup));
+          localStorage.setItem(localBackupKey(backup.ownerId), JSON.stringify(backup));
           console.log(`[SyncService] Saved ${backup.sessions.length} sessions to localStorage backup after cleanup`);
           return true;
         } catch (retryError) {
@@ -282,6 +240,12 @@ const compareSessionPriority = (
 
   // 时间差很小，视为同时更新
   if (Math.abs(timeDiff) < SYNC_THRESHOLD_TOLERANCE) {
+    // Finish a partially uploaded session after a network failure. Existing
+    // cloud content must be an exact subset, so concurrent edits still conflict.
+    if (localWords.length > cloudWords.length && cloudWords.every(cloudWord => {
+      const localWord = localWords.find(word => word.id === cloudWord.id);
+      return localWord && getContentHash([localWord]) === getContentHash([cloudWord]);
+    })) return 'local';
     // 单词数量相同，检查内容哈希
     if (localWords.length === cloudWords.length) {
       const localHash = getContentHash(localWords);
@@ -315,100 +279,77 @@ const compareSessionPriority = (
 /**
  * 加载本地备份数据
  */
-export const loadLocalBackup = async (): Promise<LocalBackup | null> => {
-  const indexedBackup = await loadBackupFromIndexedDB();
-  if (indexedBackup) {
-    console.log(`[SyncService] Loaded ${indexedBackup.sessions.length} sessions from IndexedDB backup`);
-    return indexedBackup;
-  }
+const localBackupStore = createLocalBackupStore({
+  resolveCurrentUser: async () => {
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    return session?.user.id ?? null;
+  },
+  read: async (userId) => {
+    // Global V1 keys have no trustworthy owner. Preserve them without adopting them.
+    const indexedBackup = await loadBackupFromIndexedDB(userId);
+    const localBackup = loadBackupFromLocalStorage(userId);
+    for (const candidate of [indexedBackup, localBackup]) {
+      if (candidate != null && !isOwnedLocalBackup(candidate, userId)) throw new Error('本地备份归属异常，原始数据已保留。');
+    }
+    const indexed = indexedBackup as OwnedLocalBackup | null;
+    const local = localBackup as OwnedLocalBackup | null;
+    if (!indexed) return local;
+    if (!local) return indexed;
+    // A failed IndexedDB write may have left a newer fallback snapshot.
+    return (local.savedAt ?? 0) >= (indexed.savedAt ?? 0) ? local : indexed;
+  },
+  write: async (userId, backup) => {
+    if (await saveBackupToIndexedDB(backup)) {
+      localStorage.removeItem(localBackupKey(userId));
+      return true;
+    }
+    return saveBackupToLocalStorage(backup);
+  },
+  remove: async (userId) => {
+    await clearBackupFromIndexedDB(userId);
+    localStorage.removeItem(localBackupKey(userId));
+  },
+});
 
-  const legacyBackup = loadBackupFromLocalStorage();
-  if (!legacyBackup) return null;
+export const loadLocalBackup = (userId?: string): Promise<LocalBackup | null> => localBackupStore.load(userId);
+export const saveLocalBackup = (backup: LocalBackup, userId?: string): Promise<boolean> => localBackupStore.save(backup, userId);
+export const clearLocalBackup = (userId?: string): Promise<void> => localBackupStore.clear(userId);
 
-  console.log(`[SyncService] Loaded ${legacyBackup.sessions.length} sessions from legacy local backup`);
-
-  const migrated = await saveBackupToIndexedDB(legacyBackup);
-  if (migrated) {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
-    console.log('[SyncService] Migrated legacy local backup to IndexedDB');
-  }
-
-  return legacyBackup;
-};
-
-/**
- * 保存本地备份数据
- */
-export const saveLocalBackup = async (backup: LocalBackup): Promise<boolean> => {
-  const indexedSaved = await saveBackupToIndexedDB(backup);
-  if (indexedSaved) {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
-    console.log(`[SyncService] Saved ${backup.sessions.length} sessions to IndexedDB backup`);
-    return true;
-  }
-
-  return saveBackupToLocalStorage(backup);
-};
-
-/**
- * 清除本地备份
- */
-export const clearLocalBackup = async (): Promise<void> => {
-  await clearBackupFromIndexedDB();
-  localStorage.removeItem(LOCAL_STORAGE_KEY);
-  console.log('[SyncService] Local backup cleared');
-};
-
-/**
- * 保存 Session 到本地备份
- */
-export const saveSessionToLocal = async (
+export const saveSessionToLocal = (
   session: InputSession,
   words: WordEntry[],
-  syncStatus: SyncStatus = 'pending'
-): Promise<boolean> => {
-  const backup = await loadLocalBackup() || { sessions: [], words: [], version: 1 };
-
-  // 更新或添加 Session
+  syncStatus: SyncStatus = 'pending',
+  userId?: string,
+): Promise<boolean> => localBackupStore.update(backup => {
   const existingIndex = backup.sessions.findIndex(s => s.id === session.id);
-
-  const sessionWithSync: SessionWithSync = {
-    ...session,
-    syncStatus,
-    lastSyncAttempt: Date.now()
-  };
-
-  if (existingIndex >= 0) {
-    backup.sessions[existingIndex] = sessionWithSync;
-  } else {
-    backup.sessions.push(sessionWithSync);
+  const sessionWithSync: SessionWithSync = { ...session, syncStatus, lastSyncAttempt: Date.now(),
+    localRevision: (existingIndex >= 0 ? backup.sessions[existingIndex].localRevision ?? 0 : 0) + 1 };
+  if (existingIndex >= 0) backup.sessions[existingIndex] = sessionWithSync;
+  else backup.sessions.push(sessionWithSync);
+  for (const word of words) {
+    if (word.sessionId !== session.id) throw new Error('单词不属于待保存的词库。');
+    const index = backup.words.findIndex(w => w.id === word.id);
+    if (index >= 0) backup.words[index] = word;
+    else backup.words.push(word);
   }
+  return backup;
+}, userId);
 
-  // 更新或添加 Words
-  const existingWordIds = new Set(backup.words.map(w => w.id));
-  words.forEach(word => {
-    if (!existingWordIds.has(word.id)) {
-      backup.words.push(word);
-    } else {
-      const idx = backup.words.findIndex(w => w.id === word.id);
-      if (idx >= 0) backup.words[idx] = word;
-    }
-  });
-
-  return await saveLocalBackup(backup);
+export const deleteSessionFromLocal = async (sessionId: string, userId?: string): Promise<void> => {
+  const saved = await localBackupStore.update(backup => ({
+    ...backup,
+    sessions: backup.sessions.filter(s => s.id !== sessionId),
+    words: backup.words.filter(w => w.sessionId !== sessionId),
+  }), userId);
+  if (!saved) throw new Error('本地备份删除未保存，请重试。');
 };
 
-/**
- * 从本地备份中删除 Session
- */
-export const deleteSessionFromLocal = async (sessionId: string): Promise<void> => {
-  const backup = await loadLocalBackup();
-  if (!backup) return;
-
-  backup.sessions = backup.sessions.filter(s => s.id !== sessionId);
-  backup.words = backup.words.filter(w => w.sessionId !== sessionId);
-
-  await saveLocalBackup(backup);
+const assertCurrentUser = async (userId: string): Promise<void> => {
+  requireBackupOwner(userId);
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  if (session?.user.id !== userId) throw new Error('账号已切换，已停止之前账号的同步。');
 };
 
 // ============================================================================
@@ -428,6 +369,7 @@ export const syncSessionToCloud = async (
   localWords: WordEntry[]
 ): Promise<SyncResult> => {
   try {
+    await assertCurrentUser(userId);
     console.log(`[SyncService] Syncing session ${localSession.id}...`);
 
     // 1. 检查云端是否存在
@@ -461,6 +403,7 @@ export const syncSessionToCloud = async (
     console.log('[SyncService] Cloud session exists, comparing...');
 
     // 获取云端单词数据
+    await assertCurrentUser(userId);
     const { data: cloudWords, error: wordsError } = await supabase
       .from('words')
       .select('*')
@@ -491,25 +434,19 @@ export const syncSessionToCloud = async (
       libraryTag: cloudSession.library_tag || 'Custom'
     };
 
-    const cloudWordsData: WordEntry[] = (cloudWords || []).map((w: any) => ({
-      id: w.id,
-      text: w.text,
-      timestamp: new Date(w.created_at).getTime(),
-      sessionId: w.session_id,
-      correct: w.correct,
-      tested: w.tested,
-      image_path: w.image_path,
-      image_url: null, // 稍后生成
-      error_count: w.error_count || 0,
-      best_time_ms: w.best_time_ms || null,
-      last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
-      phonetic: w.phonetic || null,
-      audio_url: w.audio_url || null,
-      definition_cn: w.definition_cn || null,
-      definition_en: w.definition_en || null,
-      deleted: w.deleted || false,
-      tags: w.tags || ['Custom']
-    }));
+    const cloudWordsData: WordEntry[] = (cloudWords || []).map(w => {
+      const imageUrl = w.image_path ? supabase.storage.from('vocab-images').getPublicUrl(w.image_path).data.publicUrl : null;
+      return mapCloudWord(w, imageUrl);
+    });
+    const assetIds = [...new Set(cloudWordsData.map(w => w.image_asset_id).filter((id): id is string => Boolean(id)))];
+    if (assetIds.length) {
+      await assertCurrentUser(userId);
+      const { data: assets, error: assetError } = await supabase.from('image_assets').select('id, public_url').in('id', assetIds);
+      if (assetError) throw assetError;
+      const urls = new Map<string, string>((assets || []).map(asset => [asset.id as string, asset.public_url as string]));
+      for (const word of cloudWordsData) word.image_url = urls.get(word.image_asset_id) || word.image_url;
+    }
+    await assertCurrentUser(userId);
 
     const priority = compareSessionPriority(
       localSession,
@@ -542,7 +479,8 @@ export const syncSessionToCloud = async (
         return {
           success: true,
           action: 'skipped',
-          message: 'Local and cloud are already in sync'
+          message: 'Local and cloud are already in sync',
+          cloudData: { session: cloudSessionData, words: cloudWordsData }
         };
 
       case 'conflict':
@@ -574,200 +512,65 @@ export const syncSessionToCloud = async (
 /**
  * 上传新 Session（云端不存在）
  */
-const uploadNewSession = async (
-  userId: string,
-  session: InputSession,
-  words: WordEntry[]
-): Promise<SyncResult> => {
-  try {
-    // 1. 创建 Session
-    const { data: sessionData, error: sessionError } = await supabase
-      .from('sessions')
-      .insert({
-        id: session.id, // 使用本地生成的 ID
-        user_id: userId,
-        word_count: session.wordCount,
-        target_count: session.targetCount,
-        library_tag: session.libraryTag,
-        created_at: new Date(session.timestamp).toISOString()
-      })
-      .select()
-      .single();
-
-    if (sessionError) {
-      console.error('[SyncService] ❌ Session insert error:', sessionError);
-      console.error('[SyncService]    Error code:', sessionError.code);
-      console.error('[SyncService]    Error message:', sessionError.message);
-      console.error('[SyncService]    Error details:', sessionError.details);
-      console.error('[SyncService]    Error hint:', sessionError.hint);
-      throw sessionError;
+const syncSessionWords = async (userId: string, session: InputSession, words: WordEntry[]): Promise<void> => {
+  const uniqueWords = [...new Map(words.map(word => [word.id, word])).values()];
+  if (uniqueWords.some(word => word.sessionId !== session.id)) throw new Error('单词与词库归属不符，已停止同步。');
+  for (let offset = 0; offset < uniqueWords.length; offset += 100) {
+    const batch = uniqueWords.slice(offset, offset + 100);
+    await assertCurrentUser(userId);
+    // ON CONFLICT DO NOTHING is race-safe: an existing word and its FK-linked
+    // learning events are never deleted, replaced, or given a stale snapshot.
+    const { error: insertError } = await supabase.from('words').upsert(
+      batch.map(word => newWordRow(userId, session.id, word)),
+      { onConflict: 'id', ignoreDuplicates: true },
+    );
+    if (insertError) throw insertError;
+    for (let index = 0; index < batch.length; index += 4) {
+      await assertCurrentUser(userId);
+      await Promise.all(batch.slice(index, index + 4).map(async word => {
+        const { error } = await supabase.from('words').update(wordMetadata(word))
+          .eq('id', word.id).eq('user_id', userId).eq('session_id', session.id)
+          .or('deleted.eq.false,deleted.is.null');
+        if (error) throw error;
+      }));
     }
-
-    // 2. 批量插入 Words（不包含图片数据）
-    console.log(`[SyncService] 📝 Preparing to insert ${words.length} words...`);
-    const wordsPayload = words.map(w => ({
-      id: w.id,
-      user_id: userId,
-      session_id: session.id,
-      text: w.text,
-      correct: w.correct,
-      tested: w.tested,
-      error_count: w.error_count || 0,
-      best_time_ms: w.best_time_ms,
-      last_tested: w.last_tested ? new Date(w.last_tested).toISOString() : null,
-      phonetic: w.phonetic,
-      audio_url: w.audio_url,
-      definition_cn: w.definition_cn,
-      definition_en: w.definition_en,
-      tags: w.tags,
-      created_at: new Date(w.timestamp).toISOString()
-    }));
-
-    const { error: wordsError } = await supabase
-      .from('words')
-      .insert(wordsPayload);
-
-    if (wordsError) {
-      console.error('[SyncService] ❌ Words insert error:', wordsError);
-      console.error('[SyncService]    Error code:', wordsError.code);
-      console.error('[SyncService]    Error message:', wordsError.message);
-      console.error('[SyncService]    Error details:', wordsError.details);
-      console.error('[SyncService]    Error hint:', wordsError.hint);
-      throw wordsError;
-    }
-
-    console.log(`[SyncService] ✅ Uploaded new session ${session.id} with ${words.length} words`);
-
-    return {
-      success: true,
-      action: 'uploaded',
-      message: 'Successfully uploaded to cloud'
-    };
-
-  } catch (error) {
-    console.error('[SyncService] ❌ Upload failed with exception:', error);
-    console.error('[SyncService]    Error name:', (error as any).name);
-    console.error('[SyncService]    Error message:', (error as Error).message);
-    console.error('[SyncService]    Error stack:', (error as any).stack);
-    return {
-      success: false,
-      action: 'error',
-      message: `Upload failed: ${(error as Error).message}`
-    };
   }
 };
 
-/**
- * 更新云端 Session（本地优先）
- */
-const updateCloudSession = async (
-  userId: string,
-  session: InputSession,
-  words: WordEntry[]
-): Promise<SyncResult> => {
+const uploadNewSession = async (userId: string, session: InputSession, words: WordEntry[]): Promise<SyncResult> => {
   try {
-    console.log(`[SyncService] 🔄 Updating session ${session.id} with ${words.length} words`);
-
-    // 1. 更新 Session 元数据
-    const { error: sessionError } = await supabase
-      .from('sessions')
-      .update({
-        word_count: session.wordCount,
-        target_count: session.targetCount,
-        created_at: new Date(session.timestamp).toISOString() // 更新时间戳
-      })
-      .eq('id', session.id)
-      .eq('user_id', userId);
-
-    if (sessionError) {
-      console.error('[SyncService] ❌ Session update error:', sessionError);
-      console.error('[SyncService]    Error code:', sessionError.code);
-      console.error('[SyncService]    Error message:', sessionError.message);
-      console.error('[SyncService]    Error details:', sessionError.details);
-      console.error('[SyncService]    Error hint:', sessionError.hint);
-      throw sessionError;
+    await assertCurrentUser(userId);
+    const { error } = await supabase.from('sessions').insert({
+      id: session.id, user_id: userId, word_count: session.wordCount, target_count: session.targetCount,
+      library_tag: session.libraryTag, deleted: Boolean(session.deleted),
+      created_at: new Date(session.timestamp).toISOString(),
+    });
+    if (error) {
+      // Another device may have inserted this session after our earlier read.
+      // Re-read its contents and run the ordinary conflict decision.
+      throw error;
     }
-
-    // 2. 更新或插入 Words（使用 upsert）
-    const wordsPayload = words.map(w => ({
-      id: w.id,
-      user_id: userId,
-      session_id: session.id,
-      text: w.text,
-      correct: w.correct,
-      tested: w.tested,
-      error_count: w.error_count || 0,
-      best_time_ms: w.best_time_ms,
-      last_tested: w.last_tested ? new Date(w.last_tested).toISOString() : null,
-      phonetic: w.phonetic,
-      audio_url: w.audio_url,
-      definition_cn: w.definition_cn,
-      definition_en: w.definition_en,
-      tags: w.tags,
-      created_at: new Date(w.timestamp).toISOString()
-    }));
-
-    // Supabase 的 upsert 不支持批量，我们分批处理
-    const BATCH_SIZE = 100;
-    const totalBatches = Math.ceil(wordsPayload.length / BATCH_SIZE);
-    console.log(`[SyncService] 📦 Will process ${wordsPayload.length} words in ${totalBatches} batches`);
-
-    for (let i = 0; i < wordsPayload.length; i += BATCH_SIZE) {
-      const batch = wordsPayload.slice(i, i + BATCH_SIZE);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-
-      console.log(`[SyncService] 📝 Processing batch ${batchNum}/${totalBatches} (${batch.length} words)`);
-
-      // 先删除已存在的 words
-      const wordIds = batch.map(w => w.id);
-      const { error: deleteError } = await supabase
-        .from('words')
-        .delete()
-        .in('id', wordIds)
-        .eq('user_id', userId);
-
-      if (deleteError) {
-        console.error('[SyncService] ❌ Batch delete error:', deleteError);
-        console.error('[SyncService]    Error code:', deleteError.code);
-        console.error('[SyncService]    Error message:', deleteError.message);
-        console.error('[SyncService]    Error details:', deleteError.details);
-        console.error('[SyncService]    Error hint:', deleteError.hint);
-        throw deleteError;
-      }
-
-      // 再插入新数据
-      const { error: wordsError } = await supabase
-        .from('words')
-        .insert(batch);
-
-      if (wordsError) {
-        console.error('[SyncService] ❌ Batch insert error:', wordsError);
-        console.error('[SyncService]    Error code:', wordsError.code);
-        console.error('[SyncService]    Error message:', wordsError.message);
-        console.error('[SyncService]    Error details:', wordsError.details);
-        console.error('[SyncService]    Error hint:', wordsError.hint);
-        throw wordsError;
-      }
-    }
-
-    console.log(`[SyncService] Updated session ${session.id} with ${words.length} words`);
-
-    return {
-      success: true,
-      action: 'uploaded',
-      message: 'Local changes uploaded to cloud'
-    };
-
+    await syncSessionWords(userId, session, words);
+    return { success: true, action: 'uploaded', message: 'Successfully uploaded to cloud' };
   } catch (error) {
-    console.error('[SyncService] ❌ Update failed with exception:', error);
-    console.error('[SyncService]    Error name:', (error as any).name);
-    console.error('[SyncService]    Error message:', (error as Error).message);
-    console.error('[SyncService]    Error stack:', (error as any).stack);
-    return {
-      success: false,
-      action: 'error',
-      message: `Update failed: ${(error as Error).message}`
-    };
+    return { success: false, action: 'error', message: `Upload failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+};
+
+const updateCloudSession = async (userId: string, session: InputSession, words: WordEntry[]): Promise<SyncResult> => {
+  try {
+    await assertCurrentUser(userId);
+    const { data, error } = await supabase.from('sessions').update({
+      word_count: session.wordCount, target_count: session.targetCount,
+      library_tag: session.libraryTag, deleted: Boolean(session.deleted),
+      created_at: new Date(session.timestamp).toISOString(),
+    }).eq('id', session.id).eq('user_id', userId).or('deleted.eq.false,deleted.is.null').select('id');
+    if (error) throw error;
+    if (!data?.length) throw new Error('云端词库已删除或不可访问，已停止上传。');
+    await syncSessionWords(userId, session, words);
+    return { success: true, action: 'uploaded', message: 'Local metadata uploaded without changing learning progress' };
+  } catch (error) {
+    return { success: false, action: 'error', message: `Update failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 };
 
@@ -781,6 +584,7 @@ export const resolveConflict = async (
   localData: { session: InputSession; words: WordEntry[] },
   cloudData: { session: InputSession; words: WordEntry[] }
 ): Promise<SyncResult> => {
+  await assertCurrentUser(userId);
   console.log(`[SyncService] Resolving conflict with choice: ${choice}`);
 
   if (choice === 'local') {
@@ -800,6 +604,36 @@ export const resolveConflict = async (
   }
 };
 
+/** Persist only the session snapshot that was actually synchronized. */
+export const persistSessionSyncResult = async (userId: string, session: SessionWithSync, result: SyncResult): Promise<boolean> => {
+  let applied = false;
+  const saved = await localBackupStore.update(current => {
+      const index = current.sessions.findIndex(item => item.id === session.id);
+      if (index < 0) return current;
+      const latest = current.sessions[index];
+      // A save during the network request remains pending for the next sync.
+      if (latest.lastSyncAttempt !== session.lastSyncAttempt || latest.timestamp !== session.timestamp
+        || (latest.localRevision ?? 0) !== (session.localRevision ?? 0)) return current;
+      applied = true;
+      if (result.success) {
+        current.sessions[index] = {
+          ...(result.cloudData?.session ?? latest), syncStatus: 'synced', lastSyncAttempt: Date.now(), localRevision: latest.localRevision,
+        };
+        if (result.cloudData) {
+          current.words = current.words.filter(word => word.sessionId !== session.id);
+          current.words.push(...result.cloudData.words);
+        }
+      } else if (result.action === 'conflict') {
+        current.sessions[index] = { ...latest, syncStatus: 'conflict', conflictData: result.conflictData };
+      } else {
+        current.sessions[index] = { ...latest, syncStatus: 'failed', lastSyncAttempt: Date.now() };
+      }
+      return current;
+    }, userId);
+    if (!saved) throw new Error('同步结果未能保存到本地，请重试。');
+  return applied;
+};
+
 /**
  * 同步所有待同步的 Sessions
  */
@@ -811,7 +645,8 @@ export const syncAllPendingSessions = async (
   failed: number;
   conflicts: number;
 }> => {
-  const backup = await loadLocalBackup();
+  await assertCurrentUser(userId);
+  const backup = await loadLocalBackup(userId);
   if (!backup) {
     return { synced: 0, failed: 0, conflicts: 0 };
   }
@@ -828,6 +663,7 @@ export const syncAllPendingSessions = async (
   let conflicts = 0;
 
   for (let i = 0; i < pendingSessions.length; i++) {
+    await assertCurrentUser(userId);
     const session = pendingSessions[i];
     onProgress?.(i + 1, pendingSessions.length, session.id);
 
@@ -836,46 +672,11 @@ export const syncAllPendingSessions = async (
 
     const result = await syncSessionToCloud(userId, session, localWords);
 
-    if (result.success) {
-      if (result.action === 'uploaded') {
-        // 更新本地状态为 synced
-        session.syncStatus = 'synced';
-        session.lastSyncAttempt = Date.now();
-        synced++;
-      } else if (result.action === 'downloaded') {
-        // 应用云端数据到本地
-        const idx = backup.sessions.findIndex(s => s.id === session.id);
-        if (idx >= 0) {
-          backup.sessions[idx] = {
-            ...result.cloudData!.session,
-            syncStatus: 'synced',
-            lastSyncAttempt: Date.now()
-          };
-        }
-
-        // 更新 words
-        const wordIds = new Set(localWords.map(w => w.id));
-        backup.words = backup.words.filter(w => !wordIds.has(w.id));
-        backup.words.push(...result.cloudData!.words);
-
-        await saveLocalBackup(backup);
-        synced++;
-      } else if (result.action === 'conflict') {
-        session.syncStatus = 'conflict';
-        session.conflictData = result.conflictData;
-        conflicts++;
-      }
-    } else {
-      session.syncStatus = 'failed';
-      session.lastSyncAttempt = Date.now();
-      failed++;
-    }
+    await assertCurrentUser(userId);
+    await persistSessionSyncResult(userId, session, result);
+    if (result.success) synced++;
+    else if (result.action === 'conflict') conflicts++;
+    else failed++;
   }
-
-  // 保存更新后的状态
-  await saveLocalBackup(backup);
-
-  console.log(`[SyncService] Sync complete: ${synced} synced, ${failed} failed, ${conflicts} conflicts`);
-
   return { synced, failed, conflicts };
 };

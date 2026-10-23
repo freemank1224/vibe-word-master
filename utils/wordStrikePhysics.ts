@@ -1,5 +1,5 @@
 // ================================================================
-// WORD STRIKE — Matter.js physics layer.
+// WORD STRIKE — Matter.js physics layer (vertical-drop field).
 //
 // Framework-agnostic wrapper: React owns the lifecycle (create inside
 // useEffect, destroy in cleanup — StrictMode double-mounts), this class owns
@@ -7,19 +7,29 @@
 // renderer letterboxes that world onto the real canvas, so the physics world
 // is never resized at runtime.
 //
-// Brick design: one body PER LETTER linked to its neighbours by TWO
-// zero-length stiff constraints pinned at the shared corners. Matter.js
-// cannot remove parts from a compound body, but individual bodies +
-// constraints can be removed mid-flight — shattering unit k leaves the rest
-// of the bar rigid and falling, which is exactly the Tetris-bar feel.
+// Field layout: letter bricks materialize at the TOP of the field (whole
+// chain visible at once) inside the horizontal fall zone and sink DOWN at a
+// constant set speed (zero gravity, zero air friction — velocity is exact,
+// nothing decays). The gunner rides an elevator on the LEFT (no physics
+// body — the React layer smooths its height) tracking the word, firing
+// level shots. A brick whose bottom edge touches the ground (KILL_LINE_Y =
+// the floor top) has reached it unsolved — there is no drawn fence.
+//
+// Brick design: one body PER LETTER linked to its neighbours by TWO stiff
+// constraints pinned at the shared corners. Matter.js cannot remove parts
+// from a compound body, but individual bodies + constraints can be removed
+// mid-flight — shattering unit k leaves the rest of the bar rigid and
+// sinking, which is exactly the word-bar feel.
 //
 // Collision rules:
-//   bullet × unit   → bullet consumed (one per shot), onBulletHit(unit)
-//   unit  × killzone → onBrickReachedLauncher(unit) — once per brick
+//   bullet × unit   → bullet consumed (one per shot), onBulletHit(unit, contact)
+//   unit  × killzone → onBrickReachedGround() — once per brick
 // Debris only collides with walls (no self-intersection chaos) and is
 // FIFO-culled at a hard cap so long sessions cannot accumulate bodies.
+// NOTE: there is NO right wall — bullets/debris exiting right are handled
+// by the cull predicates instead.
 // ================================================================
-import * as Matter from 'matter-js';
+import Matter from 'matter-js';
 
 export const CATEGORY = {
   UNIT: 0x0001,
@@ -32,20 +42,56 @@ export const CATEGORY = {
 /** Fixed logical resolution — the renderer scales this to the canvas. */
 export const LOGICAL_WORLD = { width: 900, height: 640 } as const;
 
-/** Launcher geometry (logical coords) — shared with the renderer. */
-export const LAUNCHER = {
-  x: LOGICAL_WORLD.width / 2,
-  barrelTopY: LOGICAL_WORLD.height - 104,
-  baseY: LOGICAL_WORLD.height - 34,
+/**
+ * Gun geometry — the elevator gunner's chest/shoulder pivot. pivotX is fixed
+ * on the elevator column; pivotY is DYNAMIC (rides the elevator platform),
+ * so bullets spawn from `pivotX, pivotY(angle)` passed per shot. The muzzle
+ * sits `muzzleLength` px from the pivot along the aim direction — steady
+ * state aims ≈ level (angle ≈ 0), matching the baked-in side-view art gun.
+ */
+export const TURRET = {
+  pivotX: 150,
+  muzzleLength: 67,
 } as const;
 
-/** Brick contacting this line = it reached the launcher. */
-export const KILL_LINE_Y = LAUNCHER.barrelTopY + 18;
+/**
+ * Elevator geometry: the gunner stands on a platform that tracks the word's
+ * height. feetY clamps to [topFeetY, bottomFeetY]; the gun pivot sits
+ * gunOffsetY px above the feet. topFeetY keeps the full sprite frame
+ * (≈150px tall) on-screen at the highest stop; bottomFeetY = the ground.
+ */
+export const ELEVATOR = {
+  topFeetY: 154,
+  bottomFeetY: LOGICAL_WORLD.height - 28,
+  gunOffsetY: 78,
+} as const;
+
+/** Gun pivot Y for a (clamped) elevator feet position. */
+export const getGunPivotY = (feetY: number): number =>
+  Math.min(ELEVATOR.bottomFeetY, Math.max(ELEVATOR.topFeetY, feetY)) - ELEVATOR.gunOffsetY;
+
+/** Ground surface under the elevator's lowest stop (top of the floor body). */
+export const FLOOR_TOP = LOGICAL_WORLD.height - 28;
+
+/**
+ * Failure line = the ground itself: a brick whose bottom edge touches the
+ * floor has reached it unsolved. No drawn fence — the meadow's grass strip
+ * IS the defense line.
+ */
+export const KILL_LINE_Y = FLOOR_TOP;
+
+/** Renderer anchor X + sprite scale source for the elevator gunner. */
+export const MONSTER = { x: 150, height: 105 } as const;
 
 const STEP_MS = 1000 / 60;
 const STEP_MS_PER_FRAME = 3; // max physics steps per frame (avoid spiral of death)
-const UNIT_FRICTION_AIR = 0.02;
-const BULLET_SPEED = 26; // px/step — <= min unit size (26px): no tunnelling
+// MUST stay exactly 0: bricks march at a constant set velocity, and any air
+// friction silently decays that velocity to a crawl across a full crossing.
+// Wobble (if any) is a constraint-damping problem, never an air-friction one.
+const UNIT_FRICTION_AIR = 0;
+// px/step, speed MAGNITUDE is fixed: with any aim angle each per-axis
+// component is <= 26 = min unit size, so diagonal shots cannot tunnel either.
+const BULLET_SPEED = 26;
 const DEBRIS_PER_UNIT = 5;
 const DEBRIS_LIFETIME_MS = 1200;
 const DEBRIS_HARD_CAP = 120;
@@ -65,9 +111,17 @@ export interface BrickState {
 
 export interface WordStrikePhysicsCallbacks {
   /** Bullet reached a unit — the game layer decides hits/misses via matchTypedWord. */
-  onBulletHit: (unit: UnitHandle) => void;
-  /** Brick touched the kill line above the launcher. */
-  onBrickReachedLauncher: () => void;
+  onBulletHit: (unit: UnitHandle, contact: BulletContact) => void;
+  /** A unit touched down on the ground — the brick failed (once per brick). */
+  onBrickReachedGround: () => void;
+}
+
+/** Where/how a bullet connected — feeds the renderer's impact particles. */
+export interface BulletContact {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
 }
 
 interface DebrisEntry {
@@ -99,6 +153,11 @@ export class WordStrikePhysics {
   private consumedBulletIds = new Set<number>();
   private killzoneTriggered = false;
 
+  /** Set downward sink speed (px/step, positive value = downward). Stored so
+   *  spawnBrick can apply it to fresh bodies — the component calls the setter
+   *  BEFORE spawning, when there are no alive units to re-apply to yet. */
+  private brickSpeed = 0;
+
   private accumulator = 0;
   private paused = false;
   private destroyed = false;
@@ -113,8 +172,12 @@ export class WordStrikePhysics {
     this.callbacks = callbacks;
 
     this.engine = Matter.Engine.create();
+    // Zero gravity on both axes: bricks march at a constant set speed. (There
+    // is no per-body gravityScale in matter-js 0.20 — engine-level zero is
+    // the only clean way to exempt the marching bricks while keeping debris
+    // behaviour predictable.)
     this.engine.gravity.x = 0;
-    this.engine.gravity.y = 0.05;
+    this.engine.gravity.y = 0;
     this.engine.gravity.scale = 0.001;
     this.world = this.engine.world;
 
@@ -132,20 +195,32 @@ export class WordStrikePhysics {
     const { width, height } = LOGICAL_WORLD;
     const wallOpts: Matter.IBodyDefinition = {
       isStatic: true,
+      // Gentle rebound: a drifting bar that reaches a side wall eases back
+      // instead of pinging off (pair restitution = max(unit 0.05, wall 0.2)).
+      // Harmless elsewhere: the killzone explodes a bar the same step it
+      // meets the floor, debris keeps its own higher 0.4, bullets are sensors.
+      restitution: 0.2,
       label: 'wall',
       collisionFilter: { category: CATEGORY.WALL, mask: CATEGORY.UNIT | CATEGORY.BULLET | CATEGORY.DEBRIS },
     };
 
     const left = Matter.Bodies.rectangle(-30, height / 2, 60, height * 2, wallOpts);
+    // Right wall at the exact screen edge: the WHOLE bar must stay visible at
+    // all times (user rule) — a unit's right edge stops flush at x = width and
+    // the low restitution eases it back left. Bullets pass through untouched
+    // (sensor) and are still removed by the off-screen cull predicates.
     const right = Matter.Bodies.rectangle(width + 30, height / 2, 60, height * 2, wallOpts);
     const top = Matter.Bodies.rectangle(width / 2, -30, width * 2, 60, wallOpts);
-    // Floor sits BELOW the kill line: shattered debris (and post-hit fragments)
-    // rest at the base of the launcher rather than falling out of the world.
+    // Ground strip under the elevator's lowest stop: debris in a zero-g world
+    // still has a floor to settle against after the sinking bar shatters.
     const floor = Matter.Bodies.rectangle(width / 2, height - 14, width + 120, 28, wallOpts);
 
     // Sensor (no physical push): the moment a unit overlaps it, the brick has
-    // reached the launcher. Sits at the kill line so contact reads visually.
-    const killzone = Matter.Bodies.rectangle(LAUNCHER.x, KILL_LINE_Y + 10, width, 12, {
+    // touched down and failed. A thin horizontal slab hugging the floor top —
+    // overlap begins exactly when a unit's bottom edge meets the ground;
+    // spans the full width (×2) to cover the whole fall zone. Units sink
+    // ≤ ~2.2px/step vs an 8px sensor, so collisionStart can never tunnel.
+    const killzone = Matter.Bodies.rectangle(width / 2, KILL_LINE_Y + 4, width * 2, 8, {
       isStatic: true,
       isSensor: true,
       label: 'killzone',
@@ -159,7 +234,11 @@ export class WordStrikePhysics {
   // brick lifecycle
   // ----------------------------------------------------------------
 
-  spawnBrick(word: string, wordId: string, opts: { centerX: number; y: number; unitSize: number }): void {
+  spawnBrick(
+    word: string,
+    wordId: string,
+    opts: { centerX: number; y: number; unitSize: number }
+  ): void {
     this.clearBrick();
 
     const letters = word.trim().toLowerCase().split('');
@@ -183,6 +262,13 @@ export class WordStrikePhysics {
       });
       this.units.push({ unitIndex: index, letter, body });
     });
+
+    // Sink speed: the stored set speed (see setBrickSpeed). The whole bar
+    // moves as one because every unit gets the same velocity — the joint
+    // chain stays inert.
+    for (const unit of this.units) {
+      Matter.Body.setVelocity(unit.body, { x: 0, y: this.brickSpeed });
+    }
 
     // Two constraints per joint, pinned at the facing corners: one pin alone
     // still lets the pair shear/rotate; two make it rigid. The bodies are
@@ -273,7 +359,10 @@ export class WordStrikePhysics {
     return this.units;
   }
 
-  /** Lowest edge of the surviving bar — used by the danger proximity HUD. */
+  /**
+   * Bottom (lowest) edge of the surviving bar — the side that touches the
+   * ground first. Null when no brick is live.
+   */
   getBrickBottomY(): number | null {
     if (this.units.length === 0) return null;
     let bottom = -Infinity;
@@ -283,19 +372,58 @@ export class WordStrikePhysics {
     return bottom;
   }
 
+  /**
+   * Average position + velocity of the surviving bar — the elevator gunner's
+   * aim point. The bar moves as one rigid body (joint chain), so the average
+   * is its effective center; null when no brick is live.
+   */
+  getBrickCenter(): { x: number; y: number; vx: number; vy: number } | null {
+    if (this.units.length === 0) return null;
+    let x = 0;
+    let y = 0;
+    let vx = 0;
+    let vy = 0;
+    for (const unit of this.units) {
+      x += unit.body.position.x;
+      y += unit.body.position.y;
+      vx += unit.body.velocity.x;
+      vy += unit.body.velocity.y;
+    }
+    const n = this.units.length;
+    return { x: x / n, y: y / n, vx: vx / n, vy: vy / n };
+  }
+
   // ----------------------------------------------------------------
   // bullets
   // ----------------------------------------------------------------
 
-  fireBullet(x: number, y: number): Matter.Body {
+  /**
+   * Fire an energy bolt from the elevator gun's muzzle along `angle`
+   * (atan2 radians) from the given pivot height (rides the elevator). The
+   * speed MAGNITUDE stays BULLET_SPEED for every angle, so each per-axis
+   * component stays <= the 26px minimum unit size — the anti-tunnelling
+   * invariant survives the rework.
+   */
+  fireBullet(angle: number, pivotY: number): Matter.Body {
+    const x = TURRET.pivotX + Math.cos(angle) * TURRET.muzzleLength;
+    const y = pivotY + Math.sin(angle) * TURRET.muzzleLength;
     const bullet = Matter.Bodies.circle(x, y, 7, {
       label: 'bullet',
       frictionAir: 0,
       restitution: 0,
+      // Sensor: the bullet must NEVER resolve physically. A solid body here
+      // dumps its 26px/step momentum into the hit unit — and because units
+      // run frictionAir exactly 0, any sideways velocity it imparts never
+      // decays and the surviving bar (wrong-word hit) drifts off-screen.
+      // Sensors still fire collisionStart, so hit detection is unchanged.
+      isSensor: true,
       collisionFilter: { category: CATEGORY.BULLET, mask: CATEGORY.UNIT | CATEGORY.WALL },
-      plugin: { kind: 'bullet' },
+      plugin: { kind: 'bullet', angle },
     });
-    Matter.Body.setVelocity(bullet, { x: 0, y: -BULLET_SPEED });
+    Matter.Body.setVelocity(bullet, {
+      x: Math.cos(angle) * BULLET_SPEED,
+      y: Math.sin(angle) * BULLET_SPEED,
+    });
     this.bullets.push({ body: bullet, bornAt: this.nowMs() });
     Matter.Composite.add(this.world, bullet);
     return bullet;
@@ -309,7 +437,7 @@ export class WordStrikePhysics {
    * Shatter specific units (hit letters, or ALL remaining on a life-loss
    * explosion). Removes bodies and spawns physics debris, then REBUILDS the
    * joint chain so the surviving units stay linked in letter order — the bar
-   * bridges each gap and keeps falling as one body.
+   * bridges each gap and keeps sinking as one body.
    */
   shatterUnits(unitIndexes: number[]): void {
     const indexSet = new Set(unitIndexes);
@@ -383,14 +511,20 @@ export class WordStrikePhysics {
         Matter.Composite.remove(this.world, bullet);
         const unit = this.units.find((u) => u.body.id === unitBody.id);
         if (unit) {
-          this.callbacks.onBulletHit(unit);
+          const support = pair.collision.supports[0];
+          this.callbacks.onBulletHit(unit, {
+            x: support ? support.x : bullet.position.x,
+            y: support ? support.y : bullet.position.y,
+            vx: bullet.velocity.x,
+            vy: bullet.velocity.y,
+          });
         }
         continue;
       }
 
       if (unitBody && killzone && !this.killzoneTriggered) {
         this.killzoneTriggered = true;
-        this.callbacks.onBrickReachedLauncher();
+        this.callbacks.onBrickReachedGround();
       }
     }
   }
@@ -399,9 +533,17 @@ export class WordStrikePhysics {
   // difficulty + stepping
   // ----------------------------------------------------------------
 
-  /** Difficulty ramp: 0.05 (floaty) → 0.18 (brisk). See services/wordStrike.ts. */
-  setGravityScale(value: number): void {
-    this.engine.gravity.y = value;
+  /**
+   * Set the downward sink speed (px/step, positive value). Stores it (so the
+   * NEXT spawnBrick applies it to fresh bodies) and re-applies it to any
+   * alive units — a mid-flight gear change takes effect on the in-flight bar
+   * immediately. Uniform velocity, so the stiffness-1 joint chain stays inert.
+   */
+  setBrickSpeed(pxPerStep: number): void {
+    this.brickSpeed = pxPerStep;
+    for (const unit of this.units) {
+      Matter.Body.setVelocity(unit.body, { x: 0, y: pxPerStep });
+    }
   }
 
   update(dtMs: number): void {
@@ -434,7 +576,14 @@ export class WordStrikePhysics {
     }
 
     const expiredBullets = this.bullets.filter(
-      (b) => now - b.bornAt > BULLET_LIFETIME_MS || b.body.position.y < -80
+      (b) =>
+        now - b.bornAt > BULLET_LIFETIME_MS ||
+        b.body.position.y < -80 ||
+        // Level shots can exit through the side walls' collision gaps, and
+        // over-pitched shots can dip below the field.
+        b.body.position.y > LOGICAL_WORLD.height + 80 ||
+        b.body.position.x < -80 ||
+        b.body.position.x > LOGICAL_WORLD.width + 80
     );
     if (expiredBullets.length > 0) {
       Matter.Composite.remove(this.world, expiredBullets.map((b) => b.body));
@@ -504,7 +653,10 @@ export class WordStrikePhysics {
     this.debris = [];
     this.bullets = [];
     this.consumedBulletIds.clear();
-    this.callbacks = { onBulletHit: () => {}, onBrickReachedLauncher: () => {} };
+    this.callbacks = {
+      onBulletHit: () => {},
+      onBrickReachedGround: () => {},
+    };
   }
 
   private nowMs(): number {

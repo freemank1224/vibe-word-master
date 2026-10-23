@@ -3,12 +3,18 @@ import { HoverTranslationText } from './HoverTranslationText';
 import { WordStrikeLeaderboardPanel } from './WordStrikeLeaderboardPanel';
 import { InputSession, WordEntry, WordStrikeCardResult, WordStrikeGameSummary } from '../types';
 import {
+  WORD_STRIKE_BG_SRC,
+  WORD_STRIKE_BLOCK_SRCS,
   WORD_STRIKE_LIVES,
   WORD_STRIKE_MIN_WORDS,
+  WORD_STRIKE_SPAWN_CENTER_Y,
   applyWordStrikeScope,
   calculateWordStrikeGameSummary,
+  getWordStrikeAimAngle,
+  getWordStrikeBrickSpeed,
   getWordStrikeCandidateWords,
-  getWordStrikeGravityScale,
+  getWordStrikeSpawnColumnX,
+  getWordStrikeSpritePaths,
   getWordStrikeUnitSize,
   matchTypedWord,
   normalizeWordStrikeInput,
@@ -16,13 +22,17 @@ import {
   type WordStrikeScope,
 } from '../services/wordStrike';
 import {
-  KILL_LINE_Y,
-  LAUNCHER,
+  BulletContact,
+  ELEVATOR,
   LOGICAL_WORLD,
+  TURRET,
   UnitHandle,
   WordStrikePhysics,
+  getGunPivotY,
 } from '../utils/wordStrikePhysics';
 import {
+  WRONG_FLASH_MS,
+  WordStrikeAimTarget,
   WordStrikeFloater,
   WordStrikeGhost,
   WordStrikeRenderer,
@@ -60,12 +70,11 @@ interface PendingShot {
   applied: boolean;
 }
 
-const BRICK_SPAWN_Y = 56;
 const NEXT_BRICK_DELAY_MS = 950;
 const SHOT_RESOLVE_TIMEOUT_MS = 900; // bullet flew past everything → apply anyway
 
 // ----------------------------------------------------------------
-// Fall-speed setting — 3 gears, persisted; 'fast' matches the original
+// March-speed setting — 3 gears, persisted; 'fast' matches the original
 // (tuned) curve, slower gears stretch time-to-think for casual drilling.
 // ----------------------------------------------------------------
 type StrikeSpeed = 'slow' | 'normal' | 'fast';
@@ -148,6 +157,8 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   const [result, setResult] = useState<WordStrikeGameSummary | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  /** One-shot feedback flash on the replay button after each trigger. */
+  const [replayPulsing, setReplayPulsing] = useState(false);
 
   // Candidate availability per scope (for the scope picker + entry gate).
   const scopeCounts = useMemo(() => {
@@ -210,10 +221,19 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   const brickActivatedAtRef = useRef<number | null>(null);
   const brickDeadRef = useRef(false);
   const pendingShotsRef = useRef<PendingShot[]>([]);
+  /** Position → confirmed-correct letter, banked across attempts (drawn green
+   *  on the tile). Reset per brick. */
+  const revealedLettersRef = useRef<string[]>([]);
+  /** Position → timestamp until which the tile flashes red (wrong input). */
+  const wrongFlashRef = useRef<Record<number, number>>({});
   const ghostsRef = useRef<WordStrikeGhost[]>([]);
   const floatersRef = useRef<WordStrikeFloater[]>([]);
   const lastShotAtRef = useRef(0);
   const recoilRef = useRef(0);
+  /** Live aim angle — written by the rAF tick, read by fire(). 0 = straight right. */
+  const aimAngleRef = useRef(0);
+  /** Elevator platform height (feet Y) — smoothed toward the live word. */
+  const elevatorYRef = useRef(ELEVATOR.bottomFeetY);
   const gameStartTimeRef = useRef<number | null>(null);
   const finalizeGuardRef = useRef(false);
   const resultSubmittedRef = useRef(false);
@@ -236,7 +256,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     return id;
   }, []);
 
-  /** Switch fall-speed gear; persists and live-applies to the falling brick. */
+  /** Switch march-speed gear; persists and live-applies to the in-flight brick. */
   const changeSpeed = useCallback((next: StrikeSpeed) => {
     setSpeed(next);
     speedRef.current = next;
@@ -245,8 +265,8 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     } catch {
       // private mode — the gear still applies for this session
     }
-    physicsRef.current?.setGravityScale(
-      getWordStrikeGravityScale(brickIndexRef.current) * SPEED_FACTOR[next]
+    physicsRef.current?.setBrickSpeed(
+      getWordStrikeBrickSpeed(brickIndexRef.current) * SPEED_FACTOR[next]
     );
   }, []);
 
@@ -378,13 +398,24 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     wordLettersMissedRef.current = 0;
     ghostsRef.current = [];
     typedRef.current = '';
+    // Fresh dictation slate: nothing revealed, no wrong-input flashes.
+    revealedLettersRef.current = [];
+    wrongFlashRef.current = {};
 
     const text = normalizeWordStrikeInput(word.text);
     const unitSize = getWordStrikeUnitSize(text.length, LOGICAL_WORLD.width);
-    physics.setGravityScale(
-      getWordStrikeGravityScale(brickIndexRef.current) * SPEED_FACTOR[speedRef.current]
+    // Difficulty = deterministic index ramp × gear; set BEFORE spawnBrick so
+    // the fresh bar is born at speed (the setter also re-applies to in-flight
+    // bars when called on a gear change).
+    physics.setBrickSpeed(
+      getWordStrikeBrickSpeed(brickIndexRef.current) * SPEED_FACTOR[speedRef.current]
     );
-    physics.spawnBrick(text, word.id, { centerX: LOGICAL_WORLD.width / 2, y: BRICK_SPAWN_Y, unitSize });
+    // Spawn at the top of the field on a deterministic column so the WHOLE
+    // word is visible at once; the elevator then tracks it down.
+    const barWidth = text.length * unitSize;
+    const centerX = getWordStrikeSpawnColumnX(brickIndexRef.current, barWidth);
+    const y = WORD_STRIKE_SPAWN_CENTER_Y;
+    physics.spawnBrick(text, word.id, { centerX, y, unitSize });
     brickActivatedAtRef.current = Date.now() - (gameStartTimeRef.current || Date.now());
 
     // Design point: every new brick announces itself.
@@ -425,11 +456,28 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     setCollectedCards((prev) => [word, ...prev]);
 
     inputLockedRef.current = true;
-    physicsRef.current?.clearBrick();
+
+    // Snapshot the bar BEFORE clearBrick — the celebration burst replays the
+    // letters flying off their last live positions (reveal allowed: word done).
+    const physics = physicsRef.current;
+    const burstUnits = physics
+      ? physics.getAliveUnits().map((u) => ({ x: u.body.position.x, y: u.body.position.y, letter: u.letter }))
+      : [];
+    const barCenter = burstUnits.length
+      ? {
+          x: burstUnits.reduce((sum, u) => sum + u.x, 0) / burstUnits.length,
+          y: burstUnits.reduce((sum, u) => sum + u.y, 0) / burstUnits.length,
+        }
+      : undefined;
+    rendererRef.current?.spawnWordBurst(burstUnits, barCenter);
+    rendererRef.current?.triggerMonsterState('cheer');
+    physics?.shake(8);
+
+    physics?.clearBrick();
     trackTimeout(advanceToNextBrick, NEXT_BRICK_DELAY_MS);
   }, [advanceToNextBrick, trackTimeout]);
 
-  const handleBrickReachedLauncher = useCallback(() => {
+  const handleBrickReachedGround = useCallback(() => {
     const physics = physicsRef.current;
     const word = activeWordRef.current;
     if (!physics || !word || brickDeadRef.current) return;
@@ -440,6 +488,22 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
 
     playExplosion();
     physics.shake(18);
+
+    // Monster flinches + red vignette; the burst snapshot is taken BEFORE the
+    // shatter and deliberately carries NO letters (dictation anti-spoiler —
+    // a lost brick must never reveal its word).
+    const burstUnits = physics.getAliveUnits().map((u) => ({ x: u.body.position.x, y: u.body.position.y }));
+    const barCenter = burstUnits.length
+      ? {
+          x: burstUnits.reduce((sum, u) => sum + u.x, 0) / burstUnits.length,
+          y: burstUnits.reduce((sum, u) => sum + u.y, 0) / burstUnits.length,
+        }
+      : undefined;
+    const renderer = rendererRef.current;
+    renderer?.triggerMonsterState('hurt');
+    renderer?.triggerHurtFlash();
+    renderer?.spawnBrickExplosion(burstUnits, barCenter);
+
     // Everything still alive goes up in debris — the explosion IS the shatter.
     physics.shatterUnits(physics.getAliveUnits().map((u) => u.unitIndex));
     physics.clearBrick();
@@ -492,6 +556,53 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
       }
       const now = performance.now();
 
+      if (!shot.match.isFullMatch) {
+        // ---- non-lethal hit: the bar is struck but HOLDS TOGETHER ----
+        // The full word must still be spelled, so nothing shatters: the bar
+        // wobbles as a whole, correctly-typed letters bank onto their tiles
+        // (drawn green from now on) and wrongly-typed tiles flash red —
+        // positions the player never typed stay calm.
+        rendererRef.current?.triggerBrickShake();
+
+        let newlyRevealed = 0;
+        for (const index of shot.match.hits) {
+          if (!revealedLettersRef.current[index]) {
+            const unit = aliveBefore.get(index);
+            if (unit) {
+              revealedLettersRef.current[index] = unit.letter;
+              newlyRevealed += 1;
+            }
+          }
+        }
+
+        for (const index of shot.match.misses) {
+          if (index < shot.typedLength) {
+            wrongFlashRef.current[index] = now + WRONG_FLASH_MS;
+          }
+        }
+
+        comboRef.current = 0;
+        setCombo(0);
+        playMiss();
+
+        lettersFiredTotalRef.current += shot.typedLength;
+        lettersHitTotalRef.current += shot.match.hits.length;
+        wordLettersHitRef.current += shot.match.hits.length;
+        wordLettersMissedRef.current += shot.match.missCount;
+
+        // Only first-time reveals pay out — re-typing banked letters neither
+        // scores nor rebuilds the combo.
+        const gained = newlyRevealed * 10;
+        if (gained > 0) {
+          scoreRef.current += gained;
+          setScore(scoreRef.current);
+        }
+
+        inputLockedRef.current = false;
+        return;
+      }
+
+      // ---- lethal hit: a perfect spell shatters the whole bar ----
       // Ghost letters must be recorded BEFORE shatter removes the bodies.
       const newlyHit = shot.match.hits.filter((i) => aliveBefore.has(i));
       for (const index of newlyHit) {
@@ -512,34 +623,15 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
         playShatter();
       }
 
-      for (const index of shot.match.misses) {
-        const unit = aliveBefore.get(index);
-        if (unit) {
-          floatersRef.current.push({
-            x: unit.body.position.x,
-            y: unit.body.position.y - 18,
-            text: 'MISS',
-            color: '#FF4D4F',
-            bornAt: now,
-          });
-        }
-      }
-
       // ---- scoring ----
       lettersFiredTotalRef.current += shot.typedLength;
       lettersHitTotalRef.current += newlyHit.length;
       wordLettersHitRef.current += newlyHit.length;
       wordLettersMissedRef.current += shot.match.missCount;
 
-      if (shot.match.missCount > 0) {
-        comboRef.current = 0;
-        setCombo(0);
-        playMiss();
-      } else if (newlyHit.length > 0 || shot.match.hits.length > 0) {
-        comboRef.current += 1;
-        maxComboRef.current = Math.max(maxComboRef.current, comboRef.current);
-        setCombo(comboRef.current);
-      }
+      comboRef.current += 1;
+      maxComboRef.current = Math.max(maxComboRef.current, comboRef.current);
+      setCombo(comboRef.current);
 
       const multiplier = 1 + Math.min(comboRef.current, 10) * 0.1;
       const gained = Math.round(newlyHit.length * 10 * multiplier);
@@ -558,11 +650,13 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     [completeBrick]
   );
 
-  /** Replay the current word's TTS (` / ~ key, or the chip speaker button). */
+  /** Replay the current word's TTS (` / ~ key, or the top-bar replay chip). */
   const replayCurrentWord = useCallback(() => {
     const word = activeWordRef.current;
     if (!word || phaseRef.current !== 'PLAYING') return;
     void playWordPronunciation(word.text, word.language || 'en', undefined, word.audio_url);
+    setReplayPulsing(true);
+    window.setTimeout(() => setReplayPulsing(false), 320);
   }, []);
 
   const fire = useCallback(() => {
@@ -575,7 +669,17 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     if (!typed) return;
 
     playGunshot();
-    physics.fireBullet(LAUNCHER.x, LAUNCHER.barrelTopY - 26);
+    // Directional fire along the live gun angle from the elevator pivot;
+    // muzzle FX at the exact bolt spawn point (same geometry the physics uses).
+    const angle = aimAngleRef.current;
+    const pivotY = getGunPivotY(elevatorYRef.current);
+    physics.fireBullet(angle, pivotY);
+    rendererRef.current?.spawnMuzzleFlash(
+      TURRET.pivotX + Math.cos(angle) * TURRET.muzzleLength,
+      pivotY + Math.sin(angle) * TURRET.muzzleLength,
+      angle
+    );
+    rendererRef.current?.triggerMonsterState('shoot');
     lastShotAtRef.current = performance.now();
     recoilRef.current = 1;
     attemptsRef.current += 1;
@@ -598,16 +702,20 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   // always reaches the freshest closures without re-creating the engine.
   // ----------------------------------------------------------------
 
-  const onBulletHitRef = useRef((_unit: UnitHandle) => {});
-  onBulletHitRef.current = (unit: UnitHandle) => {
-    // Any unit contact resolves the oldest in-flight shot.
+  const onBulletHitRef = useRef((_unit: UnitHandle, _contact: BulletContact) => {});
+  onBulletHitRef.current = (unit: UnitHandle, contact: BulletContact) => {
+    // Impact FX at the true contact point, then the oldest in-flight shot
+    // resolves against whatever unit the bullet touched.
+    rendererRef.current?.spawnImpact(contact.x, contact.y, Math.atan2(contact.vy, contact.vx));
+    rendererRef.current?.triggerUnitFlash();
+    physicsRef.current?.shake(3);
     const shot = pendingShotsRef.current.find((s) => !s.applied);
     if (!shot) return;
     applyShotResult(shot);
   };
 
-  const onBrickReachedLauncherRef = useRef(() => {});
-  onBrickReachedLauncherRef.current = () => handleBrickReachedLauncher();
+  const onBrickReachedGroundRef = useRef(() => {});
+  onBrickReachedGroundRef.current = () => handleBrickReachedGround();
 
   // ----------------------------------------------------------------
   // mount: physics + renderer + resize observer
@@ -619,16 +727,22 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     if (!canvas || !container) return;
 
     const physics = new WordStrikePhysics({
-      onBulletHit: (unit) => onBulletHitRef.current(unit),
-      onBrickReachedLauncher: () => onBrickReachedLauncherRef.current(),
+      onBulletHit: (unit, contact) => onBulletHitRef.current(unit, contact),
+      onBrickReachedGround: () => onBrickReachedGroundRef.current(),
     });
     physicsRef.current = physics;
     physics.pause(); // stays paused until COUNTDOWN → PLAYING
 
     const renderer = new WordStrikeRenderer(canvas);
     rendererRef.current = renderer;
-    // The app's daily MONSTER mans the turret (public/monsterImages/M{0-6}.webp).
-    renderer.setMonsterImage(`/monsterImages/M${new Date().getDay()}.webp`);
+    // Daily MONSTER mans the turret: top-down strike keyframes first, the
+    // legacy front-view webp as mid-tier fallback (drawn upright, only the
+    // gun swings), vector blob last. Every slot fails independently.
+    const day = new Date().getDay();
+    renderer.setMonsterFrames(getWordStrikeSpritePaths(day));
+    renderer.setMonsterImage(`/monsterImages/M${day}.webp`);
+    renderer.setBackgroundImage(WORD_STRIKE_BG_SRC);
+    renderer.setBlockTextures(WORD_STRIKE_BLOCK_SRCS);
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
@@ -654,11 +768,14 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   // ----------------------------------------------------------------
 
   useEffect(() => {
-    if (phase !== 'PLAYING') return;
+    // COUNTDOWN also draws (grass field + idle gunner) — physics stays paused.
+    if (phase !== 'PLAYING' && phase !== 'COUNTDOWN') return;
 
-    physicsRef.current?.resume();
-    if (gameStartTimeRef.current == null) {
-      gameStartTimeRef.current = Date.now();
+    if (phase === 'PLAYING') {
+      physicsRef.current?.resume();
+      if (gameStartTimeRef.current == null) {
+        gameStartTimeRef.current = Date.now();
+      }
     }
 
     let last = performance.now();
@@ -669,7 +786,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
       const physics = physicsRef.current;
       const renderer = rendererRef.current;
       if (physics && renderer) {
-        if (!document.hidden) {
+        if (!document.hidden && phaseRef.current === 'PLAYING') {
           physics.update(dt);
 
           // Fallback: a shot whose bullet somehow never connected (flew
@@ -684,11 +801,33 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
 
         recoilRef.current *= 0.86;
 
-        const brickBottom = physics.getBrickBottomY();
-        const danger =
-          brickBottom == null
-            ? 0
-            : Math.max(0, Math.min(1, 1 - (brickBottom - KILL_LINE_Y) / 180));
+        // Elevator tracking: the platform carries the gun pivot to the word's
+        // height, exponentially smoothed (rate 5/s → ~0.7s across the full
+        // travel; slower drift back to the ground when nothing is in flight).
+        const center = physics.getBrickCenter();
+        const feetTarget = center
+          ? Math.min(ELEVATOR.bottomFeetY, Math.max(ELEVATOR.topFeetY, center.y + ELEVATOR.gunOffsetY))
+          : ELEVATOR.bottomFeetY;
+        elevatorYRef.current +=
+          (feetTarget - elevatorYRef.current) * Math.min(1, (dt / 1000) * (center ? 5 : 1.2));
+
+        // Per-frame gun aiming: lead the sinking bar's center by its
+        // velocity from the live pivot height. No brick → aimTarget null and
+        // the gun relaxes straight right.
+        let aimTarget: WordStrikeAimTarget | null = null;
+        if (center) {
+          const pivotY = getGunPivotY(elevatorYRef.current);
+          const angle = getWordStrikeAimAngle(
+            TURRET.pivotX,
+            pivotY,
+            center.x,
+            center.y,
+            center.vx,
+            center.vy
+          );
+          aimAngleRef.current = angle;
+          aimTarget = { angle, x: center.x, y: center.y };
+        }
 
         renderer.draw(physics, {
           ghosts: ghostsRef.current,
@@ -696,8 +835,11 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
           lastShotAt: lastShotAtRef.current,
           recoil: recoilRef.current,
           typed: typedRef.current,
-          danger,
+          revealed: revealedLettersRef.current.join(''),
+          wrongFlash: wrongFlashRef.current,
           now,
+          aimTarget,
+          elevatorFeetY: elevatorYRef.current,
         });
       }
 
@@ -866,27 +1008,36 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
     : [];
 
   return (
-    <div className="fixed inset-0 z-[90] overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(0,240,255,0.10),_transparent_30%),linear-gradient(180deg,_rgba(9,12,16,0.96),_rgba(12,14,18,1))]">
-      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(180deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:26px_26px] opacity-30" />
+    <div className="fixed inset-0 z-[90] overflow-hidden bg-[radial-gradient(ellipse_at_center,_#232338_0%,_#1A1A2E_55%,_#0F0F20_100%)]">
       <div className="relative flex h-[100dvh] flex-col px-3 pb-3 pt-3 md:px-5 md:pb-4 md:pt-4">
         {/* compact single-row game HUD — every pixel of vertical space goes to
-            the arena. Definition hint folds in here too (the ONLY on-screen
-            hint while the brick falls; never the word or its phonetic). */}
+            the arena. The replay chip is ALWAYS on during play (keyboard or
+            mouse, works with or without a CN definition); the definition hint
+            folds in beside it (the ONLY on-screen hint while the brick falls;
+            never the word or its phonetic). */}
         <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 items-center gap-2 md:gap-3">
             <h2 className="shrink-0 font-headline text-xl text-white md:text-2xl">
               <HoverTranslationText text="Word Strike" translation="单词射击" />
             </h2>
+            {phase === 'PLAYING' && (
+              <button
+                onClick={replayCurrentWord}
+                title="Replay pronunciation ( ~ )"
+                className={`flex shrink-0 items-center gap-1.5 rounded-xl border border-electric-blue/40 bg-electric-blue/10 px-2.5 py-1 text-electric-blue transition-all hover:border-electric-blue hover:bg-electric-blue/20 ${
+                  replayPulsing ? 'scale-110 border-electric-blue shadow-[0_0_14px_rgba(0,240,255,0.45)]' : ''
+                }`}
+                aria-label="replay pronunciation"
+              >
+                <span className="material-symbols-outlined text-[18px]">volume_up</span>
+                <span className="hidden font-mono text-[10px] uppercase tracking-[0.15em] sm:inline">
+                  <HoverTranslationText text="Replay" translation="重读" />
+                </span>
+                <span className="font-mono text-[10px] text-electric-blue/60 sm:hidden">~</span>
+              </button>
+            )}
             {phase === 'PLAYING' && hintDefinition && (
-              <div className="flex min-w-0 items-center gap-2 rounded-xl border border-electric-purple/40 bg-electric-purple/10 px-3 py-1">
-                <button
-                  onClick={replayCurrentWord}
-                  title="Replay pronunciation ( ~ )"
-                  className="shrink-0 text-electric-purple/80 transition-colors hover:text-electric-purple"
-                  aria-label="replay pronunciation"
-                >
-                  <span className="material-symbols-outlined text-[16px]">volume_up</span>
-                </button>
+              <div className="flex min-w-0 items-center rounded-xl border border-electric-purple/40 bg-electric-purple/10 px-3 py-1">
                 <span className="min-w-0 truncate text-xs text-electric-purple">{hintDefinition}</span>
               </div>
             )}
@@ -925,12 +1076,6 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
           </div>
         </div>
 
-        {bannerMessage && (phase === 'PLAYING' || phase === 'COUNTDOWN') && (
-          <div className="pointer-events-none absolute left-1/2 top-1/2 z-40 -translate-x-1/2 -translate-y-1/2 font-headline text-7xl text-electric-green drop-shadow-[0_0_24px_rgba(46,230,124,0.6)]">
-            <HoverTranslationText text={bannerMessage} translation={bannerMessage === 'GO!' ? '开始！' : bannerMessage} />
-          </div>
-        )}
-
         {/* INTRO */}
         {phase === 'INTRO' && (
           <div className="flex flex-1 items-center justify-center">
@@ -939,8 +1084,8 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                 <div className="space-y-5">
                   <p className="max-w-2xl text-sm leading-7 text-text-light md:text-base">
                     <HoverTranslationText
-                      text="Listen — the brick's letters are hidden. Type what you hear and press Enter to fire: correct letters shatter their tiles and reveal themselves, wrong letters miss. Collect every word card before the brick crushes your turret — 3 lives, then it's over."
-                      translation="听音拼写——砖块上的字母是隐藏的。输入你听到的单词并按回车开炮：拼对的字母会击碎对应砖块并显出字母，拼错则 MISS。在砖块砸中炮台前收集所有单词卡片——共 3 条命，耗尽即结束。"
+                      text="Listen — the brick's letters are hidden. Type what you hear and press Enter to fire. A perfect spell shatters the brick; a wrong one just shakes it, keeps the letters you got right (green) and flashes the wrong ones red — spell it again. Collect every word card before the brick touches the ground — 3 lives, then it's over."
+                      translation="听音拼写——砖块上的字母是隐藏的。输入你听到的单词并按回车开炮：完全拼对时砖块才会被击碎；拼错时砖块只会整体晃一下，拼对的字母保留显示（绿色）、拼错的砖块闪红——请再次输入直到完全正确。在砖块落地前收集所有单词卡片——共 3 条命，耗尽即结束。"
                     />
                   </p>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -1122,11 +1267,11 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                 />
               </p>
 
-              {/* fall-speed gear — adjustable again mid-game from the side panel */}
+              {/* march-speed gear — adjustable again mid-game from the side panel */}
               <div className="mt-6 rounded-2xl border border-mid-charcoal bg-light-charcoal/30 p-4 text-left">
                 <div className="flex items-center justify-between text-xs font-mono uppercase tracking-[0.28em] text-text-dark">
                   <span>
-                    <HoverTranslationText text="Fall speed" translation="下落速度" />
+                    <HoverTranslationText text="March speed" translation="推进速度" />
                   </span>
                   <span className="text-electric-green">
                     <HoverTranslationText
@@ -1143,7 +1288,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                   value={SPEED_ORDER.indexOf(speed)}
                   onChange={(e) => changeSpeed(SPEED_ORDER[Number(e.target.value)])}
                   className="mt-3 w-full accent-electric-green"
-                  aria-label="fall speed"
+                  aria-label="march speed"
                 />
                 <div className="mt-1 flex justify-between font-mono text-[10px] text-text-dark">
                   <span>慢 SLOW</span>
@@ -1174,11 +1319,19 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
           <div ref={containerRef} className="relative min-h-0 flex-1">
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
-          {/* countdown overlay */}
+          {/* countdown overlay + GO! banner live INSIDE the canvas frame so
+              they center on the arena, not on the page column */}
           {phase === 'COUNTDOWN' && (
             <div className="absolute inset-0 z-30 flex items-center justify-center">
               <div className="font-headline text-[120px] text-electric-green drop-shadow-[0_0_30px_rgba(46,230,124,0.5)]">
                 {countdownValue > 0 ? countdownValue : ''}
+              </div>
+            </div>
+          )}
+          {bannerMessage && (phase === 'PLAYING' || phase === 'COUNTDOWN') && (
+            <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+              <div className="font-headline text-7xl text-electric-green drop-shadow-[0_0_24px_rgba(46,230,124,0.6)]">
+                <HoverTranslationText text={bannerMessage} translation={bannerMessage === 'GO!' ? '开始！' : bannerMessage} />
               </div>
             </div>
           )}
@@ -1191,7 +1344,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
           {/* collected word cards — a word only appears here AFTER its brick
               is fully shattered (dictation: no spoilers before that). Floated
               with vertical margins so it never hugs the screen edges. */}
-          <aside className="my-2 hidden w-[252px] shrink-0 flex-col rounded-[28px] border border-mid-charcoal/70 bg-dark-charcoal/60 p-4 shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-md md:flex">
+          <aside className="hidden w-[280px] shrink-0 flex-col rounded-[28px] border border-mid-charcoal/70 bg-dark-charcoal/60 p-4 shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-md md:flex">
             <div className="flex items-center justify-between gap-2 px-1">
               <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-text-dark">
                 <span className="material-symbols-outlined text-[14px] text-electric-green/70">award_star</span>
@@ -1202,7 +1355,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
               </span>
             </div>
 
-            {/* live fall-speed gear — previewable mid-game */}
+            {/* live march-speed gear — switchable mid-game, applies in flight */}
             <div className="mt-3 flex items-center gap-1 rounded-2xl border border-mid-charcoal/70 bg-dark-charcoal/60 p-1">
               {SPEED_ORDER.map((s) => (
                 <button
@@ -1264,10 +1417,54 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
           </aside>
         </div>
 
+        {/* MOBILE strip (<md): the side panel's essentials survive as a
+            compact horizontal bar — speed gear, collected chips (swipeable),
+            and the controls hint. */}
+        {phase === 'PLAYING' && (
+          <div className="mt-2 flex shrink-0 items-center gap-2 md:hidden">
+            <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-mid-charcoal/70 bg-dark-charcoal/60 p-1">
+              {SPEED_ORDER.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => changeSpeed(s)}
+                  className={`rounded-lg px-2 py-1 font-mono text-[10px] uppercase transition-colors ${
+                    speed === s ? 'bg-electric-green text-charcoal' : 'text-text-dark'
+                  }`}
+                >
+                  {SPEED_LABELS[s].zh}
+                </button>
+              ))}
+            </div>
+            <div className="custom-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto overflow-y-hidden pb-1">
+              {/* overflow-y-hidden: the hidden hover-translation bubble inside the
+                  hint span otherwise creates phantom vertical overflow → a
+                  stray scrollbar thumb at the strip's right end. */}
+              {collectedCards.length === 0 ? (
+                <span className="shrink-0 py-1 font-mono text-[10px] text-text-dark">
+                  <HoverTranslationText text="Shatter bricks to collect cards" translation="击碎砖块收集单词卡" />
+                </span>
+              ) : (
+                collectedCards.map((word) => (
+                  <button
+                    key={word.id}
+                    onClick={() =>
+                      void playWordPronunciation(word.text, word.language || 'en', undefined, word.audio_url)
+                    }
+                    className="shrink-0 rounded-full border border-electric-green/30 bg-electric-green/10 px-2.5 py-1 font-serif text-sm text-white"
+                  >
+                    {word.text}
+                  </button>
+                ))
+              )}
+            </div>
+            <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.15em] text-text-dark">~ 重读</span>
+          </div>
+        )}
+
         {/* REVIEW */}
         {phase === 'REVIEW' && result && (
           <div className="flex flex-1 items-center justify-center overflow-y-auto py-4">
-            <div className="w-full max-w-4xl rounded-[34px] border border-mid-charcoal bg-dark-charcoal/85 p-8 shadow-2xl backdrop-blur-md md:p-10">
+            <div className="w-full max-w-4xl rounded-[32px] border border-mid-charcoal bg-dark-charcoal/85 p-8 shadow-2xl backdrop-blur-md md:p-10">
               <div className="text-xs font-mono uppercase tracking-[0.35em] text-electric-green/80">
                 <HoverTranslationText text="Round Review" translation="本局复盘" />
               </div>
@@ -1298,14 +1495,14 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                             ? `${item.attemptsUsed} shot${item.attemptsUsed === 1 ? '' : 's'} · ${item.lettersHit} hit / ${item.lettersMissed} miss`
                             : item.activatedAtMs == null
                               ? 'Not attempted'
-                              : 'Brick reached the turret'
+                              : 'Brick hit the ground'
                         }
                         translation={
                           item.correct
                             ? `${item.attemptsUsed} 次射击 · 命中 ${item.lettersHit} / 未中 ${item.lettersMissed}`
                             : item.activatedAtMs == null
                               ? '未挑战'
-                              : '砖块击中了炮台'
+                              : '砖块落地了'
                         }
                       />
                     </div>
@@ -1326,7 +1523,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
         {/* RESULT */}
         {phase === 'RESULT' && result && (
           <div className="flex flex-1 items-center justify-center overflow-y-auto py-4">
-            <div className="w-full max-w-5xl rounded-[34px] border border-mid-charcoal bg-dark-charcoal/85 p-8 shadow-2xl backdrop-blur-md md:p-10">
+            <div className="w-full max-w-5xl rounded-[32px] border border-mid-charcoal bg-dark-charcoal/85 p-8 shadow-2xl backdrop-blur-md md:p-10">
               <div className="grid gap-8 md:grid-cols-[1.2fr_0.8fr]">
                 <div>
                   <div className="text-xs font-mono uppercase tracking-[0.35em] text-electric-green/80">

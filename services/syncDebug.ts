@@ -2,7 +2,7 @@
  * 🔍 同步调试工具 - 用于诊断同步失败原因
  */
 
-import { supabase } from './supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 
 /**
  * 测试数据库连接和权限

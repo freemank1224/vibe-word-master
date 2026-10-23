@@ -4,8 +4,6 @@ import { AISettings, AEServiceProvider, AITask } from '../services/ai/settings';
 import { generateImagesForMissingWords, cancelGeneration } from '../services/imageGenerationTask';
 import { getCurrentUserId } from '../services/dataService';
 import { HoverTranslationText } from './HoverTranslationText';
-import { SceneGameSettings, DirectorProvider } from '../services/sceneGameSettings';
-import { probeSceneDirector, SceneDirectorProbeResult, cleanupOrphanSceneAssets, migrateScenePngsToWebp } from '../services/sceneGame';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'fixed',
@@ -157,7 +155,7 @@ const AdminPanelLock: React.FC<{ onUnlocked: () => void }> = ({ onUnlocked }) =>
 };
 
 export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => void }> = ({ onClose, onDataChange }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'text' | 'scene'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'text'>('dashboard');
   const [unlocked, setUnlocked] = useState<boolean>(() => {
     try { return sessionStorage.getItem(SESSION_UNLOCK_KEY) === 'true'; } catch { return false; }
   });
@@ -256,7 +254,6 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
       <div style={{ display: 'flex', borderBottom: '1px solid #333' }}>
         <button style={TAB_BUTTON_STYLE(activeTab === 'dashboard')} onClick={() => setActiveTab('dashboard')}>概览</button>
         <button style={TAB_BUTTON_STYLE(activeTab === 'text')} onClick={() => setActiveTab('text')}>普通文本</button>
-        <button style={TAB_BUTTON_STYLE(activeTab === 'scene')} onClick={() => setActiveTab('scene')}>场景游戏</button>
       </div>
 
       <div style={CONTENT_STYLE}>
@@ -339,215 +336,9 @@ export const AdminConsole: React.FC<{ onClose: () => void, onDataChange?: () => 
         )}
 
         {activeTab === 'text' && <TaskSettingsPanel task="TEXT" title="普通文本思考配置" onLog={addLog} />}
-        {activeTab === 'scene' && <SceneGameSettingsPanel onLog={addLog} />}
       </div>
         </>
       )}
-    </div>
-  );
-};
-// ----------------------------------------------------------------
-// Scene Fusion Game — non-sensitive controls only.
-// All LLM keys live server-side (SCENE_DESIGN_* / SCENE_VISION_* secrets);
-// ② render reuses PRIMARY_IMAGE_GEN_*. The panel exposes only the ③ vision
-// ON/OFF toggle (stored client-side) and a "测试连接" button that probes the
-// server-side SCENE_DESIGN_* secret via the edge function's probe branch.
-// ----------------------------------------------------------------
-const SceneGameSettingsPanel: React.FC<{ onLog: (m: string) => void }> = ({ onLog }) => {
-  const [visionEnabled, setVisionEnabled] = useState<boolean>(() => SceneGameSettings.load().visionEnabled);
-  const [directorProvider, setDirectorProvider] = useState<DirectorProvider>(() => SceneGameSettings.load().directorProvider);
-  const [probeBusy, setProbeBusy] = useState(false);
-  const [probeResult, setProbeResult] = useState<SceneDirectorProbeResult | null>(null);
-  const [migrateBusy, setMigrateBusy] = useState(false);
-  const [migrateProgress, setMigrateProgress] = useState<string>('');
-  const [cleanupBusy, setCleanupBusy] = useState(false);
-
-  const handleToggleVision = (enabled: boolean) => {
-    setVisionEnabled(enabled);
-    SceneGameSettings.save({ visionEnabled: enabled, directorProvider });
-  };
-
-  const handleChangeProvider = (provider: DirectorProvider) => {
-    setDirectorProvider(provider);
-    SceneGameSettings.setDirectorProvider(provider);
-    setProbeResult(null);
-  };
-
-  const handleClear = () => {
-    if (!confirm('重置场景游戏设置？(导演模型恢复默认，视觉精修关闭)')) return;
-    SceneGameSettings.clear();
-    setVisionEnabled(false);
-    setDirectorProvider('default');
-    onLog('Cleared scene-game settings.');
-  };
-
-  const handleProbe = async () => {
-    setProbeBusy(true);
-    setProbeResult(null);
-    onLog(`Probing scene director connection (${directorProvider})…`);
-    const result = await probeSceneDirector();
-    setProbeResult(result);
-    setProbeBusy(false);
-    if (result.ok) {
-      onLog(`Scene director OK [${result.provider || directorProvider}]: ${result.model} (${result.latencyMs}ms) @ ${result.baseUrl}`);
-    } else {
-      onLog(`Scene director probe failed [${result.provider || directorProvider}]: ${result.error}`);
-    }
-  };
-
-  const handleCleanupOrphans = async () => {
-    if (!confirm('清理孤儿场景图？\n\n将删除所有没有 sentence 信息（即玩家无法玩 cloze）的 scene_assets 记录和对应的 PNG 文件。先做 dry-run 看看会删什么。')) return;
-    setCleanupBusy(true);
-    onLog('Orphan cleanup: dry-run…');
-    const dry = await cleanupOrphanSceneAssets(true);
-    if (!dry.ok) { onLog(`dry-run failed: ${dry.error}`); setCleanupBusy(false); return; }
-    onLog(`Orphan dry-run: ${dry.count} row(s) would be deleted.`);
-    if (!dry.count || (dry.rows || []).length === 0) {
-      onLog('No orphans — nothing to delete.');
-      setCleanupBusy(false);
-      return;
-    }
-    if (!confirm(`确认删除 ${dry.count} 条孤儿记录 + 对应 PNG 文件？此操作不可撤销。`)) {
-      setCleanupBusy(false);
-      return;
-    }
-    onLog('Orphan cleanup: deleting…');
-    const real = await cleanupOrphanSceneAssets(false);
-    if (!real.ok) { onLog(`cleanup failed: ${real.error}`); setCleanupBusy(false); return; }
-    onLog(`Orphan cleanup: deleted ${real.count} row(s) + their PNG files. ids=${(real.deletedIds || []).join(',').slice(0, 120)}`);
-    alert(`清理完成：删除 ${real.count} 条孤儿记录。`);
-    setCleanupBusy(false);
-  };
-
-  const handleMigrate = async () => {
-    if (!confirm('把所有 PNG 场景图迁移为 WebP？\n\n浏览器内下载每张 PNG → Canvas 转 WebP → 上传 → 删除 PNG。已 .webp 的不处理。建议夜间或网络稳定时执行。')) return;
-    setMigrateBusy(true);
-    setMigrateProgress('');
-    onLog('Scene PNG→WebP migration: starting…');
-    const result = await migrateScenePngsToWebp((done, total, cur) => {
-      const msg = cur.status === 'ok'
-        ? `[${done}/${total}] ✓ ${cur.oldPath} (${cur.oldBytes || 0}B → ${cur.newBytes || 0}B)`
-        : `[${done}/${total}] ✗ ${cur.oldPath}: ${cur.error}`;
-      setMigrateProgress(msg);
-      onLog(msg);
-    });
-    if (result.error) {
-      onLog(`Migration aborted: ${result.error}`);
-    } else {
-      const summary = `Migration done: ${result.migrated}/${result.total} migrated, ${result.failed} failed.`;
-      onLog(summary);
-      setMigrateProgress(summary);
-      alert(summary);
-    }
-    setMigrateBusy(false);
-  };
-
-  return (
-    <div style={{ maxWidth: '520px', margin: '0 auto' }}>
-      <h4 style={{ marginBottom: '12px' }}>场景融合游戏 · 配置</h4>
-      <p style={{ fontSize: '11px', color: '#aaa', marginBottom: '18px', lineHeight: 1.6 }}>
-        场景导演 ①、视觉精修 ③ 的 BASE_URL/API_KEY/MODEL 一律在 Supabase Edge Secret 配置（<code>SCENE_DESIGN_*</code> / <code>SCENE_VISION_*</code>），浏览器不再保存或发送密钥。② 出图复用 <code>PRIMARY_IMAGE_GEN_*</code>。
-      </p>
-
-      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
-        <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '10px' }}>① 导演模型（场景编排）</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
-            <input
-              type="radio"
-              name="director-provider"
-              checked={directorProvider === 'default'}
-              onChange={() => handleChangeProvider('default')}
-              style={{ width: '16px', height: '16px' }}
-            />
-            <span>默认 · Minimax-m3</span>
-            <code style={{ fontSize: '11px', color: '#999' }}>SCENE_DESIGN_*</code>
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
-            <input
-              type="radio"
-              name="director-provider"
-              checked={directorProvider === 'aliyun'}
-              onChange={() => handleChangeProvider('aliyun')}
-              style={{ width: '16px', height: '16px' }}
-            />
-            <span>通义千问 · Aliyun qwen-max</span>
-            <code style={{ fontSize: '11px', color: '#999' }}>SCENE_DESIGN_ALIYUN_*</code>
-          </label>
-        </div>
-        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px', lineHeight: 1.5 }}>
-          选择后立即生效（写入本地偏好，随请求发送 <code>directorProvider</code>）。密钥始终在服务端，切换不暴露任何 key。下方「测试导演连接」会探测当前选中的模型。
-        </div>
-      </div>
-
-      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
-        <button
-          style={{ ...BUTTON_STYLE, opacity: probeBusy ? 0.6 : 1 }}
-          onClick={handleProbe}
-          disabled={probeBusy}
-        >
-          {probeBusy ? '测试中…' : '测试导演连接'}
-        </button>
-        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px' }}>
-          验证当前选中导演（<code>{directorProvider === 'aliyun' ? 'SCENE_DESIGN_ALIYUN_*' : 'SCENE_DESIGN_*'}</code>）的服务端 Secret 是否可用。不发图、不写库。
-        </div>
-        {probeResult && (
-          <div style={{ marginTop: '10px', fontSize: '12px', color: probeResult.ok ? '#7CFC8A' : '#FF8A8A' }}>
-            {probeResult.ok
-              ? `✓ [${probeResult.provider || directorProvider}] ${probeResult.model} · ${probeResult.latencyMs}ms · ${probeResult.baseUrl}`
-              : `✗ [${probeResult.provider || directorProvider}] ${probeResult.error}`}
-          </div>
-        )}
-      </div>
-
-      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
-        <button
-          style={{ ...BUTTON_STYLE, opacity: migrateBusy ? 0.6 : 1 }}
-          onClick={handleMigrate}
-          disabled={migrateBusy}
-        >
-          {migrateBusy ? '迁移中…' : 'PNG → WebP 迁移'}
-        </button>
-        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px' }}>
-          浏览器内 Canvas 转 WebP（与常规模式同款）。新图自动走 WebP；这个按钮只迁移历史 PNG。
-        </div>
-        {migrateProgress && (
-          <div style={{ marginTop: '8px', fontSize: '11px', color: '#7CFC8A', wordBreak: 'break-all' }}>{migrateProgress}</div>
-        )}
-      </div>
-
-      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
-        <button
-          style={{ ...BUTTON_STYLE, backgroundColor: '#8a4444', opacity: cleanupBusy ? 0.6 : 1 }}
-          onClick={handleCleanupOrphans}
-          disabled={cleanupBusy}
-        >
-          {cleanupBusy ? '清理中…' : '清理孤儿场景图'}
-        </button>
-        <div style={{ fontSize: '11px', color: '#999', marginTop: '8px' }}>
-          删除没有 sentence 信息的 scene_assets 记录和对应 PNG 文件。先 dry-run 看影响。
-        </div>
-      </div>
-
-      <div style={{ background: '#202020', border: '1px solid #333', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={visionEnabled}
-            onChange={(e) => handleToggleVision(e.target.checked)}
-            style={{ width: '16px', height: '16px' }}
-          />
-          ③ 启用视觉精修（默认关闭）
-        </label>
-        <div style={{ fontSize: '11px', color: '#999', marginTop: '6px', marginLeft: '24px' }}>
-          开启后，出图会用多模态 LLM 回扫，把高亮框收紧到元素实际位置；失败自动回退到位置区域。省钱省时建议保持关闭。
-        </div>
-      </div>
-
-      <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
-        <button style={{ ...BUTTON_STYLE, flex: 1 }} onClick={() => { SceneGameSettings.save({ visionEnabled, directorProvider }); onLog('Saved scene-game settings.'); alert('已保存场景游戏设置！'); }}>保存设置</button>
-        <button style={{ ...BUTTON_STYLE, backgroundColor: '#666' }} onClick={handleClear}>重置</button>
-      </div>
     </div>
   );
 };

@@ -35,7 +35,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
   const [activeChartTab, setActiveChartTab] = useState<AccountChartTab>('progress');
   const [aiSelectionEnabled, setAiSelectionEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('vibe_ai_selection') === 'true';
+      return localStorage.getItem('vibe_ai_selection') !== 'false';
     }
     return false;
   });

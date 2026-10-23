@@ -1,280 +1,122 @@
-/**
- * Unit tests for Offline Sync Queue Service (Phase C)
- *
- * @module __tests__/services/offlineSyncQueue.test
- */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createPendingSyncQueue, pendingSyncKey, type NewPendingSync } from '../pendingSyncQueueCore.ts';
+import { parseTestStatsReceipt } from '../testStatsEvents.ts';
+import { getShanghaiDateString } from '../../utils/timezone.ts';
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import {
-  getPendingSyncs,
-  enqueuePendingSync,
-  processPendingSyncs,
-  clearPendingSyncs,
-  getPendingSyncCount,
-  getPendingSyncSummary
-} from '../offlineSyncQueue';
-import { PendingSyncItem } from '../../types';
+const timestamp = Date.parse('2026-10-21T15:59:59Z');
+const event = (id = 'round-1', userId = 'alice'): NewPendingSync => ({ id, userId, timestamp, date: '2026-10-21', testCount: 10, correctCount: 8, points: 20, expectedVersion: 0 });
+const receipt = (id = 'round-1') => ({ event_id: id, synced_date: '2026-10-21', total_tests: 10, correct_tests: 8, total_points: 20, version: 1, coins_awarded: 3 });
+function fixture(send: (item: NewPendingSync) => Promise<unknown> = async item => receipt(item.id)) {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const state = { userId: 'alice', now: timestamp + 86400000 };
+  const queue = createPendingSyncQueue({ storage, now: () => state.now, currentUserId: async () => state.userId, send: item => send(item as NewPendingSync) });
+  return { queue, storage, state, values };
+}
 
-// Mock dataService
-jest.mock('../dataService', () => ({
-  recordTestAndSyncStats: jest.fn()
-}));
+test('stable event ID deduplicates enqueue and rejects changing its contents', () => {
+  const { queue } = fixture();
+  assert.equal(queue.enqueue(event()), true);
+  assert.equal(queue.enqueue(event()), false);
+  assert.throws(() => queue.enqueue({ ...event(), points: 100 }));
+  assert.equal(queue.read('alice').length, 1);
+});
 
-describe('Offline Sync Queue', () => {
-  beforeEach(() => {
-    // Clear localStorage before each test
-    localStorage.clear();
+test('retry preserves original event date across Shanghai midnight', async () => {
+  const sent: NewPendingSync[] = [];
+  const { queue } = fixture(async item => { sent.push(item); return receipt(item.id); });
+  queue.enqueue(event());
+  assert.equal((await queue.process('alice')).success, 1);
+  assert.equal(sent[0].timestamp, timestamp);
+  assert.equal(sent[0].date, '2026-10-21');
+  assert.equal(getShanghaiDateString(timestamp + 1000), '2026-10-22');
+});
+
+test('a committed request with a lost response retries the same ID exactly once', async () => {
+  const serverIds = new Set<string>(); let first = true; let count = 0;
+  const { queue, state } = fixture(async item => {
+    if (!serverIds.has(item.id)) { serverIds.add(item.id); count += item.testCount; }
+    if (first) { first = false; throw new Error('response lost'); }
+    return receipt(item.id);
   });
+  queue.enqueue(event());
+  assert.equal((await queue.process('alice')).failed, 1);
+  state.now += 1000;
+  assert.equal((await queue.process('alice')).success, 1);
+  assert.equal(count, 10);
+  assert.equal(queue.read('alice').length, 0);
+});
 
-  describe('getPendingSyncs', () => {
-    it('should return empty array when queue is empty', () => {
-      const result = getPendingSyncs();
-      expect(result).toEqual([]);
-      expect(Array.isArray(result)).toBe(true);
-    });
+test('failures remain after three retries and backoff is checked before request', async () => {
+  let calls = 0;
+  const { queue, state } = fixture(async () => { calls++; throw new Error('offline'); });
+  queue.enqueue(event());
+  for (let i = 0; i < 6; i++) { await queue.process('alice'); state.now += 300000; }
+  assert.equal(calls, 6);
+  assert.equal(queue.read('alice')[0].retryCount, 6);
+  await queue.process('alice');
+  const before = calls;
+  await queue.process('alice');
+  assert.equal(calls, before);
+  assert.equal(queue.read('alice').length, 1);
+});
 
-    it('should return items from localStorage', () => {
-      const testItem: PendingSyncItem = {
-        id: 'test-123',
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      };
+test('null, empty, mismatched and malformed acknowledgements cannot clear pending work', async () => {
+  for (const response of [null, {}, [], { ...receipt(), event_id: 'other' }, { ...receipt(), synced_date: '2026-10-22' }, { ...receipt(), total_tests: NaN }]) {
+    const { queue } = fixture(async () => response);
+    queue.enqueue(event());
+    assert.equal((await queue.process('alice')).success, 0);
+    assert.equal(queue.read('alice').length, 1);
+  }
+  assert.throws(() => parseTestStatsReceipt([receipt(), receipt()], event()));
+});
 
-      localStorage.setItem('vibe_pending_syncs', JSON.stringify([testItem]));
+test('accounts are isolated and legacy ownerless records are left intact', async () => {
+  const { queue, values, state } = fixture();
+  values.set('vibe_pending_syncs', JSON.stringify([{ ...event(), userId: undefined }]));
+  queue.enqueue(event()); queue.enqueue(event('round-2', 'bob'));
+  state.userId = 'bob';
+  assert.equal((await queue.process('alice')).success, 0);
+  assert.equal((await queue.process('bob')).success, 1);
+  assert.equal(queue.read('alice').length, 1);
+  assert.ok(values.get('vibe_pending_syncs'));
+});
 
-      const result = getPendingSyncs();
-      expect(result).toHaveLength(1);
-      expect(result[0]).toEqual(testItem);
-    });
+test('account switch during upload keeps original queue for safe replay', async () => {
+  const f = fixture(async () => { f.state.userId = 'bob'; return receipt(); });
+  f.queue.enqueue(event());
+  assert.equal((await f.queue.process('alice')).success, 0);
+  assert.equal(f.queue.read('alice').length, 1);
+  assert.equal(f.queue.read('bob').length, 0);
+});
 
-    it('should handle corrupted localStorage gracefully', () => {
-      localStorage.setItem('vibe_pending_syncs', 'invalid-json{');
+test('concurrent processing shares a request and preserves newly enqueued items', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const { queue } = fixture(async () => { calls++; await gate; return receipt(); });
+  queue.enqueue(event());
+  const first = queue.process('alice'); const second = queue.process('alice');
+  assert.equal(first, second);
+  queue.enqueue(event('round-2'));
+  release(); await first;
+  assert.equal(calls, 1);
+  assert.deepEqual(queue.read('alice').map(item => item.id), ['round-2']);
+});
 
-      const result = getPendingSyncs();
-      expect(result).toEqual([]);
-    });
-  });
+test('corrupt storage and write failure are surfaced without replacing records', () => {
+  const f = fixture(); f.values.set(pendingSyncKey('alice'), '{broken');
+  assert.throws(() => f.queue.enqueue(event()));
+  assert.equal(f.values.get(pendingSyncKey('alice')), '{broken');
+  const queue = createPendingSyncQueue({ storage: { getItem: () => null, setItem: () => { throw new Error('quota'); } }, now: Date.now, currentUserId: async () => 'alice', send: async () => receipt() });
+  assert.throws(() => queue.enqueue(event()), /quota/);
+});
 
-  describe('enqueuePendingSync', () => {
-    it('should add item to empty queue', async () => {
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      const result = getPendingSyncs();
-      expect(result).toHaveLength(1);
-      expect(result[0]).toMatchObject({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        retryCount: 0
-      });
-      expect(result[0].id).toBeDefined();
-      expect(typeof result[0].id).toBe('string');
-    });
-
-    it('should add multiple items to queue', async () => {
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      await enqueuePendingSync({
-        date: '2025-02-14',
-        testCount: 5,
-        correctCount: 4,
-        points: 7.2,
-        expectedVersion: 1,
-        timestamp: Date.now()
-      });
-
-      const result = getPendingSyncs();
-      expect(result).toHaveLength(2);
-    });
-  });
-
-  describe('getPendingSyncCount', () => {
-    it('should return 0 for empty queue', () => {
-      const count = getPendingSyncCount();
-      expect(count).toBe(0);
-    });
-
-    it('should return correct count for non-empty queue', async () => {
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      await enqueuePendingSync({
-        date: '2025-02-14',
-        testCount: 5,
-        correctCount: 4,
-        points: 7.2,
-        expectedVersion: 1,
-        timestamp: Date.now()
-      });
-
-      const count = getPendingSyncCount();
-      expect(count).toBe(2);
-    });
-  });
-
-  describe('getPendingSyncSummary', () => {
-    it('should return empty summary for empty queue', () => {
-      const summary = getPendingSyncSummary();
-      expect(summary).toEqual({
-        count: 0,
-        oldestTimestamp: null
-      });
-    });
-
-    it('should return correct summary for non-empty queue', async () => {
-      const now = Date.now();
-      const olderTimestamp = now - 10000;
-
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: now
-      });
-
-      await enqueuePendingSync({
-        date: '2025-02-14',
-        testCount: 5,
-        correctCount: 4,
-        points: 7.2,
-        expectedVersion: 1,
-        timestamp: olderTimestamp
-      });
-
-      const summary = getPendingSyncSummary();
-      expect(summary.count).toBe(2);
-      expect(summary.oldestTimestamp).toBe(olderTimestamp);
-    });
-  });
-
-  describe('clearPendingSyncs', () => {
-    it('should remove all items from queue', async () => {
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      expect(getPendingSyncCount()).toBe(1);
-
-      clearPendingSyncs();
-
-      expect(getPendingSyncCount()).toBe(0);
-      expect(localStorage.getItem('vibe_pending_syncs')).toBeNull();
-    });
-  });
-
-  describe('processPendingSyncs', () => {
-    it('should return zeros for empty queue', async () => {
-      const result = await processPendingSyncs();
-      expect(result).toEqual({
-        success: 0,
-        failed: 0
-      });
-    });
-
-    it('should process items successfully (mock)', async () => {
-      const { recordTestAndSyncStats } = await import('../dataService');
-
-      // Mock successful sync
-      (recordTestAndSyncStats as jest.Mock).mockResolvedValue({});
-
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      const result = await processPendingSyncs();
-
-      expect(result.success).toBe(1);
-      expect(result.failed).toBe(0);
-      expect(getPendingSyncCount()).toBe(0);
-    });
-
-    it('should increment retry count on failure (mock)', async () => {
-      const { recordTestAndSyncStats } = await import('../dataService');
-
-      // Mock failed sync
-      (recordTestAndSyncStats as jest.Mock).mockRejectedValue(new Error('Network error'));
-
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      const result = await processPendingSyncs();
-
-      expect(result.success).toBe(0);
-      expect(result.failed).toBe(0);  // Not failed yet, just retrying
-      expect(getPendingSyncCount()).toBe(1);
-
-      const pending = getPendingSyncs();
-      expect(pending[0].retryCount).toBe(1);
-      expect(pending[0].lastError).toBe('Network error');
-    });
-
-    it('should discard items exceeding max retries', async () => {
-      const { recordTestAndSyncStats } = await import('../dataService');
-
-      // Mock failed sync
-      (recordTestAndSyncStats as jest.Mock).mockRejectedValue(new Error('Network error'));
-
-      await enqueuePendingSync({
-        date: '2025-02-13',
-        testCount: 10,
-        correctCount: 6,
-        points: 15.0,
-        expectedVersion: 0,
-        timestamp: Date.now()
-      });
-
-      // Process 4 times (exceeds MAX_RETRY_COUNT of 3)
-      await processPendingSyncs();  // retry 1
-      await processPendingSyncs();  // retry 2
-      await processPendingSyncs();  // retry 3
-      const result = await processPendingSyncs();  // retry 4 - should discard
-
-      expect(result.failed).toBe(1);
-      expect(getPendingSyncCount()).toBe(0);
-    });
-  });
+test('invalid dates and mismatched owners cannot enter or leave the queue', () => {
+  const f = fixture();
+  assert.throws(() => f.queue.enqueue({ ...event(), date: '2026-10-22' }));
+  assert.throws(() => f.queue.enqueue({ ...event(), correctCount: 11 }));
+  f.values.set(pendingSyncKey('alice'), JSON.stringify([event('other', 'bob')]));
+  assert.throws(() => f.queue.read('alice'));
 });

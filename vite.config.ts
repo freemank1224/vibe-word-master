@@ -34,6 +34,9 @@ export default defineConfig(({ mode }) => {
       },
       envPrefix: ['VITE_', 'SUPABASE_'],
       plugins: [react()],
+      build: {
+        manifest: true,
+      },
       define: {
         // Server-side environment variables (for Node.js scripts)
         'process.env.API_KEY': JSON.stringify(getEnv('API_KEY') || getEnv('GEMINI_API_KEY')),

@@ -1,4 +1,4 @@
-
+import type { ReviewState } from './services/reviewScheduler';
 export interface WordMeaningOption {
   key: string;
   meaningZh: string;
@@ -33,6 +33,8 @@ export interface WordEntry {
   tags?: string[];
   score?: number; // Added for point system (3 for direct, 2.4 for hint)
   consecutive_correct?: number; // Error decay mechanism: consecutive correct answers without hints
+  review_state?: ReviewState | null;
+  learning_revision?: number;
 }
 
 export interface InputSession {
@@ -54,6 +56,8 @@ export interface CompletedTestWordResult {
 }
 
 export interface CompletedTestSummary {
+  roundId?: string;
+  occurredAt?: number;
   results: CompletedTestWordResult[];
   totalTimeMs: number;
   rawPoints: number;
@@ -65,7 +69,7 @@ export interface CompletedTestSummary {
   slowestWordTimeMs: number | null;
 }
 
-export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'SCENE' | 'STRIKE';
+export type TestModeKind = 'CLASSIC' | 'PUZZLE' | 'STRIKE' | 'ORBIT';
 
 export type PuzzleGamePhase = 'INTRO' | 'PREPARING' | 'READY' | 'COUNTDOWN' | 'PLAYING' | 'REVIEW' | 'RESULT';
 
@@ -93,9 +97,16 @@ export interface PuzzleCardResult {
   hintUsed: boolean;
   solvedAtMs: number | null;
   activatedAtMs: number | null;
+  status?: 'correct' | 'incorrect' | 'skipped' | 'unattempted';
 }
 
 export interface PuzzleGameSummary {
+  roundId?: string;
+  occurredAt?: number;
+  rulesVersion?: string;
+  completedLines?: number;
+  lineBonus?: number;
+  completionBonus?: number;
   totalScore: number;
   accuracyRate: number;
   speedScore: number;
@@ -125,132 +136,6 @@ export interface PuzzleGameCardState {
   activatedAtMs: number | null;
   solvedAtMs: number | null;
   lastWrongInput: string | null;
-}
-
-// ================================================================
-// Scene Fusion Game Mode (完形填空 cloze)
-// ================================================================
-
-export type SceneGamePhase =
-  | 'INTRO'
-  | 'PREPARING'
-  | 'COUNTDOWN'
-  | 'PLAYING'
-  | 'REVIEW'
-  | 'RESULT';
-
-/**
- * As of the cloze-sentence refactor, only one gameplay style remains: a single
- * picture + multiple cloze sentences shown side-by-side. The player navigates
- * sentences with arrow keys / mouse and fills in the blank for each.
- *
- * The type is kept as a single-literal union (and stays a string) for DB
- * backward-compat with the `scene_game_rounds.play_mode` column.
- */
-export type ScenePlayMode = 'cloze';
-
-export interface SceneGameConfig {
-  kind: 'SCENE';
-}
-
-/** Metadata for one selected word, sent to the scene-generate edge function. */
-export interface SceneWordMeta {
-  text: string;
-  pos: string; // 'noun' | 'adjective' | 'verb' | 'adverb' | 'other'
-  definitionCn: string;
-}
-
-/** A per-word region of a fused scene image. Coordinates are normalized 0..1. */
-export interface WordRegion {
-  word: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  confidence: number;
-  detectionFailed?: boolean;
-  /** Optional cloze-style description sentence containing `word` verbatim. */
-  sentence?: string;
-}
-
-/** A generated + cached fused scene image with per-word regions. */
-export interface SceneAsset {
-  id: string;
-  wordSetHash: string;
-  dayIndex: number; // 0..6 (Sun..Sat)
-  language: string;
-  imageUrl: string;
-  storagePath: string;
-  prompt: string;
-  regions: WordRegion[];
-  model: string;
-  visionModel: string;
-  status: 'ready' | 'failed';
-  createdAt: string;
-  /** Index of word (lowercase) → cloze sentence. Missing/empty = degraded UI mode. */
-  sentences?: Record<string, string>;
-  /** Optional AI-generated storyboard (the natural-language scene skeleton the
-   *  cloze sentences are derived from). Surfaced in the PREPARING stage so the
-   *  player can preview the scene idea before play. */
-  storyboard?: string;
-  /** Cloze rows the client renders. Each group = ONE sentence with 1 or 2 target
-   *  words (2 = a merged pair, rendered as one row with two blanks to avoid
-   *  answer-leaking duplicate rows). Built by normalizeAsset from
-   *  scene_design.clozeGroups, or derived per-word for legacy rows. */
-  clozeGroups?: { words: string[]; sentence: string }[];
-}
-
-export interface SceneCardResult {
-  wordId: string;
-  wordText: string;
-  correct: boolean;
-  attemptsUsed: number;
-  hintUsed: boolean;
-  solvedAtMs: number | null;
-  activatedAtMs: number | null;
-}
-
-export interface SceneGameSummary {
-  totalScore: number;
-  accuracyRate: number;
-  speedScore: number;
-  noHintScore: number;
-  wordsCorrect: number;
-  wordsTotal: number;
-  hintsUsed: number;
-  solvedWithoutHint: number;
-  timeUsedSeconds: number;
-  secondsRemaining: number;
-  totalDurationSeconds: number;
-  selectionMode: PuzzleGameSelectionMode;
-  playMode: ScenePlayMode;
-  dayIndex: number;
-  wordCount: number;
-  overlapRate: number;
-  rankingEligible: boolean;
-  rankingIneligibleReason?: string | null;
-  sceneAssetId?: string | null;
-  results: SceneCardResult[];
-}
-
-export type SceneLeaderboardScope = 'daily' | 'all_time';
-export type SceneLeaderboardMetric = 'total_score' | 'accuracy_rate' | 'speed_score';
-
-export interface SceneLeaderboardEntry {
-  user_id: string;
-  rank_position: number;
-  metric_value: number;
-  total_score: number;
-  accuracy_rate: number;
-  speed_score: number;
-  play_mode: ScenePlayMode;
-  words_total: number;
-  words_correct: number;
-  time_used_seconds: number;
-  played_date: string;
-  display_name?: string;
-  email_masked?: string;
-  is_current_user?: boolean;
 }
 
 // ================================================================
@@ -347,6 +232,7 @@ export interface DayStatsWithVersion extends DayStats {
  */
 export interface PendingSyncItem {
   id: string;  // UUID for tracking
+  userId?: string; // Missing only on legacy records whose owner is unknown.
   date: string;  // Test date (YYYY-MM-DD)
   testCount: number;  // Total words tested
   correctCount: number;  // Correct answers
@@ -355,6 +241,7 @@ export interface PendingSyncItem {
   timestamp: number;  // When created (ms)
   retryCount?: number;  // Current retry attempt
   lastError?: string;  // Last error message
+  nextRetryAt?: number;
 }
 
 // ================================================================

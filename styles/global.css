@@ -1,0 +1,63 @@
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: block;
+  src: url('/fonts/material-symbols-cae56fc2b754.woff2') format('woff2');
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    margin: 0;
+    background-color: #1A1A2E;
+    color: #E0E0E0;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(58, 58, 82, .5) transparent;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; }
+  *:hover::-webkit-scrollbar-thumb { background: rgba(58, 58, 82, .5); }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(58, 58, 82, .8); }
+}
+
+@layer components {
+  /* Reserve icon space even while the small local icon font loads.
+     The ligature text must never become a long fallback-font word. */
+  .material-symbols-outlined {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 1em;
+    height: 1em;
+    overflow: hidden;
+    visibility: hidden;
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    vertical-align: middle;
+    font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+
+  .symbols-ready .material-symbols-outlined { visibility: visible; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in, .animate-out { animation-duration: .01ms !important; }
+}

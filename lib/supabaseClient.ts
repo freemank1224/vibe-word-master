@@ -13,7 +13,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // These literals are statically replaced by vite.config.ts `define` rules at build time.
 // Do NOT access via intermediate variables (e.g. viteEnv[key]) — that bypasses static replacement.
-const supabaseUrl: string = process.env.SUPABASE_URL || '';
+export const supabaseUrl: string = process.env.SUPABASE_URL || '';
 const supabaseAnonKey: string = process.env.SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = 

@@ -15,6 +15,29 @@
  */
 
 export const WORD_LEARNING_CONFIG = {
+  /** Configurable spacing heuristic, not a trained FSRS model or measured recall probability. */
+  reviewScheduler: {
+    targetRetention: 0.9,
+    initialStabilityDays: 1,
+    minimumStabilityDays: 0.25,
+    maximumStabilityDays: 365,
+    learningStepMinutes: 10,
+    assistedStepMinutes: 10,
+    failureStepMinutes: 5,
+    minimumIndependentSpacingMinutes: 10,
+    minimumIntervalElapsedRatio: 0.5,
+    initialDifficulty: 5,
+    successfulDifficultyDelta: -0.25,
+    assistedDifficultyDelta: 0.5,
+    failureDifficultyDelta: 1,
+    failureStabilityMultiplier: 0.45,
+    assistedStabilityMultiplier: 0.8,
+    baseGrowth: 2.4,
+    difficultyGrowthPenalty: 0.1,
+    maximumOverdueGrowthBonus: 0.4,
+    legacyMaximumStabilityDays: 7,
+    newWordFraction: 0.25,
+  },
   // ============================================
   // 1. ERROR TRACKING CONFIGURATION
   // 1. 错误追踪配置
@@ -83,6 +106,8 @@ export const WORD_LEARNING_CONFIG = {
   // 3. 自适应单词选择配置
   // ============================================
   adaptiveSelection: {
+    // Legacy settings retained for older callers. AdaptiveWordSelector now
+    // uses reviewScheduler and deterministic due queues, not softmax/shuffle.
     /**
      * Weight distribution for urgency score factors (%)
      * 紧急度评分因子的权重分布（百分比）
@@ -460,6 +485,7 @@ export type WordLearningConfig = typeof WORD_LEARNING_CONFIG;
  */
 Object.freeze(WORD_LEARNING_CONFIG);
 Object.freeze(WORD_LEARNING_CONFIG.errorTracking);
+Object.freeze(WORD_LEARNING_CONFIG.reviewScheduler);
 Object.freeze(WORD_LEARNING_CONFIG.errorTracking.hintPenalties);
 Object.freeze(WORD_LEARNING_CONFIG.errorDecay);
 Object.freeze(WORD_LEARNING_CONFIG.adaptiveSelection);

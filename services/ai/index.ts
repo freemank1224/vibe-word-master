@@ -1,12 +1,10 @@
 
-import { AIService, AIProviderType, SpellingResult } from "./types";
-import { WordEntry, InputSession } from "../../types";
-import { GeminiProvider } from "./geminiProvider";
-import { OpenAIProvider } from "./openaiProvider";
-import { LocalProvider } from "./localProvider";
-import { AISettings, AEServiceProvider, AITask } from "./settings";
+import type { AIService, SpellingResult } from "./types";
+import type { WordEntry, InputSession } from "../../types";
+import { AISettings, type AITask } from "./settings";
 import { isSupabaseConfigured, supabase } from "../../lib/supabaseClient";
 import { getImageGenerationEdgeDebugInfo, requestImageGenerationViaEdge } from '../imageGenerationEdge';
+import { createLazyResource } from '../../utils/lazyResource';
 
 const readRuntimeEnv = (key: string): string | undefined => {
   const viteEnv = (import.meta as any)?.env;
@@ -21,9 +19,9 @@ const readRuntimeEnv = (key: string): string | undefined => {
 };
 
 class AIServiceManager implements AIService {
-  private gemini = new GeminiProvider();
-  private openai = new OpenAIProvider();
-  private local = new LocalProvider();
+  private loadGemini = createLazyResource(() => import('./geminiProvider').then(({ GeminiProvider }) => new GeminiProvider()));
+  private loadOpenAI = createLazyResource(() => import('./openaiProvider').then(({ OpenAIProvider }) => new OpenAIProvider()));
+  private loadLocal = createLazyResource(() => import('./localProvider').then(({ LocalProvider }) => new LocalProvider()));
   private missingSpellingApiKeyWarned = false;
   private spellingEdgeUnavailableWarned = false;
 
@@ -116,14 +114,14 @@ class AIServiceManager implements AIService {
     this.available = this.enabled;
   }
 
-  private getProvider(type: string): AIService {
+  private getProvider(type: string): Promise<AIService> {
     const providerType = (type || 'gemini').toLowerCase();
     
     if (providerType === 'openai' || providerType === 'custom') {
-      return this.openai; // Custom usually implies OpenAI-compatible API
+      return this.loadOpenAI(); // Custom usually implies OpenAI-compatible API
     }
     
-    return this.gemini;
+    return this.loadGemini();
   }
 
   private resolveConfig(task: AITask) {
@@ -209,19 +207,20 @@ class AIServiceManager implements AIService {
 
   async generateSpeech(text: string): Promise<AudioBuffer | string | null> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
-    const provider = this.getProvider(providerType);
+    const provider = await this.getProvider(providerType);
     return provider.generateSpeech(text, apiKey, endpoint);
   }
 
   async extractWordFromImage(base64Image: string): Promise<string | null> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('VISION');
-    const provider = this.getProvider(providerType);
+    const provider = await this.getProvider(providerType);
     return provider.extractWordFromImage(base64Image, apiKey, endpoint);
   }
 
   async validateSpelling(word: string, apiKey?: string, endpoint?: string, options?: { skipLLM?: boolean }): Promise<SpellingResult> {
     // 1. Try local validation first
-    const localResult = await this.local.validateSpelling(word);
+    const local = await this.loadLocal();
+    const localResult = await local.validateSpelling(word);
     if (localResult.found) {
       console.log(`Local validation hit for: "${word}"`);
       return { 
@@ -247,7 +246,7 @@ class AIServiceManager implements AIService {
     if (apiKey) {
        console.log(`Local validation miss for: "${word}", falling back to remote spelling check...`);
        const userProvider = AISettings.getProvider();
-       const provider = this.getProvider(userProvider);
+       const provider = await this.getProvider(userProvider);
        return provider.validateSpelling(word, apiKey, endpoint);
     }
 
@@ -256,7 +255,6 @@ class AIServiceManager implements AIService {
       readRuntimeEnv('SPELLING_CHECK_PROVIDER')
       || readRuntimeEnv('VITE_SPELLING_CHECK_PROVIDER')
       || providerType;
-    const spellingProvider = this.getProvider(spellingProviderType);
 
     const spellingApiKey =
       readRuntimeEnv('SPELLING_CHECK_API_KEY')
@@ -280,6 +278,7 @@ class AIServiceManager implements AIService {
 
     const timeoutMs = this.getValidationTimeoutMs();
     try {
+      const spellingProvider = await this.getProvider(spellingProviderType);
       return await this.withTimeout(
         spellingProvider.validateSpelling(word, spellingApiKey, spellingEndpoint),
         timeoutMs,
@@ -297,7 +296,7 @@ class AIServiceManager implements AIService {
       targetCount: number
   ): Promise<string[] | null> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
-    const provider = this.getProvider(providerType);
+    const provider = await this.getProvider(providerType);
 
     if (!provider.optimizeWordSelection) return null;
 
@@ -310,8 +309,9 @@ class AIServiceManager implements AIService {
    */
   async validatePhrase(phrase: string): Promise<SpellingResult> {
     // Use LocalProvider for phrase validation
-    if (this.local.validatePhrase) {
-      return await this.local.validatePhrase(phrase);
+    const local = await this.loadLocal();
+    if (local.validatePhrase) {
+      return await local.validatePhrase(phrase);
     }
     // Fallback: just validate as a single word
     return await this.validateSpelling(phrase);
@@ -348,7 +348,7 @@ class AIServiceManager implements AIService {
 
   private async performCollocationCheck(phrase: string): Promise<{ isCommon: boolean }> {
     const { providerType, apiKey, endpoint } = this.resolveConfig('TEXT');
-    const provider = this.getProvider(providerType);
+    const provider = await this.getProvider(providerType);
 
     if (provider.validateCollocation) {
       return await provider.validateCollocation(phrase, apiKey, endpoint);

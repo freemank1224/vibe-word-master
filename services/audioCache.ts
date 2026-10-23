@@ -362,27 +362,35 @@ class AudioCacheManager {
     if (oldCache) {
       try {
         // Old format was direct key-value pairs
-        const parsed = JSON.parse(oldCache);
-        const newEntries = Object.entries(parsed).map(([word, urlData]) => {
-          return [
-            this.getCacheKey(word, 'en'),
-            {
-              url: urlData.url || urlData,
-              source: urlData.source || 'Migrated',
-              timestamp: urlData.timestamp || Date.now(),
-              expiresAt: urlData.expiresAt || Date.now() + (7 * 24 * 60 * 60 * 1000),
-              accessCount: 0
-            }
-          ];
-        });
-
-        const cacheMap = new Map(newEntries);
-        this.cache = cacheMap;
+        const parsed: unknown = JSON.parse(oldCache);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+        let migratedCount = 0;
+        for (const [word, urlData] of Object.entries(parsed)) {
+          const data = urlData && typeof urlData === 'object'
+            ? urlData as Record<string, unknown>
+            : null;
+          const url = typeof urlData === 'string' ? urlData : data?.url;
+          if (typeof url !== 'string' || !url) continue;
+          const key = this.getCacheKey(word, 'en');
+          // Preserve entries already written by the current cache version.
+          if (this.cache.has(key)) continue;
+          const now = Date.now();
+          this.cache.set(key, {
+            url,
+            source: typeof data?.source === 'string' ? data.source : 'Migrated',
+            timestamp: typeof data?.timestamp === 'number' && Number.isFinite(data.timestamp) ? data.timestamp : now,
+            expiresAt: typeof data?.expiresAt === 'number' && Number.isFinite(data.expiresAt)
+              ? data.expiresAt : now + EXPIRATION_DAYS * 24 * 60 * 60 * 1000,
+            accessCount: 0,
+          });
+          this.updateLRU(key);
+          migratedCount++;
+        }
         this.saveToStorage();
 
         // Remove old cache
         localStorage.removeItem('vibe_pronunciation_cache');
-        console.log(`✅ Migrated ${cacheMap.size} entries from old cache format`);
+        console.log(`✅ Migrated ${migratedCount} entries from old cache format`);
       } catch (error) {
         console.warn('⚠️ Failed to migrate old cache:', error);
       }

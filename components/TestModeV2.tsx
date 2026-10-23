@@ -1,26 +1,30 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WordEntry, InputSession, CompletedTestSummary } from '../types';
-import { updateWordStatusV2, updateWordMetadata } from '../services/dataService';
+import { updateWordStatusV2 } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
 import { fetchDictionaryData, playWordAudio as playWordAudioService, preloadWordAudio } from '../services/dictionaryService';
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
+import { updateReviewState, getReviewSchedule } from '../services/reviewScheduler';
 import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { MeaningFlipCard } from './MeaningFlipCard';
 import { HoverTranslationText } from './HoverTranslationText';
 import { useT } from '../hooks/useT';
+import { forEachWithConcurrency, missingDictionaryFields, needsDictionaryEnrichment, preloadHintImage } from '../services/testPreparation';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import type { LearningResult } from '../services/learningRecordStore';
 
 interface TestModeV2Props {
   allWords: WordEntry[];
   sessions: InputSession[]; // Added sessions prop
   initialSessionIds: string[];
   initialWordIds?: string[];
-    onComplete: (summary: CompletedTestSummary) => void;
+  onComplete: (summary: CompletedTestSummary) => void | Promise<void>;
+  onSaveComplete?: (summary: CompletedTestSummary) => Promise<void>;
   onCancel: () => void;
-  onUpdateWord?: (id: string, updates: Partial<WordEntry>) => void;
+  onUpdateWord?: (id: string, updates: Partial<WordEntry>, attempt: { result: LearningResult; eventId: string; occurredAt: number }) => void;
 }
 
 type TestPhase = 'TESTING' | 'REVIEW_SUMMARY' | 'REVIEW_DRILL' | 'REVIEW_CONFIRM' | 'REVIEW_INSTANT_TEST' | 'FINAL_RESULT';
@@ -181,7 +185,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   sessions,
   initialSessionIds, 
   initialWordIds, 
-  onComplete, 
+  onComplete,
+  onSaveComplete,
   onCancel,
   onUpdateWord
 }) => {
@@ -199,6 +204,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     const [showChineseHint, setShowChineseHint] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
     const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+    const roundIdRef = useRef(crypto.randomUUID());
+    const completedAtRef = useRef<number | null>(null);
+    const savedCompletionAttemptRef = useRef<string | null>(null);
+    const [completionSaveError, setCompletionSaveError] = useState(false);
+    const attemptTimesRef = useRef(new Map<string, number>());
+    const recordedAttemptsRef = useRef(new Set<string>());
     const [currentWordStartTime, setCurrentWordStartTime] = useState<number>(0);
     const [completedSessionTimeMs, setCompletedSessionTimeMs] = useState<number>(0);
     const [currentWordElapsedMs, setCurrentWordElapsedMs] = useState<number>(0);
@@ -241,6 +252,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const resourceCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   // word.id set of words whose pronunciation failed to preload (drives strict START gate + retry)
   const failedAudioRef = useRef<Set<string>>(new Set());
+  const preparationRef = useRef<AbortController | null>(null);
+  const isStartedRef = useRef(isStarted);
+  isStartedRef.current = isStarted;
+  const latestWordsRef = useRef(allWords);
+  latestWordsRef.current = allWords;
   // Per-resource preload progress for the detailed Loading bar (audio X/Y · images X/Y)
   const [resourceProgress, setResourceProgress] = useState({ audioReady: 0, audioTotal: 0, imagesReady: 0, imagesTotal: 0 });
   const objectUrlsRef = useRef<string[]>([]);
@@ -306,7 +322,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
       if (pool.length > 0) {
         // Ensure uniqueness by word text (standardize to lowercase for comparison)
         const uniqueTextMap = new Map();
-        pool.forEach(item => {
+        adaptiveWordSelector.rankCandidates(pool).map(item => item.word).forEach(item => {
             const key = item.text.toLowerCase().trim();
             if (!uniqueTextMap.has(key)) {
                 uniqueTextMap.set(key, item);
@@ -326,7 +342,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         const targetCount = Math.max(1, Math.round((availablePool.length * coverage) / 100));
 
         // Check for Smart Selection (formerly AI Selection)
-        const smartSelectionEnabled = localStorage.getItem('vibe_ai_selection') === 'true';
+        const smartSelectionEnabled = localStorage.getItem('vibe_ai_selection') !== 'false';
 
         let newQueue: WordEntry[];
         if (smartSelectionEnabled) {
@@ -393,163 +409,96 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   // keeps a stable identity forever — which lets the preload effect depend on it
   // without re-firing on queue reference churn.
   const retryFailedAudio = useCallback(async (rounds: number = 1): Promise<void> => {
-    if (!isMountedRef.current) return;
-    if (failedAudioRef.current.size === 0) return;
+    const controller = preparationRef.current;
+    const isCurrent = () => isMountedRef.current && !!controller && !controller.signal.aborted
+      && preparationRef.current === controller;
+    if (!isCurrent() || failedAudioRef.current.size === 0) return;
     setIsRetryingAudio(true);
     try {
-      const batchSize = 4;
-      for (let round = 0; round < rounds; round++) {
-        if (!isMountedRef.current) break;
-        const failedIds = Array.from(failedAudioRef.current);
-        const failedWords = queueRef.current.filter((w) => failedIds.includes(w.id));
-        for (let i = 0; i < failedWords.length; i += batchSize) {
-          if (!isMountedRef.current) break;
-          const batch = failedWords.slice(i, i + batchSize);
-          await Promise.all(batch.map(async (word) => {
-            if (!isMountedRef.current) return;
-            const ok = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url);
-            if (ok) {
-                failedAudioRef.current.delete(word.id);
-                setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
-            }
-          }));
-        }
-        if (isMountedRef.current) {
-          setMissingResources((prev) => ({ ...prev, audio: failedAudioRef.current.size }));
-        }
-        if (failedAudioRef.current.size === 0) break;
-        await new Promise((res) => setTimeout(res, 300));
+      for (let round = 0; round < rounds && isCurrent(); round++) {
+        const failedWords = queueRef.current.filter(word => failedAudioRef.current.has(word.id));
+        await forEachWithConcurrency(failedWords, 4, controller!.signal, async word => {
+          const ok = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url);
+          if (isCurrent() && ok && failedAudioRef.current.delete(word.id)) {
+            setResourceProgress(progress => ({ ...progress, audioReady: progress.audioReady + 1 }));
+          }
+        });
+        if (!isCurrent() || failedAudioRef.current.size === 0) break;
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isCurrent()) {
         setIsRetryingAudio(false);
-        setMissingResources((prev) => ({ ...prev, audio: failedAudioRef.current.size }));
+        setMissingResources(previous => ({ ...previous, audio: failedAudioRef.current.size }));
       }
     }
   }, []);
 
-  // Preloading Effect
   useEffect(() => {
-    // Snapshot the queue by CONTENT, not by reference. This effect depends on
-    // queueSignature (see deps) so it only re-runs when the selected word set
-    // actually changes — never when allWords/queue merely get a new reference
-    // (e.g. background image-gen completing for a newly-added word). Reading
-    // queueRef.current here grabs the words at the moment content changed, and
-    // the loop then runs to completion without ever resetting progress to 0.
     const snapshot = queueRef.current;
     if (snapshot.length === 0) return;
+    const controller = new AbortController();
+    preparationRef.current = controller;
+    const isCurrent = () => isMountedRef.current && !controller.signal.aborted
+      && preparationRef.current === controller;
 
-    const loadResources = async () => {
-        setIsResourcesLoaded(false);
-        setIsRetryingAudio(false);
-        failedAudioRef.current = new Set();
-        setLoadingProgress({ current: 0, total: snapshot.length });
-        setMissingResources({ images: 0, audio: 0 });
-        setResourceProgress({ audioReady: 0, audioTotal: snapshot.length, imagesReady: 0, imagesTotal: snapshot.filter(w => w.image_url).length });
-        
-        let completed = 0;
-        let missingImg = 0;
-        
-        // Use a concurrency limit to avoid overwhelming the network/APIs
-        const batchSize = 4; // 4 for parallel audio preload (was 2 for mobile stability)
+    setIsResourcesLoaded(false);
+    setIsRetryingAudio(false);
+    failedAudioRef.current = new Set();
+    setLoadingProgress({ current: 0, total: snapshot.length });
+    setMissingResources({ images: 0, audio: 0 });
+    setResourceProgress({ audioReady: 0, audioTotal: snapshot.length, imagesReady: 0,
+      imagesTotal: snapshot.filter(word => word.image_url).length });
 
-        for (let i = 0; i < snapshot.length; i += batchSize) {
-            if (!isMountedRef.current) break;
-            const batch = snapshot.slice(i, i + batchSize);
-            
-            await Promise.all(batch.map(async (word) => {
-                if (!isMountedRef.current) return;
-                try {
-                    // 1. Fetch Dictionary Data for phonetic and definition (no audio needed)
-                    try {
-                        const data = await fetchDictionaryData(word.text, word.language || 'en');
-                        if (data) {
-                            if (data.phonetic) word.phonetic = data.phonetic;
-                            if (data.definition_cn) word.definition_cn = data.definition_cn;
-                            if (data.definition_en) word.definition_en = data.definition_en;
-                            
-                            // Save to DB for future use (Lazy update)
-                            updateWordMetadata(word.id, { 
-                                phonetic: data.phonetic || word.phonetic || undefined,
-                                definition_cn: data.definition_cn || word.definition_cn || undefined,
-                                definition_en: data.definition_en || word.definition_en || undefined
-                            });
-                        }
-                    } catch (e) { 
-                        console.warn("Dictionary fetch failed for", word.text);
-                    }
+    // Optional dictionary enrichment is independent of the START gate and media workers.
+    // It only fills missing local fields, never writes over a user's chosen meaning in the DB.
+    void forEachWithConcurrency(snapshot.filter(needsDictionaryEnrichment), 2, controller.signal, async word => {
+      const data = await fetchDictionaryData(word.text, word.language || 'en', { signal: controller.signal });
+      if (!isCurrent() || isStartedRef.current || !data) return;
+      setQueue(previous => {
+        if (!isCurrent() || isStartedRef.current) return previous;
+        return previous.map(item => {
+        if (item.id !== word.id) return item;
+        const latest = latestWordsRef.current.find(candidate => candidate.id === item.id) || item;
+        const patch = missingDictionaryFields({ ...item, ...latest }, data);
+        return Object.keys(patch).length ? { ...item, ...patch } : item;
+        });
+      });
+    }).catch(error => { if (isCurrent()) console.warn('Optional dictionary enrichment failed:', error); });
 
-                    // 2. Preload pronunciation audio (await a real media event so it
-                    //    plays with zero network during the test). Failure is tracked
-                    //    in failedAudioRef and retried after the loop; START stays
-                    //    disabled until every word is confirmed playable locally.
-                    const audioOk = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url);
-                    if (audioOk) {
-                        setResourceProgress((p) => ({ ...p, audioReady: p.audioReady + 1 }));
-                    } else {
-                        failedAudioRef.current.add(word.id);
-                    }
-                    
-                    // 3. Preload Image (resolve true on load, false on error/timeout)
-                    if (word.image_url) {
-                        const imgLoaded = await new Promise<boolean>((resolve) => {
-                            const img = new Image();
-                            const timeoutId = setTimeout(() => resolve(false), 5000);
-                            img.onload = () => { clearTimeout(timeoutId); resolve(true); };
-                            img.onerror = () => { clearTimeout(timeoutId); resolve(false); };
-                            img.src = word.image_url!;
-                        });
-                        if (imgLoaded) {
-                            setResourceProgress((p) => ({ ...p, imagesReady: p.imagesReady + 1 }));
-                        } else {
-                            missingImg++;
-                        }
-                    }
-                    // Words without image_url are N/A — not counted as ready or missing.
-
-                } catch (e) {
-                    console.warn("Resource load failed for", word.text);
-                } finally {
-                    if (isMountedRef.current) {
-                        completed++;
-                        setLoadingProgress({ current: completed, total: snapshot.length });
-                    }
-                }
-            }));
-        }
-        
-        // Auto-retry failed audio (up to 2 more rounds) before declaring ready.
-        if (isMountedRef.current && failedAudioRef.current.size > 0) {
-            await retryFailedAudio(2);
-        }
-
-        if (isMountedRef.current) {
-            setMissingResources({ images: missingImg, audio: failedAudioRef.current.size });
-            setIsResourcesLoaded(true);
-        }
+    let completedAudio = 0;
+    const loadAudio = async () => {
+      await forEachWithConcurrency(snapshot, 4, controller.signal, async word => {
+        let ready = false;
+        try { ready = await preloadWordAudio(word.text, word.language || 'en', 12000, word.audio_url); }
+        catch { /* Failed pronunciation remains behind the strict retry gate. */ }
+        if (!isCurrent()) return;
+        if (ready) setResourceProgress(progress => ({ ...progress, audioReady: progress.audioReady + 1 }));
+        else failedAudioRef.current.add(word.id);
+        completedAudio++;
+        setLoadingProgress({ current: completedAudio, total: snapshot.length });
+      });
+      if (isCurrent() && failedAudioRef.current.size > 0) await retryFailedAudio(2);
+      if (isCurrent()) {
+        setMissingResources(previous => ({ ...previous, audio: failedAudioRef.current.size }));
+        setIsResourcesLoaded(true);
+      }
     };
-
-    loadResources();
+    void loadAudio();
+    void forEachWithConcurrency(snapshot.filter(word => word.image_url), 4, controller.signal, async word => {
+      const ready = await preloadHintImage(word.image_url!, controller.signal);
+      if (!isCurrent()) return;
+      if (ready) setResourceProgress(progress => ({ ...progress, imagesReady: progress.imagesReady + 1 }));
+      else setMissingResources(previous => ({ ...previous, images: previous.images + 1 }));
+    });
 
     return () => {
-        // 1. Stop and cleanup current audio elements
-        resourceCacheRef.current.forEach(audio => {
-            try {
-                audio.pause();
-                audio.src = "";
-                audio.removeAttribute('src'); 
-                audio.load(); 
-            } catch (e) {}
-        });
-        resourceCacheRef.current.clear();
-
-        // 2. Revoke all object URLs to free memory
-        objectUrlsRef.current.forEach(url => {
-            try {
-                URL.revokeObjectURL(url);
-            } catch (e) {}
-        });
-        objectUrlsRef.current = [];
+      controller.abort();
+      resourceCacheRef.current.forEach(audio => {
+        try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch { /* Already released. */ }
+      });
+      resourceCacheRef.current.clear();
+      objectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+      objectUrlsRef.current = [];
     };
   }, [queueSignature, retryFailedAudio]);
 
@@ -602,6 +551,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     }, []);
 
     const finalizeSession = useCallback(() => {
+        completedAtRef.current ??= Date.now();
         const totalTimeMs = sessionStartTime > 0 ? Math.max(0, Date.now() - sessionStartTime) : 0;
         setCompletedSessionTimeMs(totalTimeMs);
         setElapsedTime(Math.floor(totalTimeMs / 1000));
@@ -627,6 +577,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 : 0;
 
         return {
+                roundId: roundIdRef.current,
+                occurredAt: completedAtRef.current ??= Date.now(),
                 results: resultList.map(({ id, correct, score, timeSpentMs, averageCharsPerMinute }) => ({
                         id,
                         correct,
@@ -644,6 +596,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 slowestWordTimeMs: durations.length > 0 ? Math.max(...durations) : null,
         };
     }, [completedSessionTimeMs, queue, sessionStartTime]);
+
+    // Persist a finished round before the user navigates away or refreshes.
+    useEffect(() => {
+      if (phase !== 'FINAL_RESULT' || !onSaveComplete || savedCompletionAttemptRef.current === roundIdRef.current) return;
+      savedCompletionAttemptRef.current = roundIdRef.current;
+      let active = true;
+      void onSaveComplete(buildCompletionSummary(results)).catch(error => {
+        console.error('[TestComplete] Local save failed:', error);
+        if (active) setCompletionSaveError(true);
+      });
+      return () => { active = false; };
+    }, [phase, onSaveComplete, buildCompletionSummary, results]);
+
 
   const currentWord = queue[currentIndex];
     const currentReviewItem = reviewQueue[reviewIndex] || null;
@@ -856,6 +821,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       // Check if we are done
       if (!currentWord) return;
+      const eventId = `${roundIdRef.current}:${currentIndex}:${currentWord.id}`;
+      if (recordedAttemptsRef.current.has(eventId)) return;
 
       // CRITICAL FIX: 立即捕获当前状态值，避免闭包使用过期值
       const currentWordSnapshot = currentWord;
@@ -904,6 +871,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           error_count: errorCountBefore + errorCountDelta
       });
 
+      const reviewedAt = attemptTimesRef.current.get(eventId) ?? Date.now();
+      attemptTimesRef.current.set(eventId, reviewedAt);
+      const reviewState = updateReviewState(currentWordSnapshot, !success ? 'incorrect' : hasUsedHintSnapshot || currentAttempts > 0 || isRevealed ? 'assisted' : 'independent', reviewedAt);
+
       // 1. Sync to Database - updateWordStatusV2 handles tested and last_tested internally
       const dbUpdates = {
           correct: success,
@@ -911,13 +882,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           error_count_increment: errorCountDelta,  // 传给 dataService 的增量，内部会加到 error_count 上
           best_time_ms: success ? wordDurationMs : undefined,
           hasUsedHint: hasUsedHintSnapshot,  // Error decay: whether user used hints
-          consecutiveCorrect: currentWordSnapshot?.consecutive_correct || 0  // Error decay: current consecutive correct count
+          consecutiveCorrect: currentWordSnapshot?.consecutive_correct || 0,
+          occurredAt: reviewedAt,
+          reviewState,
+          hadMistake: currentAttempts > 0 || isRevealed
       };
 
       // Non-blocking DB sync: updateWordStatusV2 is a per-word read-modify-write (error decay,
       // best_time, consecutive_correct). Keep per-word for correctness + crash recovery, but
       // fire-and-forget so word advancement never waits on the network.
-      void updateWordStatusV2(currentWordSnapshot.id, dbUpdates).catch((e) => {
+      if (!onUpdateWord) void updateWordStatusV2(currentWordSnapshot.id, dbUpdates).catch((e) => {
         console.error("Failed to sync word status to DB:", e);
       });
 
@@ -935,9 +909,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
           let shouldRemoveMistakeTag = false;
           const errorDecayConfig = WORD_LEARNING_CONFIG.errorDecay;
 
-          if (success && !hasUsedHintSnapshot && score >= 3) {
+          if (success && !hasUsedHintSnapshot && currentAttempts === 0 && !isRevealed && score >= 3) {
             // Increment consecutive correct
-            newConsecutiveCorrect += 1;
+            if (reviewState.repetitions > (getReviewSchedule(currentWordSnapshot, reviewedAt).state?.repetitions || 0)) newConsecutiveCorrect += 1;
             // Check if threshold reached (using config)
             if (newConsecutiveCorrect >= errorDecayConfig.consecutiveCorrectThreshold && updatedErrorCount > 0) {
               // Apply error decay
@@ -963,15 +937,28 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             newTags = newTags.filter((t: string) => t !== 'Mistake');
           }
 
-          onUpdateWord(currentWordSnapshot.id, {
+          try { onUpdateWord(currentWordSnapshot.id, {
               correct: success,
               score: score,
               tested: true,
-              last_tested: Date.now(),
+              last_tested: reviewedAt,
+              review_state: reviewState,
+              best_time_ms: success ? Math.min(currentWordSnapshot.best_time_ms || Infinity, wordDurationMs) : currentWordSnapshot.best_time_ms,
               error_count: updatedErrorCount,
               consecutive_correct: newConsecutiveCorrect,
               tags: newTags
-          });
+          }, {
+              eventId, occurredAt: reviewedAt,
+              result: { wordId: currentWordSnapshot.id, status: success ? 'correct' : 'incorrect',
+                hintUsed: hasUsedHintSnapshot, hadMistake: currentAttempts > 0 || isRevealed,
+                durationMs: wordDurationMs, score, errorDelta: errorCountDelta },
+          }); } catch (error) {
+            console.error('[Learning] Answer not saved:', error);
+            setIsProcessing(false);
+            setFeedback('NONE');
+            return;
+          }
+          recordedAttemptsRef.current.add(eventId);
       }
 
         const currentHintLetterTrialSnapshot = hintLetterTrialCount;
@@ -1184,19 +1171,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   };
 
   const handleExit = (action: 'COMPLETE' | 'CANCEL') => {
-      setIsSyncing(true);
-      
-      syncTimeoutRef.current = setTimeout(() => {
-          setShowForceExit(true);
-      }, 5000);
-      
-      setTimeout(() => {
-          if (action === 'COMPLETE') {
-              onComplete(buildCompletionSummary(results));
-          } else {
-              onCancel();
-          }
-      }, 1500);
+      if (action === 'COMPLETE') onComplete(buildCompletionSummary(results));
+      else onCancel();
   };
 
   const handleReviewDrillSubmit = () => {
@@ -1268,6 +1244,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       return (
         <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] overflow-y-auto p-8 z-50 text-white animate-in fade-in duration-700">
+                {completionSaveError && <p role="alert" className="mb-4 text-red-300">结果尚未保存，请保留页面并点击完成重试。</p>}
           {isSyncing && <SyncOverlay showForceExit={showForceExit} onForceExit={onCancel} />}
           <Confetti showParticles={true} variant={accuracy >= 80 ? 'purple' : 'blue'} />
           <div className="mx-auto flex w-full max-w-5xl flex-col items-center py-8">
@@ -1446,6 +1423,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         </div>
                     )}
 
+                    {isResourcesLoaded && !isOptimizing && missingResources.audio === 0
+                        && resourceProgress.imagesReady + missingResources.images < resourceProgress.imagesTotal && (
+                        <p className="mt-2 text-[10px] text-gray-400">发音已就绪，可以开始；图片提示仍在后台加载。</p>
+                    )}
+
                     {isResourcesLoaded && !isOptimizing && missingResources.images > 0 && (
                         <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-3 text-left animate-in fade-in slide-in-from-bottom-2">
                              <svg className="w-5 h-5 text-yellow-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
@@ -1488,6 +1470,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             } else {
                                 const now = Date.now();
                                 setIsStarted(true);
+                                roundIdRef.current = crypto.randomUUID();
+                                completedAtRef.current = null;
+                                savedCompletionAttemptRef.current = null;
+                                setCompletionSaveError(false);
+                                attemptTimesRef.current.clear();
+                                recordedAttemptsRef.current.clear();
                                 setSessionStartTime(now);
                                 setCompletedSessionTimeMs(0);
                                 resetWordTimingState();

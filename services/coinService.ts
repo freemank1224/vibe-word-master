@@ -1,8 +1,5 @@
 import { supabase } from '../lib/supabaseClient';
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-export const SCENE_GAME_COST = 25;
-
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface DailyLoginReward {
   already_claimed_today: boolean;

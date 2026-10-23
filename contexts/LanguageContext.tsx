@@ -17,12 +17,19 @@ const LanguageContext = createContext<LanguageContextType>({
 });
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [language, setLanguage] = useState<Language>('en');
+  const [language, updateLanguage] = useState<Language>(() => {
+    try { return localStorage.getItem('vibe_language') === 'zh' ? 'zh' : 'en'; }
+    catch { return 'en'; }
+  });
+
+  const setLanguage = (next: Language) => {
+    updateLanguage(next);
+    try { localStorage.setItem('vibe_language', next); } catch { /* Keep the current session usable. */ }
+  };
 
   const toggleLanguage = () => {
     const next: Language = language === 'en' ? 'zh' : 'en';
     setLanguage(next);
-    localStorage.setItem('vibe_language', next);
   };
 
   return (

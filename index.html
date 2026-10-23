@@ -1,390 +1,43 @@
-
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1A1A2E">
     <title>Vocab Monster</title>
-    <script>
-        // 根据周几预加载对应的小怪兽
-        const currentDay = new Date().getDay();
-        const monsterPath = `/monsterImages/M${currentDay}.webp`;
-        const link = document.createElement('link');
-        link.rel = 'preload';
-        link.as = 'image';
-        link.href = monsterPath;
-        document.head.appendChild(link);
-    </script>
-    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
     <link rel="preconnect" href="https://fonts.loli.net">
-    <link rel="preload" as="style" href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=block" />
-    <link href="https://fonts.loli.net/css2?family=Bebas+Neue&family=Lexend:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&family=Space+Mono:wght@400;700&display=block" rel="stylesheet" />
-    <link rel="preload" as="style" href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" />
-    <link href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" rel="stylesheet" />
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        charcoal: '#1A1A2E',
-                        'electric-blue': '#00F0FF',
-                        'electric-green': '#2EE67C',
-                        'electric-purple': '#BB00FF',
-                        'light-charcoal': '#2C2C42',
-                        'mid-charcoal': '#3A3A52',
-                        'dark-charcoal': '#0F0F20',
-                    },
-                    fontFamily: {
-                        headline: ['"Bebas Neue"', 'sans-serif'],
-                        body: ['"Lexend"', 'sans-serif'],
-                        serif: ['"Playfair Display"', 'serif'],
-                        mono: ['"Space Mono"', 'monospace'],
-                    },
-                }
-            }
-        }
-    </script>
+    <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.loli.net/css2?family=Bebas+Neue&amp;family=Lexend:wght@300;400;600;800&amp;family=Playfair+Display:ital,wght@0,700;1,700&amp;family=Space+Mono:wght@400;700&amp;display=swap">
+    <link rel="preload" href="/fonts/material-symbols-cae56fc2b754.woff2" as="font" type="font/woff2" crossorigin>
+    <!-- The small boot screen is styled before the application CSS arrives. -->
     <style>
-        .material-symbols-outlined {
-            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-        }
-        body {
-            background-color: #1A1A2E;
-            color: #E0E0E0;
-            margin: 0;
-            overflow: hidden; /* Prevent scrolling during loading */
-        }
-        
-        /* Loading Screen Styles */
-        #loading-screen {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #1A1A2E;
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            transition: opacity 0.5s ease-out;
-        }
-
-        .loader-content {
-            text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .loader-monster {
-            width: 120px; /* 稍微调大一点提升观感 */
-            height: auto; /* 保持原图比例 */
-            margin-bottom: 2rem;
-            opacity: 0;
-            transform: scale(0.8);
-            filter: drop-shadow(0 0 20px rgba(0, 240, 255, 0.3));
-            image-rendering: -webkit-optimize-contrast;
-            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        }
-
-        .fonts-ready .loader-monster {
-            opacity: 1;
-            transform: scale(1);
-            animation: monsterBreathe 3s ease-in-out infinite;
-        }
-
-        .loader-title {
-            font-family: "Bebas Neue", sans-serif;
-            font-size: 3.5rem;
-            margin-bottom: 2rem;
-            letter-spacing: -0.02em;
-            opacity: 0; /* 初始隐藏，防止字体跳变 */
-            
-            /* 采用主页背景空间的主题过渡色 (#BB00FF 和 #00F0FF) */
-            background: linear-gradient(
-                135deg, 
-                #BB00FF 0%, 
-                #00F0FF 50%, 
-                #BB00FF 100%
-            );
-            background-size: 200% 200%;
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            filter: drop-shadow(0 0 15px rgba(0, 240, 255, 0.2));
-            transition: opacity 0.3s ease-out;
-        }
-
-        /* 仅在字体就绪后触发动画 */
-        .fonts-ready .loader-title {
-            animation: flow 8s linear infinite, fadeInUp 0.8s ease-out forwards;
-        }
-
-        .loader-bar-container {
-            width: 100%;
-            height: 2px;
-            background-color: rgba(255, 255, 255, 0.05);
-            border-radius: 1px;
-            overflow: hidden;
-            position: relative;
-            opacity: 0;
-            animation: fadeIn 0.8s ease-out 0.3s forwards;
-        }
-
-        .loader-bar {
-            width: 0%;
-            height: 100%;
-            background-color: #00F0FF;
-            border-radius: 1px;
-            transition: width 0.3s ease-out;
-            box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
-        }
-
-        @keyframes flow {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-
-        @keyframes monsterBreathe {
-            0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 20px rgba(0, 240, 255, 0.3)); }
-            50% { transform: translateY(-10px) scale(1.05); filter: drop-shadow(0 0 35px rgba(187, 0, 255, 0.4)); }
-        }
-
-        .loader-text {
-            font-family: "Space Mono", monospace;
-            color: #00F0FF;
-            font-size: 0.8rem;
-            margin-top: 1rem;
-            height: 1.2em;
-            opacity: 0; /* 初始隐藏 */
-            transition: opacity 0.3s ease-out;
-        }
-
-        .fonts-ready .loader-text {
-            animation: fadeIn 0.8s ease-out 0.5s forwards;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        @keyframes fadeInUp {
-            from { 
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to { 
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        /* Hide content initially */
-        #root {
-            opacity: 0;
-            transition: opacity 0.5s ease-in;
-        }
-
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(58, 58, 82, 0); /* 默认完全透明实现隐藏 */
-            border-radius: 10px;
-            transition: background 0.3s;
-        }
-        
-        /* 仅在鼠标悬停在滚动区域或滚动条时显示，且保持暗色低调 */
-        *:hover::-webkit-scrollbar-thumb {
-            background: rgba(58, 58, 82, 0.5);
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(58, 58, 82, 0.8) !important;
-        }
-        
-        /* 针对 Firefox 的低调处理 */
-        * {
-            scrollbar-width: thin;
-            scrollbar-color: rgba(58, 58, 82, 0.5) transparent;
-        }
+        body { margin: 0; background: #1A1A2E; color: #E0E0E0; }
+        #loading-screen { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: #1A1A2E; }
+        .loader-content { width: min(22rem, 86vw); text-align: center; }
+        .loader-monster { width: 120px; height: 120px; object-fit: contain; margin: 0 auto 2rem; display: block; filter: drop-shadow(0 0 20px #00f0ff4d); animation: monsterBreathe 3s ease-in-out infinite; }
+        .loader-title { margin: 0 0 2rem; font: 3.5rem/1 Impact, 'Arial Narrow', sans-serif; letter-spacing: -.02em; color: #00F0FF; background: linear-gradient(135deg, #BB00FF, #00F0FF, #BB00FF); background-size: 200% 200%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: loaderFlow 8s linear infinite; }
+        .loader-bar-container { height: 2px; overflow: hidden; background: #ffffff0d; border-radius: 1px; }
+        .loader-bar { height: 100%; width: 35%; background: #00F0FF; animation: loaderProgress 1.2s ease-in-out infinite alternate; }
+        .loader-text { margin-top: 1rem; color: #00F0FF; font: .8rem/1.5 ui-monospace, monospace; }
+        @keyframes loaderFlow { 50% { background-position: 100% 50%; } }
+        @keyframes monsterBreathe { 50% { transform: translateY(-10px) scale(1.05); } }
+        @keyframes loaderProgress { to { transform: translateX(185%); } }
+        @media (prefers-reduced-motion: reduce) { .loader-monster, .loader-title, .loader-bar { animation: none; } }
     </style>
 </head>
 <body>
-    <div id="loading-screen">
+    <div id="loading-screen" role="status" aria-live="polite" aria-label="正在启动应用">
         <div class="loader-content">
-            <img src="" alt="Mascot" class="loader-monster" id="loader-monster">
+            <img alt="" class="loader-monster" id="loader-monster" width="120" height="120" decoding="async">
             <h1 class="loader-title">VOCAB MONSTER</h1>
-            <div class="loader-bar-container">
-                <div class="loader-bar" id="progress-bar"></div>
-            </div>
+            <div class="loader-bar-container" aria-hidden="true"><div class="loader-bar"></div></div>
             <div class="loader-text" id="loading-text">INITIALIZING SYSTEMS...</div>
+            <noscript><p>请启用 JavaScript 后使用 Vocab Monster。</p></noscript>
         </div>
     </div>
-
     <div id="root"></div>
-
-    <script type="module" src="/index.tsx"></script>
-    
     <script>
-        // Loading Screen Logic
-        (function() {
-            const progressBar = document.getElementById('progress-bar');
-            const loadingText = document.getElementById('loading-text');
-            const loadingScreen = document.getElementById('loading-screen');
-            const monsterImg = document.getElementById('loader-monster');
-            const root = document.getElementById('root');
-            const body = document.body;
-            const isDevHost = ['localhost', '127.0.0.1'].includes(window.location.hostname) || window.location.hostname.endsWith('.local');
-            const warmupStartTime = performance.now();
-            
-            let progress = 0;
-
-            // 设置当天对应的小怪兽图片
-            if (monsterImg) {
-                const day = new Date().getDay();
-                monsterImg.src = `/monsterImages/M${day}.webp`;
-            }
-
-            const symbolLigatures = [
-                'account_circle', 'add_circle', 'analytics', 'arrow_back', 'arrow_forward', 'bolt',
-                'bookmark', 'casino', 'check', 'check_circle', 'checklist', 'chevron_left',
-                'chevron_right', 'close', 'cloud', 'cloud_done', 'cloud_off', 'cloud_upload',
-                'delete', 'delete_forever', 'devices', 'edit', 'error', 'expand_more', 'filter_list',
-                'grid_view', 'history', 'image', 'layers_clear', 'library_books', 'lock_open',
-                'lock_reset', 'logout', 'mic', 'photo_camera', 'play_arrow', 'refresh', 'report',
-                'save', 'school', 'search', 'search_off', 'show_chart', 'signal_wifi_off', 'sync',
-                'sync_problem', 'volume_up', 'warning'
-            ];
-
-            function waitForMonsterImageLoad() {
-                if (!monsterImg) return Promise.resolve();
-                if (monsterImg.complete) return Promise.resolve();
-
-                return new Promise(resolve => {
-                    monsterImg.addEventListener('load', resolve, { once: true });
-                    monsterImg.addEventListener('error', resolve, { once: true });
-                });
-            }
-
-            async function preloadCriticalAssets() {
-                if (loadingText) loadingText.innerText = 'WARMING UP FONTS & ICONS...';
-
-                const warmupTasks = [waitForMonsterImageLoad()];
-                if (document.fonts && document.fonts.load) {
-                    warmupTasks.push(document.fonts.load('700 1em "Bebas Neue"', 'VOCAB MONSTER'));
-                    warmupTasks.push(document.fonts.load('400 1em "Lexend"', 'LOADING USER PROGRESS 123'));
-                    warmupTasks.push(document.fonts.load('700 1em "Playfair Display"', 'Rank History'));
-                    warmupTasks.push(document.fonts.load('400 1em "Space Mono"', 'INITIALIZING SYSTEMS... 100%'));
-                    warmupTasks.push(document.fonts.load('400 24px "Material Symbols Outlined"', symbolLigatures.join(' ')));
-                    warmupTasks.push(document.fonts.ready);
-                }
-
-                await Promise.allSettled(warmupTasks);
-            }
-
-            // NOTE: previously this wrapped preloadCriticalAssets() in a 6-second
-            // soft timeout. That timeout was the root cause of "icons not loaded
-            // when entering the app" — Material Symbols Outlined (5000+ icons)
-            // routinely takes 8-12s on slow networks, so the timeout fired first,
-            // the loader gave up waiting, and the user saw fallback glyphs in the
-            // dashboard. Now we let preloadCriticalAssets() complete naturally
-            // (it's already allSettled inside) and rely solely on the hard
-            // 25-second fallback below to escape deadlocked networks.
-            const criticalAssetsPromise = preloadCriticalAssets().finally(() => {
-                const warmupDuration = Math.round(performance.now() - warmupStartTime);
-                if (isDevHost) {
-                    console.log(`[Loading] Critical assets warmup finished in ${warmupDuration}ms`);
-                }
-                if (loadingScreen && !loadingScreen.classList.contains('fonts-ready')) {
-                    loadingScreen.classList.add('fonts-ready');
-                }
-            });
-            
-            // 资源检测逻辑
-            function updateLoadingStatus() {
-                const entries = performance.getEntriesByType('resource');
-                const totalEstimated = 25; 
-                const loadedCount = entries.length;
-                
-                const actualProgress = Math.min(90, (loadedCount / totalEstimated) * 90);
-                if (actualProgress > progress) {
-                    progress = actualProgress;
-                }
-
-                if (loadingText && entries.length > 0) {
-                    const lastResource = entries[entries.length - 1].name.split('/').pop().split('?')[0];
-                    if (lastResource) {
-                        loadingText.innerText = `LOADING: ${lastResource.toUpperCase().substring(0, 30)}`;
-                    }
-                }
-                updateLoader();
-            }
-            
-            const interval = setInterval(() => {
-                if (90 > progress) {
-                    progress += 0.5;
-                    updateLoader();
-                }
-                updateLoadingStatus();
-            }, 100);
-
-            function updateLoader() {
-                if (progressBar) progressBar.style.width = `${Math.min(100, progress)}%`;
-            }
-
-            function finishLoading() {
-                clearInterval(interval);
-                progress = 100;
-                updateLoader();
-                if (loadingText) loadingText.innerText = 'MODULES INITIALIZED';
-
-                setTimeout(() => {
-                    if (loadingScreen) {
-                        loadingScreen.style.opacity = '0';
-                        setTimeout(() => {
-                            loadingScreen.style.display = 'none';
-                            if (root) root.style.opacity = '1';
-                            body.style.overflow = 'auto';
-                        }, 500);
-                    }
-                }, 400);
-            }
-
-            // 监听资源和字体加载完毕，增加 25 秒兜底超时
-            // 25s 是最后的硬性兜底——只用于真正死锁的网络环境。
-            // 正常情况下 preloadCriticalAssets() 会在 2-12 秒内完成
-            // （取决于字体和 monster 图的网络状况），所以我们让它自然
-            // 完成，而不是 8s 强制进入导致图标/字体没加载好。
-            const loadTimeout = new Promise(resolve => setTimeout(resolve, 25000));
-            
-            Promise.race([
-                Promise.all([
-                    new Promise(resolve => window.addEventListener('load', resolve)),
-                    criticalAssetsPromise
-                ]),
-                loadTimeout
-            ]).then(() => {
-                // 确保进度条平滑走完最后一段
-                const finishInterval = setInterval(() => {
-                    if (progress >= 100) {
-                        clearInterval(finishInterval);
-                        finishLoading();
-                    } else {
-                        progress += 2;
-                        updateLoader();
-                    }
-                }, 20);
-            });
-        })();
+        document.getElementById('loader-monster').src = `/monsterImages/M${new Date().getDay()}.webp`;
     </script>
+    <script type="module" src="/index.tsx" onerror="document.getElementById('loading-text').textContent='启动失败，请刷新页面重试。'"></script>
 </body>
 </html>

@@ -19,30 +19,19 @@
  *
  * @returns {string} YYYY-MM-DD format date
  */
-export function getShanghaiDateString(): string {
-  const now = new Date();
+export function getShanghaiDateString(occurredAt: number = Date.now()): string {
+  const now = new Date(occurredAt);
 
   // Use toLocaleString for accurate timezone conversion
   // This is more reliable than manual offset calculation
-  const shanghaiString = now.toLocaleString('en-US', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-
-  const shanghaiDate = new Date(shanghaiString);
-
-  // Format as YYYY-MM-DD
-  const year = shanghaiDate.getFullYear();
-  const month = String(shanghaiDate.getMonth() + 1).padStart(2, '0');
-  const day = String(shanghaiDate.getDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+    day: '2-digit'
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(value => value.type === type)!.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 /**

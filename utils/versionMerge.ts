@@ -3,7 +3,7 @@
  * Version comparison and merge strategies for statistics
  */
 
-import { DayStats, DayStatsWithVersion } from '../types';
+import type { DayStats, DayStatsWithVersion } from '../types.ts';
 
 /**
  * Version comparison result

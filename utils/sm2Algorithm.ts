@@ -107,7 +107,7 @@ export function calculateNextReviewDate(
 export function errorRateToQuality(errorCount: number, success: boolean): number {
   if (!success) {
     // Failed: quality based on how many errors they've had
-    return Math.max(0, 3 - errorCount * 0.5);
+    return Math.max(0, Math.min(2, 3 - errorCount * 0.5));
   }
 
   // Success: base quality on error count

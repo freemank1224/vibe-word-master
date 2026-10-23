@@ -1,5 +1,5 @@
 import { getWordsMissingImage } from './dataService';
-import { posOf } from './sceneGame';
+import { posOf } from '../utils/wordPartOfSpeech';
 import { supabase } from '../lib/supabaseClient';
 
 let shouldStop = false;

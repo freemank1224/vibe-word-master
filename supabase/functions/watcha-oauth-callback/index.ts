@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -221,7 +220,7 @@ serve(async (req) => {
       );
     }
 
-    console.log('登录成功:', { user_id: signInData.user.id, session_id: signInData.session.id });
+    console.log('登录成功:', { user_id: signInData.user.id });
 
     // 5. 返回session信息给前端
     return new Response(

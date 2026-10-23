@@ -17,7 +17,7 @@ import {
   WORD_STRIKE_MAX_WORD_LENGTH,
   applyWordStrikeScope,
   getWordStrikeCandidateWords,
-  getWordStrikeGravityScale,
+  getWordStrikeBrickSpeed,
   getWordStrikeUnitSize,
   calculateWordStrikeGameSummary,
   matchTypedWord,
@@ -268,12 +268,12 @@ test('selectWordStrikeWords: smart mode returns requested count on large pool', 
 // difficulty curve
 // ----------------------------------------------------------------
 
-test('getWordStrikeGravityScale: monotonic ramp, clamped at both ends', () => {
-  assert.equal(getWordStrikeGravityScale(0), 0.05);
-  assert.equal(getWordStrikeGravityScale(-5), 0.05);
-  assert.ok(getWordStrikeGravityScale(1) > getWordStrikeGravityScale(0));
-  assert.ok(getWordStrikeGravityScale(10) > getWordStrikeGravityScale(5));
-  assert.equal(getWordStrikeGravityScale(100), 0.18);
+test('getWordStrikeBrickSpeed: monotonic ramp, clamped at both ends', () => {
+  assert.equal(getWordStrikeBrickSpeed(0), 0.8);
+  assert.equal(getWordStrikeBrickSpeed(-5), 0.8);
+  assert.ok(getWordStrikeBrickSpeed(1) > getWordStrikeBrickSpeed(0));
+  assert.ok(getWordStrikeBrickSpeed(10) > getWordStrikeBrickSpeed(5));
+  assert.equal(getWordStrikeBrickSpeed(100), 2.2);
 });
 
 test('getWordStrikeUnitSize: shrinks with length, clamped to [26, 52]', () => {

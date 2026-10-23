@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
-import { Auth } from './components/Auth';
-import { PasswordReset } from './components/PasswordReset';
-import { PasswordForgotRequest } from './components/PasswordForgotRequest';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, recordTestAndSyncStats, VersionConflictError, updateWordMetadata, syncGameResultsToWordStats, healDoubleEncodedImageUrls } from './services/dataService';
+import { createLazyFeature } from './components/LazyFeature';
+import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, updateWordMetadata, healDoubleEncodedImageUrls } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
-import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync } from './services/offlineSyncQueue';
+import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync, hasUnattributedLegacySyncs } from './services/offlineSyncQueue';
 import {
   loadLocalBackup,
   saveLocalBackup,
@@ -14,39 +12,34 @@ import {
   syncSessionToCloud,
   resolveConflict,
   syncAllPendingSessions,
+  persistSessionSyncResult,
   SessionWithSync,
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, SceneGameConfig, SceneGameSummary, WordEntry, WordMeaningOption, WordStrikeGameConfig, WordStrikeGameSummary } from './types';
+import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, WordEntry, WordMeaningOption, WordStrikeGameConfig, WordStrikeGameSummary } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import { MeaningFlipCard } from './components/MeaningFlipCard';
-import TestModeV2 from './components/TestModeV2';
-import PuzzleGameMode from './components/PuzzleGameMode';
-import SceneGameMode from './components/SceneGameMode';
-import WordStrikeGameMode from './components/WordStrikeGameMode';
-import { GameModePickerModal } from './components/GameModePickerModal';
-import { posOf, recordSceneGameRound } from './services/sceneGame';
+import type { WordOrbitSummary } from './services/wordOrbit';
+import { adaptiveWordSelector } from './services/adaptiveWordSelector';
+import { persistLearningAttempt, recordLearningRound, overlayLearningProgress, type LearningResult } from './services/learningRecordStore';
+import { syncPendingLearningProgress } from './services/learningProgressSync';
+import { posOf } from './utils/wordPartOfSpeech';
 import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { compressToWebP } from './utils/imageUtils';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
-import { fetchDictionaryData, fetchWordMeaningOptions, playWordAudio as playWordAudioService } from './services/dictionaryService';
-import { detectWordFamily } from './services/wordFamilyService';
+import { fetchDictionaryData, fetchWordMeaningOptions, playWordAudio as playWordAudioService, type DictionaryData } from './services/dictionaryService';
+import { dictionaryBackfillFilters, missingDictionaryFields, needsDictionaryEnrichment } from './services/testPreparation';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordIds } from './services/imageCache';
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
-import { AchievementUnlockModal } from './components/Achievements/AchievementUnlockModal.tsx';
 import { CoinCounter } from './components/Coin/CoinCounter';
-import { DailyLoginRewardModal } from './components/Coin/DailyLoginRewardModal';
-import { InsufficientCoinsModal } from './components/Coin/InsufficientCoinsModal';
-import { CoinRewardPopup } from './components/Coin/CoinRewardPopup';
 import {
   claimDailyLoginReward,
-  awardQuizCoins,
   awardPuzzleCoins,
   awardWordStrikeCoins,
   awardAchievementCoins,
@@ -55,19 +48,31 @@ import {
   type DailyLoginReward,
 } from './services/coinService';
 // import { generateImagesForMissingWords } from './services/imageGenerationTask';
-import { AccountPanel } from './components/AccountPanel';
 import { LandingPage } from './components/LandingPage';
-import { LibrarySelector } from './components/LibrarySelector';
-import { AdminConsole } from './components/AdminConsole';
-import { PronunciationMaintenancePanel } from './components/PronunciationMaintenancePanel';
 import { HoverTranslationText } from './components/HoverTranslationText';
-import { WatchaCallback } from './components/WatchaCallback';
 import { getShanghaiDateString } from './utils/timezone';
 import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { useT } from './hooks/useT';
 import GlobalChampionBanner from './components/GlobalChampionBanner';
-import GlobalLeaderboardModal from './components/GlobalLeaderboardModal';
+
+const Auth = createLazyFeature(() => import('./components/Auth'), '登录');
+const PasswordReset = createLazyFeature(() => import('./components/PasswordReset'), '密码重置');
+const PasswordForgotRequest = createLazyFeature(() => import('./components/PasswordForgotRequest'), '找回密码');
+const WatchaCallback = createLazyFeature(() => import('./components/WatchaCallback'), '账号授权');
+const TestModeV2 = createLazyFeature(() => import('./components/TestModeV2'), '普通测验');
+const PuzzleGameMode = createLazyFeature(() => import('./components/PuzzleGameMode'), '九宫格游戏');
+const WordStrikeGameMode = createLazyFeature(() => import('./components/WordStrikeGameMode'), '单词射击');
+const WordOrbitGameMode = createLazyFeature(() => import('./components/WordOrbitGameMode'), '星球跑酷');
+const AccountPanel = createLazyFeature(() => import('./components/AccountPanel').then(module => ({ default: module.AccountPanel })), '个人中心', true);
+const AdminConsole = createLazyFeature(() => import('./components/AdminConsole').then(module => ({ default: module.AdminConsole })), '管理面板', true);
+const PronunciationMaintenancePanel = createLazyFeature(() => import('./components/PronunciationMaintenancePanel').then(module => ({ default: module.PronunciationMaintenancePanel })), '发音维护', true);
+const LibrarySelector = createLazyFeature(() => import('./components/LibrarySelector').then(module => ({ default: module.LibrarySelector })), '词库选择');
+const GlobalLeaderboardModal = createLazyFeature(() => import('./components/GlobalLeaderboardModal'), '全球排行榜', true);
+const GameModePickerModal = createLazyFeature(() => import('./components/GameModePickerModal').then(module => ({ default: module.GameModePickerModal })), '游戏模式', true);
+const AchievementUnlockModal = createLazyFeature(() => import('./components/Achievements/AchievementUnlockModal').then(module => ({ default: module.AchievementUnlockModal })), '成就奖励', true);
+const DailyLoginRewardModal = createLazyFeature(() => import('./components/Coin/DailyLoginRewardModal').then(module => ({ default: module.DailyLoginRewardModal })), '每日奖励', true);
+const CoinRewardPopup = createLazyFeature(() => import('./components/Coin/CoinRewardPopup').then(module => ({ default: module.CoinRewardPopup })), '金币奖励', true);
 
 // --- Tooltip Component ---
 interface TooltipProps {
@@ -123,7 +128,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) 
                                     );
                                 };
 
-type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | SceneGameConfig | WordStrikeGameConfig;
+type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | { kind: 'ORBIT' } | WordStrikeGameConfig;
 
 type EditableWord = {
   tempId: string;
@@ -197,7 +202,11 @@ const App: React.FC = () => {
   const definitionBackfillCompletedRef = useRef<Set<string>>(new Set());
   const definitionBackfillRetryRef = useRef<Map<string, number>>(new Map());
   const definitionBackfillRunningRef = useRef(false);
+  const definitionBackfillIdentityRevisionRef = useRef(-1);
   const latestWordsRef = useRef<WordEntry[]>([]);
+  const authUserIdRef = useRef<string | null>(null);
+  const refreshRequestRef = useRef(0);
+  const strikeRoundIds = useRef(new WeakMap<WordStrikeGameSummary, { id: string; occurredAt: number }>());
 
   // 通知系统
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
@@ -337,7 +346,7 @@ const App: React.FC = () => {
   // Test Mode Configuration State
   const [testConfig, setTestConfig] = useState<TestConfig | null>(null);
   const [showQuickTestModal, setShowQuickTestModal] = useState(false);
-  // GAME MODE picker — hosts Word Strike, Puzzle and Scene (games left the
+  // GAME MODE picker — hosts Word Strike and Puzzle (games left the
   // QUICK TEST modal so it stays a pure test-range chooser).
   const [showGamePickerModal, setShowGamePickerModal] = useState(false);
   
@@ -429,14 +438,12 @@ const App: React.FC = () => {
   const [isReconciled, setIsReconciled] = useState(false);
   const [showAccountPanel, setShowAccountPanel] = useState(false);
   const [showGlobalLeaderboard, setShowGlobalLeaderboard] = useState(false);
+  const [hasOpenedGlobalLeaderboard, setHasOpenedGlobalLeaderboard] = useState(false);
 
   // ─── Coin currency state ─────────────────────────────────────
-  // coinBalance starts at -1 (sentinel for "loading") so SceneGameMode's
-  // client-side gate doesn't prematurely block while the wallet RPC is
-  // still in-flight. The edge function's server-side gate is authoritative.
+  // A negative balance represents the wallet RPC loading state.
   const [coinBalance, setCoinBalance] = useState(-1);
   const [dailyLoginReward, setDailyLoginReward] = useState<DailyLoginReward | null>(null);
-  const [showInsufficientCoins, setShowInsufficientCoins] = useState(false);
   const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'word_strike' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
 
   // Monotonic sequence guarding setCoinBalance against stale fetches. Each
@@ -445,51 +452,132 @@ const App: React.FC = () => {
   // login-time fetch (started before the award committed) can't clobber the
   // authoritative new_balance returned by claimDailyLoginReward.
   const balanceReqSeqRef = useRef(0);
+  const authIdentityRevisionRef = useRef(0);
 
   const refreshCoinBalance = useCallback(async () => {
+    const userId = authUserIdRef.current;
+    if (!userId) return;
+    const identityRevision = authIdentityRevisionRef.current;
     const seq = ++balanceReqSeqRef.current;
     const bal = await getCoinBalance();
-    if (seq === balanceReqSeqRef.current) {
-      setCoinBalance(bal);
-    }
+    if (authUserIdRef.current === userId && authIdentityRevisionRef.current === identityRevision
+      && seq === balanceReqSeqRef.current) setCoinBalance(bal);
   }, []);
   
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);
   const visibleWords = useMemo(() => words.filter(w => !w.deleted), [words]);
+  const [reviewClock, setReviewClock] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setReviewClock(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const dueWords = useMemo(() => adaptiveWordSelector.rankCandidates(visibleWords, reviewClock).filter(item => item.schedule.isDue).map(item => item.word), [visibleWords, reviewClock]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) return;
+    let cancelled = false;
+    let busy = false;
+    const sync = async () => {
+      if (busy || cancelled || authUserIdRef.current !== userId) return;
+      busy = true;
+      try {
+        await syncPendingLearningProgress(userId);
+        const { words: cloudWords } = await fetchUserData(userId);
+        if (cancelled || authUserIdRef.current !== userId) return;
+        const byId = new Map(cloudWords.map(word => [word.id, word]));
+        const next = overlayLearningProgress(userId, latestWordsRef.current.map(word => {
+          const cloud = byId.get(word.id);
+          if (!cloud) return word;
+          return { ...word, correct: cloud.correct, tested: cloud.tested, score: cloud.score,
+            error_count: cloud.error_count, consecutive_correct: cloud.consecutive_correct,
+            last_tested: cloud.last_tested, best_time_ms: cloud.best_time_ms,
+            review_state: cloud.review_state, learning_revision: cloud.learning_revision };
+        }));
+        latestWordsRef.current = next; setWords(next);
+      } catch (error) { console.warn('[LearningSync] Records retained:', error); }
+      finally { busy = false; }
+    };
+    void sync();
+    window.addEventListener('online', sync);
+    window.addEventListener('focus', sync);
+    const timer = window.setInterval(sync, 60000);
+    return () => { cancelled = true; window.removeEventListener('online', sync); window.removeEventListener('focus', sync); window.clearInterval(timer); };
+  }, [session?.user?.id]);
 
   // Auth Listener
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
+    let alive = true;
+    let observedAuthEvent = false;
+    const authTimers = new Set<number>();
+    const clearAuthTimers = () => {
+      authTimers.forEach(timer => window.clearTimeout(timer));
+      authTimers.clear();
+    };
+    const applySession = (nextSession: any) => {
+      if (!alive) return;
+      const nextUserId = nextSession?.user?.id || null;
+      if (authUserIdRef.current !== nextUserId) {
+        authUserIdRef.current = nextUserId;
+        refreshRequestRef.current++;
+        authIdentityRevisionRef.current++;
+        balanceReqSeqRef.current++;
+        clearAuthTimers();
+        _lastDailyClaimUserId = null;
+        setCoinBalance(-1); setPendingCoinReward(null); setDailyLoginReward(null);
+        setConflictModal(null); setConflictChoice(null); setSyncingSessionId(null); setPendingSyncCount(0);
+        setEditingSessionId(null); setTestConfig(null); setShowQuickTestModal(false); setShowGamePickerModal(false);
+        setShowDeleteConfirm(false); setIdsToDelete([]); setDeleteProgress(null); setIsDeleting(false);
+        setSelectedDashboardSessionIds(new Set()); setHighlightRecentSessions(false);
+        setUnlockedAchievements(new Set()); setAchievementQueue([]); setIsReconciled(false);
+        setShowAccountPanel(false); setShowGlobalLeaderboard(false); setHasOpenedGlobalLeaderboard(false);
+        setShowAdminConsole(false); setShowPronunciationMaintenancePanel(false);
+        setCachedImageWordIds(new Set()); setCachedImageDataUrls({}); setDataError(null);
+        latestWordsRef.current = [];
+        setWords([]); setSessions([]); setDailyStats({}); setMode('DASHBOARD');
+      }
+      setSession(nextSession);
+    };
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+      if (!observedAuthEvent) applySession(session);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+      if (!alive) return;
+      observedAuthEvent = true;
+      applySession(session);
 
       // ─── Daily login reward ────────────────────────────────────
-      // Fire once per user per page-load. The RPC itself is idempotent
+      // Fire once per active account period. The RPC itself is idempotent
       // (same-day re-claim returns already_claimed_today=true), but we
       // also guard client-side to avoid unnecessary network calls and
       // repeated modal pops during auth event flurries.
       if (session?.user?.id && session.user.id !== _lastDailyClaimUserId) {
-        _lastDailyClaimUserId = session.user.id;
+        const userId = session.user.id;
+        const identityRevision = authIdentityRevisionRef.current;
+        _lastDailyClaimUserId = userId;
+        const isCurrent = () => alive && authUserIdRef.current === userId
+          && authIdentityRevisionRef.current === identityRevision;
         // Delay slightly so the initial data fetch kicks off first.
-        setTimeout(async () => {
-          const reward = await claimDailyLoginReward();
-          if (!reward) return;
-          setCoinBalance(reward.new_balance);
-          // Invalidate any refreshCoinBalance fetch that started before this
-          // award committed, so its stale response can't clobber new_balance.
-          balanceReqSeqRef.current += 1;
-          if (!reward.already_claimed_today && reward.total_awarded > 0) {
-            setDailyLoginReward(reward);
+        const timer = window.setTimeout(async () => {
+          authTimers.delete(timer);
+          if (!isCurrent()) return;
+          try {
+            const reward = await claimDailyLoginReward();
+            if (!isCurrent() || !reward) return;
+            setCoinBalance(reward.new_balance);
+            balanceReqSeqRef.current += 1;
+            if (!reward.already_claimed_today && reward.total_awarded > 0) setDailyLoginReward(reward);
+          } catch (error) {
+            if (isCurrent()) console.warn('[Wallet] Daily reward request failed:', error);
           }
         }, 800);
+        authTimers.add(timer);
       }
 
       // Check if user's email is confirmed after login/signup
@@ -497,36 +585,55 @@ const App: React.FC = () => {
         // Only show this warning if we haven't already shown it for this user
         const notificationKey = `email-warning-shown-${session.user.id}`;
         if (!localStorage.getItem(notificationKey)) {
-          setTimeout(() => {
+          const userId = session.user.id;
+          const identityRevision = authIdentityRevisionRef.current;
+          const timer = window.setTimeout(() => {
+            authTimers.delete(timer);
+            if (!alive || authUserIdRef.current !== userId || authIdentityRevisionRef.current !== identityRevision) return;
             showNotification(
               '⚠️ Please confirm your email address! Check your inbox (including spam folder) to activate your account.',
               'warning'
             );
           }, 1000);
+          authTimers.add(timer);
           localStorage.setItem(notificationKey, 'true');
         }
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => { alive = false; clearAuthTimers(); subscription.unsubscribe(); };
   }, []);
 
-  // Fetch Data on Login
+  // Only an account identity change initializes data. TOKEN_REFRESHED replaces
+  // the session object too, but must not restart requests or interrupt a test.
+  const dataUserId = session?.user?.id ?? null;
+  const dataIdentityRevision = authIdentityRevisionRef.current;
+  const loadedDataIdentityRef = useRef<{ userId: string; revision: number } | null>(null);
   const refreshData = useCallback(() => {
-    if (session?.user) {
+    const userId = dataUserId;
+    const identityRevision = dataIdentityRevision;
+    if (userId && authUserIdRef.current === userId && authIdentityRevisionRef.current === identityRevision) {
+      const requestId = ++refreshRequestRef.current;
+      const isCurrent = () => authUserIdRef.current === userId
+        && authIdentityRevisionRef.current === identityRevision && refreshRequestRef.current === requestId;
+      const initialLoad = loadedDataIdentityRef.current?.userId !== userId
+        || loadedDataIdentityRef.current?.revision !== identityRevision;
       setLoadingData(true);
       setDataError(null);
       // Coin balance loads in parallel (non-blocking; errors are swallowed
       // inside refreshCoinBalance so a wallet RPC failure can't break data load).
       void refreshCoinBalance();
       Promise.all([
-          fetchUserData(session.user.id),
-          fetchUserStats(session.user.id),
-          fetchUserAchievements(session.user.id)
+          fetchUserData(userId),
+          fetchUserStats(userId),
+          fetchUserAchievements(userId)
       ])
         .then(([{ sessions, words }, stats, achievementIds]) => {
+          if (!isCurrent()) return;
           setSessions(sessions);
-          setWords(words);
+          const currentWords = overlayLearningProgress(userId, words);
+          latestWordsRef.current = currentWords;
+          setWords(currentWords);
 
           // Initialize Achievements (DB Load)
           setUnlockedAchievements(new Set(achievementIds));
@@ -536,7 +643,7 @@ const App: React.FC = () => {
           // never received coins for them. The award RPCs are idempotent
           // (reference=achievement_id), so this is safe to run once and
           // never again.
-          const backfillKey = `vibe_coin_ach_backfill_${session.user.id}`;
+          const backfillKey = `vibe_coin_ach_backfill_${userId}`;
           if (achievementIds.length > 0 && !localStorage.getItem(backfillKey)) {
             localStorage.setItem(backfillKey, '1');
             achievementIds.forEach(id => {
@@ -565,158 +672,66 @@ const App: React.FC = () => {
           });
 
           // Merge with local stats using version-aware logic
-          const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
-
-          setDailyStats(mergedStats);
+          setDailyStats(current => resolveStatsUpdate(current, Object.values(serverStatsMap)));
+          loadedDataIdentityRef.current = { userId, revision: identityRevision };
         })
         .catch((err) => {
+            if (!isCurrent()) return;
             console.error("Data load error:", err);
-            setDataError("Failed to fetch data from the cloud. Please check your connection.");
+            if (initialLoad) setDataError("Failed to fetch data from the cloud. Please check your connection.");
+            else showNotification('云端刷新暂未完成，当前数据已保留，请稍后重试。', 'warning');
         })
-        .finally(() => setLoadingData(false));
+        .finally(() => { if (isCurrent()) setLoadingData(false); });
     }
-  }, [session, refreshCoinBalance]);
+  }, [dataUserId, dataIdentityRevision, refreshCoinBalance]);
 
   useEffect(() => {
       refreshData();
   }, [refreshData]);
 
-  // ✅ NEW (Phase C): Process offline sync queue on login
-  useEffect(() => {
-    const processQueue = async () => {
-      if (session?.user) {
-        const count = getPendingSyncCount();
-        if (count > 0) {
-          console.log(`[App] Found ${count} pending syncs, processing...`);
-
-          try {
-            const result = await processPendingSyncs();
-
-            if (result.success > 0) {
-              // ✅ Refresh stats after successful sync with version-aware merging
-              const stats = await fetchUserStats(session.user.id);
-              const serverStatsMap: Record<string, DayStats> = {};
-              const shanghaiToday = getShanghaiDateString();
-              stats.forEach((s: any) => {
-                  serverStatsMap[s.date] = {
-                      date: s.date,
-                      total: s.total_count || s.total,
-                      correct: s.correct_count || s.correct,
-                      points: s.total_points ?? s.points ?? 0,
-                      is_frozen: s.is_frozen || s.date < shanghaiToday,
-                      version: s.version,
-                      updated_at: s.updated_at
-                  };
-              });
-
-              const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
-              setDailyStats(mergedStats);
-
-              showNotification(
-                  `✅ 离线队列同步完成：${result.success} 条测试记录`,
-                  'success'
-              );
-            }
-
-            if (result.failed > 0) {
-              showNotification(
-                  `⚠️ ${result.failed} 条测试记录同步失败（超过重试次数）`,
-                  'error'
-              );
-            }
-
-            // Update pending count
-            setPendingSyncCount(getPendingSyncCount());
-          } catch (error) {
-            console.error('[App] Failed to process pending syncs:', error);
-          }
-        }
-
-        // Initial count update
-        setPendingSyncCount(getPendingSyncCount());
+  // One account-scoped worker for login, reconnection, focus and periodic retries.
+  const flushStatsQueue = useCallback(async (userId: string) => {
+    try {
+      const result = await processPendingSyncs(userId);
+      if (authUserIdRef.current !== userId) return;
+      setPendingSyncCount(result.pending);
+      if (result.success > 0) {
+        const rows = await fetchUserStats(userId);
+        if (authUserIdRef.current !== userId) return;
+        setDailyStats(prev => resolveStatsUpdate(prev, rows.map(row => ({
+          date: row.date, total: row.total_count ?? row.total ?? 0,
+          correct: row.correct_count ?? row.correct ?? 0, points: row.total_points ?? row.points ?? 0,
+          version: row.version, updated_at: row.updated_at, is_frozen: row.is_frozen,
+        }))));
+        void refreshCoinBalance();
+        const coins = result.receipts.reduce((sum, receipt) => sum + receipt.coins_awarded, 0);
+        if (coins > 0) setPendingCoinReward({ amount: coins, source: 'quiz' });
       }
-    };
+      if (result.failed > 0) showNotification('测试记录仍保存在本机，将自动重试同步。', 'warning');
+    } catch (error) {
+      if (authUserIdRef.current !== userId) return;
+      console.error('[StatsSync]', error);
+      showNotification('统计同步暂未完成，本机记录已保留。', 'warning');
+    }
+  }, [refreshCoinBalance]);
 
-    processQueue();
-  }, [session?.user?.id]);  // Trigger on login
-
-  // ✅ NEW (Phase C): Update pending sync count periodically
   useEffect(() => {
-    const updateCount = () => {
-      setPendingSyncCount(getPendingSyncCount());
-    };
-
-    // Update every 5 seconds
-    const interval = setInterval(updateCount, 5000);
-
-    return () => clearInterval(interval);
-  }, [session?.user?.id]);
-
-  // ✅ NEW (Phase C): Periodic queue processing (every 60 seconds)
-  useEffect(() => {
-    if (!session?.user) return;
-
-    const interval = setInterval(async () => {
-      const count = getPendingSyncCount();
-      if (count > 0) {
-        console.log('[App] Periodic queue processing...');
-        await processPendingSyncs();
-        // ✅ Refresh stats with version-aware merging
-        const stats = await fetchUserStats(session.user.id);
-        const serverStatsMap: Record<string, DayStats> = {};
-        const shanghaiToday = getShanghaiDateString();
-        stats.forEach((s: any) => {
-            serverStatsMap[s.date] = {
-                date: s.date,
-                total: s.total_count || s.total,
-                correct: s.correct_count || s.correct,
-                points: s.total_points ?? s.points ?? 0,
-                is_frozen: s.is_frozen || s.date < shanghaiToday,
-                version: s.version,
-                updated_at: s.updated_at
-            };
-        });
-
-        const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
-        setDailyStats(mergedStats);
-      }
-    }, 60000);  // 60 seconds
-
-    return () => clearInterval(interval);
-  }, [session?.user?.id]);
-
-  // ✅ NEW (Phase C): Periodic queue processing (every 60 seconds)
-  useEffect(() => {
-    if (!session?.user) return;
-
-    const interval = setInterval(async () => {
-      const count = getPendingSyncCount();
-      if (count > 0) {
-        console.log('[App] Periodic queue processing...');
-        await processPendingSyncs();
-        // ✅ Refresh stats with version-aware merging
-        const stats = await fetchUserStats(session.user.id);
-        const serverStatsMap: Record<string, DayStats> = {};
-        const shanghaiToday = getShanghaiDateString();
-        stats.forEach((s: any) => {
-            serverStatsMap[s.date] = {
-                date: s.date,
-                total: s.total_count || s.total,
-                correct: s.correct_count || s.correct,
-                points: s.total_points ?? s.points ?? 0,
-                is_frozen: s.is_frozen || s.date < shanghaiToday,
-                version: s.version,
-                updated_at: s.updated_at
-            };
-        });
-
-        const mergedStats = resolveStatsUpdate(dailyStats, Object.values(serverStatsMap));
-        setDailyStats(mergedStats);
-      }
-    }, 60000);  // 60 seconds
-
-    return () => clearInterval(interval);
-  }, [session?.user?.id]);
+    const userId = session?.user?.id;
+    if (!userId) { setPendingSyncCount(0); return; }
+    try {
+      setPendingSyncCount(getPendingSyncCount(userId));
+      if (hasUnattributedLegacySyncs()) showNotification('检测到旧版离线记录缺少账号归属，已保留，暂不自动上传。', 'warning');
+    } catch (error) {
+      console.error('[StatsSync] Local queue could not be read:', error);
+      showNotification('本机离线记录读取异常，请保留浏览器数据。', 'error');
+    }
+    const sync = () => { void flushStatsQueue(userId); };
+    sync();
+    window.addEventListener('online', sync);
+    window.addEventListener('focus', sync);
+    const timer = window.setInterval(sync, 60000);
+    return () => { window.removeEventListener('online', sync); window.removeEventListener('focus', sync); window.clearInterval(timer); };
+  }, [session?.user?.id, flushStatsQueue]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -727,7 +742,6 @@ const App: React.FC = () => {
     setAchievementQueue([]);
     setCoinBalance(-1);
     setDailyLoginReward(null);
-    setShowInsufficientCoins(false);
     setPendingCoinReward(null);
     _lastDailyClaimUserId = null;
   };
@@ -878,203 +892,91 @@ const App: React.FC = () => {
     return dailyStats;
   };
   
-  // ✨ NEW: Helper to update stats with incremental recording
-  // This uses the new daily_test_records table for accurate incremental statistics
+  const completedStatsRef = useRef(new Set<string>());
   const updateLocalStats = async (summary: CompletedTestSummary) => {
-      // ✅ CRITICAL: Use unified Shanghai timezone for consistency with database
-      // This ensures data is recorded to the correct date regardless of device timezone settings
-      const today = getShanghaiDateString();  // Uses Asia/Shanghai timezone (UTC+8)
-
-      const results = summary.results;
-
-      // Calculate test results
-      const correctCount = results.filter(r => r.correct).length;
-      const currentTestPoints = summary.totalScore;
-
-      console.log(`[updateLocalStats] Recording test: ${results.length} words, ${correctCount} correct, ${currentTestPoints} weighted points (Shanghai date: ${today})`, {
-        rawPoints: summary.rawPoints,
-        timeBonusPoints: summary.timeBonusPoints,
-        totalTimeMs: summary.totalTimeMs,
-      });
-
-      // ✅ NEW (Phase D): Read-only protection - today must remain writable; if today is frozen, block writes
-      if (dailyStats[today]?.is_frozen) {
-        console.error('[updateLocalStats] ❌ Attempted to modify frozen day:', today);
-        showNotification(
-          '❌ 今日统计已冻结，无法继续修改。',
-          'error'
-        );
-        return;  // Reject modification
-      }
-
-      // Update local stats immediately for instant UI feedback (optimistic update)
-      setDailyStats(prev => {
-          const current = prev[today] || { date: today, total: 0, correct: 0, points: 0 };
-          return {
-              ...prev,
-              [today]: {
-                  date: today,
-                  total: current.total + results.length,
-                  correct: current.correct + correctCount,
-                  points: current.points + currentTestPoints
-              }
-          };
-      });
-
-      // 🔄 Record test to database and wait for confirmation
-      if (session?.user) {
-          try {
-              // ✅ NEW (Phase B): Get current version for optimistic locking
-              const currentStats = dailyStats[today];
-              const currentVersion = currentStats?.version || 0;
-
-              const dbStats = await recordTestAndSyncStats(
-                  results.length,
-                  correctCount,
-                  currentTestPoints,
-                  currentVersion  // ✅ NEW: Send expected version
-              );
-
-              if (dbStats) {
-                  console.log('[updateLocalStats] ✅ Database sync completed:', dbStats);
-
-                  // ✅ NEW (Phase B): Handle conflict detection result
-                  if (dbStats.conflict_detected) {
-                      console.warn('[updateLocalStats] ⚠️ Version conflict detected and auto-merged by database:', {
-                          client: currentVersion,
-                          server: dbStats.version
-                      });
-
-                      // Conflict was auto-merged, update local state with merged data
-                      setDailyStats(prev => {
-                          const newStats = { ...prev };
-                          newStats[today] = {
-                              date: today,
-                              total: dbStats.total_tests || results.length,
-                              correct: dbStats.correct_tests || correctCount,
-                              points: dbStats.total_points || currentTestPoints,
-                              version: dbStats.version,
-                              updated_at: new Date().toISOString(),
-                              _conflict: true,
-                              _resolved: 'merged'
-                          };
-                          return newStats;
-                      });
-
-                      // Show user notification about conflict
-                      showNotification(
-                          `⚠️ 版本冲突已自动解决：两个设备同时测试，数据已合并 (total: ${dbStats.total_tests}, correct: ${dbStats.correct_tests})`,
-                          'warning'
-                      );
-                  } else {
-                      // Normal sync without conflict
-                      // Update local state with accurate database values
-                      setDailyStats(prev => {
-                          const newStats = { ...prev };
-                          newStats[today] = {
-                              date: today,
-                              total: dbStats.total_tests || results.length,
-                              correct: dbStats.correct_tests || correctCount,
-                              points: dbStats.total_points || currentTestPoints,
-                              version: dbStats.version,
-                              updated_at: new Date().toISOString()
-                          };
-                          return newStats;
-                      });
-                  }
-              } else {
-                  console.warn('[updateLocalStats] ⚠️ Database returned null, keeping local optimistic update');
-              }
-          } catch (err) {
-              // ✅ NEW (Phase B): Handle version conflict errors
-              if (err instanceof VersionConflictError) {
-                  console.error('[updateLocalStats] ❌ Version conflict error:', {
-                      clientVersion: (err as VersionConflictError).clientVersion,
-                      error: err.message
-                  });
-
-                  // Show user notification
-                  showNotification(
-                      `⚠️ 检测到并发修改：请刷新页面查看最新数据`,
-                      'warning'
-                  );
-
-                  // Keep local optimistic update - user should refresh to see server state
-                  return;
-              }
-
-              console.error('[updateLocalStats] ❌ Failed to sync with database:', err);
-
-              // ✅ NEW (Phase C): Enqueue to offline queue for retry
-              try {
-                  const currentStats = dailyStats[today];
-                  const currentVersion = currentStats?.version || 0;
-                  await enqueuePendingSync({
-                      date: today,
-                      testCount: results.length,
-                      correctCount: correctCount,
-                      points: currentTestPoints,
-                      expectedVersion: currentVersion,
-                      timestamp: Date.now()
-                  });
-
-                  showNotification(
-                      '⚠️ 同步失败，数据已保存到离线队列，将在下次连接时重试',
-                      'warning'
-                  );
-              } catch (queueErr) {
-                  console.error('[updateLocalStats] ❌ Failed to enqueue pending sync:', queueErr);
-              }
-              // Keep local optimistic update on error
-          }
-      }
+    const userId = session?.user?.id;
+    if (!userId || authUserIdRef.current !== userId) throw new Error('请登录后保存测试结果。');
+    if (!summary.roundId || !summary.occurredAt) throw new Error('测试结果缺少原始编号和时间。');
+    if (!summary.results.length) return;
+    const roundKey = `${userId}:${summary.roundId}`;
+    if (completedStatsRef.current.has(roundKey)) return;
+    const date = getShanghaiDateString(summary.occurredAt);
+    const correctCount = summary.results.filter(result => result.correct).length;
+    // Persist before any request or optimistic UI. The same ID is used for every retry and reward.
+    const added = await enqueuePendingSync({
+      id: summary.roundId, userId, date, timestamp: summary.occurredAt,
+      testCount: summary.results.length, correctCount, points: summary.totalScore,
+      expectedVersion: dailyStats[date]?.version ?? 0,
+    });
+    completedStatsRef.current.add(roundKey);
+    if (authUserIdRef.current !== userId) return;
+    if (added) setDailyStats(prev => {
+      const current = prev[date] || { date, total: 0, correct: 0, points: 0 };
+      return { ...prev, [date]: { ...current, total: current.total + summary.results.length,
+        correct: current.correct + correctCount, points: (current.points || 0) + summary.totalScore } };
+    });
+    setPendingSyncCount(getPendingSyncCount(userId));
+    void flushStatsQueue(userId);
   };
 
-  // ☁️ Sync Status Checker - Check localStorage and update sessions with sync status
+  // Account-scoped backup status; stale reads cannot update a different account.
   useEffect(() => {
-    // Wait for data to be fully loaded
-    if (loadingData) return;
-
-    // Only run when we have sessions
-    if (sessions.length === 0) return;
-
-    console.log('[SyncStatusChecker] Checking sync status for loaded sessions...');
-
+    const userId = session?.user?.id;
+    if (!userId || loadingData || sessions.length === 0) return;
     let cancelled = false;
+    void loadLocalBackup(userId).then(backup => {
+      if (cancelled || authUserIdRef.current !== userId) return;
+      const statuses = new Map((backup?.sessions ?? []).map(item => [item.id, item.syncStatus]));
+      setSessions(prev => prev.map(item => ({ ...item, syncStatus: statuses.get(item.id) ?? 'synced' })));
+    }).catch(error => {
+      if (!cancelled && authUserIdRef.current === userId) console.warn('[SyncStatusChecker] Backup unavailable:', error);
+    });
+    return () => { cancelled = true; };
+  }, [loadingData, sessions.length, session?.user?.id]);
 
-    void (async () => {
-      const localBackup = await loadLocalBackup();
+  // Only fill fields which are still missing, including a compare-before-write guard on the server.
+  const backfillWordDictionaryMetadata = useCallback(async (
+    userId: string, identityRevision: number, wordId: string, data: DictionaryData | null,
+    source: Pick<WordEntry, 'text' | 'language'>,
+  ): Promise<void> => {
+    const isCurrent = () => authUserIdRef.current === userId
+      && authIdentityRevisionRef.current === identityRevision;
+    if (!data || !isCurrent()) return;
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (!isCurrent() || authError || user?.id !== userId) return;
+    const current = latestWordsRef.current.find(word => word.id === wordId && !word.deleted);
+    const sourceKey = normalizeDefinitionBackfillKey(source.text, source.language || 'en');
+    if (!current || !needsDictionaryEnrichment(current)
+      || normalizeDefinitionBackfillKey(current.text, current.language || 'en') !== sourceKey) return;
+    const patch = missingDictionaryFields(current, data);
+    if (!Object.keys(patch).length) return;
 
-      if (cancelled) return;
-
-      const localBackupMap = new Map<string, SyncStatus>();
-
-      if (localBackup && localBackup.sessions.length > 0) {
-        localBackup.sessions.forEach(s => {
-          localBackupMap.set(s.id, s.syncStatus);
-          console.log(`[SyncStatusChecker] Found in local backup: ${s.id} -> ${s.syncStatus}`);
-        });
-      }
-
-      setSessions(prev => prev.map(s => {
-        const syncStatus = localBackupMap.get(s.id);
-        if (syncStatus) {
-          console.log(`[SyncStatusChecker] Session ${s.id}: ${syncStatus}`);
-          return { ...s, syncStatus };
-        }
-
-        console.log(`[SyncStatusChecker] Session ${s.id}: synced (not in backup)`);
-        return { ...s, syncStatus: 'synced' as const };
-      }));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [loadingData, sessions.length]); // Depend on loading completion and sessions array
+    // A meaning chosen on another tab/device while this request is in flight wins.
+    let update = supabase.from('words').update(patch).eq('id', wordId).eq('user_id', userId)
+      .eq('text', current.text);
+    const filters = dictionaryBackfillFilters(current, patch, source.language || 'en');
+    for (const filter of filters.or) update = update.or(filter);
+    for (const [field, value] of filters.equals) update = update.eq(field, value);
+    const { data: updated, error } = await update.select('id');
+    if (error) throw error;
+    if (!isCurrent() || !updated?.length) return;
+    setWords(previous => {
+      if (!isCurrent()) return previous;
+      const next = previous.map(word => word.id === wordId && !word.deleted
+        && normalizeDefinitionBackfillKey(word.text, word.language || 'en') === sourceKey
+        ? { ...word, ...missingDictionaryFields(word, data) }
+        : word);
+      latestWordsRef.current = next;
+      return next;
+    });
+  }, []);
 
   // Background Process
   const processBackgroundData = async (userId: string, wordsToProcess: any[]) => {
+    const identityRevision = authIdentityRevisionRef.current;
+    const isCurrent = () => authUserIdRef.current === userId
+      && authIdentityRevisionRef.current === identityRevision;
+    if (!isCurrent()) return;
     if (!wordsToProcess || !Array.isArray(wordsToProcess)) {
       appendImageGenDebug('background_process_invalid_input', { userId, wordsToProcessType: typeof wordsToProcess });
       return;
@@ -1097,12 +999,14 @@ const App: React.FC = () => {
     }
 
     for (const w of wordsToProcess) {
+      if (!isCurrent()) return;
         appendImageGenDebug('word_process_begin', { id: w.id, text: w.text, hasImagePath: !!w.image_path, hasAssetId: !!w.image_asset_id, language: w.language || 'en' });
 
       if (!w.image_path && !w.image_asset_id) {
         try {
                 appendImageGenDebug('image_gen_request_start', { id: w.id, text: w.text });
           const generated = await requestQueuedWordImage(w.text, { language: w.language || 'en', partOfSpeech: posOf(w) });
+          if (!isCurrent()) return;
 
           // Edge function now handles upload and word linking
           const publicUrl = generated.publicUrl;
@@ -1122,6 +1026,7 @@ const App: React.FC = () => {
                 if (webpBlob) {
                   const reader = new FileReader();
                   const webpDataUrl = await new Promise<string>((resolve) => { reader.onload = () => resolve(reader.result as string); reader.readAsDataURL(webpBlob); });
+                  if (!isCurrent()) return;
                   // Upload the WebP to replace edge function's potentially-PNG storage
                   await supabase.functions.invoke('image-migrate', {
                     body: { action: 'upload-converted', word: w.text, language: w.language || 'en', webpDataUrl, sizeBytes: webpBlob.size },
@@ -1136,10 +1041,12 @@ const App: React.FC = () => {
             // Cache in browser if dataUrl is available
             if (generated.dataUrl) {
               await cacheGeneratedImageForWord({ id: w.id, text: w.text, language: w.language || 'en' }, generated.dataUrl);
+              if (!isCurrent()) return;
               setCachedImageWordIds(prev => { const next = new Set(prev); next.add(w.id); return next; });
               setCachedImageDataUrls(prev => ({ ...prev, [w.id]: generated.dataUrl! }));
             }
 
+            if (!isCurrent()) return;
             showNotification(`🖼️ 已生成图片：${w.text}`, 'success');
             setWords(prev => prev.map(word =>
               word.id === w.id
@@ -1151,6 +1058,7 @@ const App: React.FC = () => {
             showNotification(`⚠️ 图片生成失败：${w.text}（已自动尝试备用服务）`, 'warning');
           }
         } catch (e) {
+          if (!isCurrent()) return;
           console.warn(`Background image generation failed for ${w.text}:`, e);
           appendImageGenDebug('image_gen_exception', { id: w.id, text: w.text, error: (e as any)?.message || String(e) });
           showNotification(`⚠️ 图片生成异常：${w.text}`, 'warning');
@@ -1159,30 +1067,19 @@ const App: React.FC = () => {
         appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path, assetId: w.image_asset_id });
       }
 
-        // 2. Process Dictionary Info (Phonetic, Audio, Definition)
-        try {
-            const dict = await fetchDictionaryData(w.text, w.language || 'en');
-            if (dict) {
-                await updateWordStatusV2(w.id, {
-                    correct: w.correct || false,
-                    phonetic: dict.phonetic,
-                    audio_url: dict.audioUrl,
-                    language: w.language || 'en',
-                  definition_cn: dict.definition_cn,
-                    definition_en: dict.definition_en
-                });
-                
-                // Update local state if word still exists
-                setWords(prev => prev.map(word => 
-                    word.id === w.id 
-                  ? { ...word, phonetic: dict.phonetic || null, audio_url: dict.audioUrl || null, language: w.language || 'en', definition_cn: dict.definition_cn || word.definition_cn || null, definition_en: dict.definition_en || null } 
-                    : word
-                ));
-            }
-        } catch (e) {
-            console.warn(`Background dictionary fetch failed for ${w.text}:`, e);
-          appendImageGenDebug('dictionary_fetch_failed', { id: w.id, text: w.text, error: (e as any)?.message || String(e) });
-        }
+      // 2. Backfill only missing dictionary fields; chosen meanings remain authoritative.
+      try {
+        const current = latestWordsRef.current.find(word => word.id === w.id && !word.deleted);
+        if (!current || !needsDictionaryEnrichment(current)) continue;
+        const dict = await fetchDictionaryData(current.text, current.language || 'en');
+        if (!isCurrent()) return;
+        await backfillWordDictionaryMetadata(userId, identityRevision, current.id, dict, current);
+        if (!isCurrent()) return;
+      } catch (error) {
+        if (!isCurrent()) return;
+        console.warn(`Background dictionary fetch failed for ${w.text}:`, error);
+        appendImageGenDebug('dictionary_fetch_failed', { id: w.id, text: w.text, error: String(error) });
+      }
     }
 
       appendImageGenDebug('background_process_complete', { total: wordsToProcess.length });
@@ -1339,6 +1236,7 @@ const App: React.FC = () => {
       // RELOAD DATA IMMEDIATELY (Blocking)
       // This ensures that when we switch to dashboard, the data is FRESH.
       const { sessions: dashboardSessions, words: dashboardWords } = await fetchUserData(session.user.id);
+        if (authUserIdRef.current !== session.user.id) return;
       setSessions(dashboardSessions);
       setWords(dashboardWords);
 
@@ -1361,13 +1259,13 @@ const App: React.FC = () => {
 
       // ✅ 成功保存到云端，清除本地备份
       if (editingSessionId) {
-        const localBackup = await loadLocalBackup();
+        const localBackup = await loadLocalBackup(session?.user?.id);
         if (localBackup) {
           const updatedBackup = {
             ...localBackup,
             sessions: localBackup.sessions.filter(s => s.id !== editingSessionId)
           };
-          await saveLocalBackup(updatedBackup);
+          await saveLocalBackup(updatedBackup, session?.user?.id);
         }
       }
 
@@ -1412,7 +1310,7 @@ const App: React.FC = () => {
       });
 
       // 保存到本地
-  const savedLocally = await saveSessionToLocal(sessionData, wordsData, 'pending');
+  const savedLocally = await saveSessionToLocal(sessionData, wordsData, 'pending', session.user.id);
 
       if (!savedLocally) {
         showNotification(
@@ -1447,117 +1345,76 @@ const App: React.FC = () => {
   };
 
   const processDefinitionBackfillQueue = useCallback(async () => {
-    if (definitionBackfillRunningRef.current || !session?.user?.id) return;
-
+    const userId = session?.user?.id;
+    const identityRevision = authIdentityRevisionRef.current;
+    const isCurrent = () => !!userId && authUserIdRef.current === userId
+      && authIdentityRevisionRef.current === identityRevision;
+    if (definitionBackfillRunningRef.current || !isCurrent()) return;
     definitionBackfillRunningRef.current = true;
 
     try {
-      while (definitionBackfillQueueRef.current.size > 0) {
-        const next = definitionBackfillQueueRef.current.entries().next().value as [string, { text: string; language: string; lexemeId?: string | null }] | undefined;
+      while (isCurrent() && definitionBackfillQueueRef.current.size > 0) {
+        const next = definitionBackfillQueueRef.current.entries().next().value;
         if (!next) break;
-
         const [queueKey, candidate] = next;
         definitionBackfillQueueRef.current.delete(queueKey);
         definitionBackfillInFlightRef.current.add(queueKey);
-
+        const matchesCandidate = (word: WordEntry) => !word.deleted && needsDictionaryEnrichment(word)
+          && (candidate.lexemeId && word.lexeme_id
+            ? word.lexeme_id === candidate.lexemeId
+            : normalizeDefinitionBackfillKey(word.text, word.language || 'en')
+              === normalizeDefinitionBackfillKey(candidate.text, candidate.language));
         try {
+          // The queue may outlive a user edit; skip it before making any request.
+          if (!latestWordsRef.current.some(matchesCandidate)) {
+            definitionBackfillCompletedRef.current.add(queueKey);
+            continue;
+          }
           const dict = await fetchDictionaryData(candidate.text, candidate.language || 'en');
-          const definition_cn = dict?.definition_cn?.trim() || '暂无中文释义';
-          const currentWords = latestWordsRef.current;
-
-          const matchedWordIds = currentWords
-            .filter(word => {
-              if (word.deleted || word.definition_cn?.trim()) return false;
-              if (candidate.lexemeId && word.lexeme_id) {
-                return word.lexeme_id === candidate.lexemeId;
-              }
-              return normalizeDefinitionBackfillKey(word.text, word.language || 'en') === queueKey;
-            })
-            .map(word => word.id);
-
-          for (const wordId of matchedWordIds) {
-            await updateWordMetadata(wordId, {
-              language: candidate.language || 'en',
-              phonetic: dict?.phonetic || undefined,
-              definition_en: dict?.definition_en || undefined,
-              definition_cn,
-            });
+          if (!isCurrent()) return;
+          const wordIds = latestWordsRef.current.filter(matchesCandidate).map(word => word.id);
+          for (const wordId of wordIds) {
+            if (!isCurrent()) return;
+            await backfillWordDictionaryMetadata(userId, identityRevision, wordId, dict, candidate);
+            if (!isCurrent()) return;
           }
-
-          if (matchedWordIds.length > 0) {
-            setWords(prev => prev.map(item =>
-              matchedWordIds.includes(item.id)
-                ? {
-                    ...item,
-                    language: candidate.language || 'en',
-                    phonetic: dict?.phonetic || item.phonetic || null,
-                    definition_en: dict?.definition_en || item.definition_en || null,
-                    definition_cn,
-                  }
-                : item
-            ));
-          }
-
+          // Missing provider results are not written as permanent placeholder definitions.
           definitionBackfillCompletedRef.current.add(queueKey);
           definitionBackfillRetryRef.current.delete(queueKey);
         } catch (error) {
-          const retryCount = (definitionBackfillRetryRef.current.get(queueKey) || 0) + 1;
-          definitionBackfillRetryRef.current.set(queueKey, retryCount);
-
-          if (retryCount >= 2) {
-            const fallbackMeaning = '暂无中文释义';
-            const currentWords = latestWordsRef.current;
-            const matchedWordIds = currentWords
-              .filter(word => {
-                if (word.deleted || word.definition_cn?.trim()) return false;
-                if (candidate.lexemeId && word.lexeme_id) {
-                  return word.lexeme_id === candidate.lexemeId;
-                }
-                return normalizeDefinitionBackfillKey(word.text, word.language || 'en') === queueKey;
-              })
-              .map(word => word.id);
-
-            for (const wordId of matchedWordIds) {
-              await updateWordMetadata(wordId, {
-                language: candidate.language || 'en',
-                definition_cn: fallbackMeaning,
-              });
-            }
-
-            if (matchedWordIds.length > 0) {
-              setWords(prev => prev.map(item =>
-                matchedWordIds.includes(item.id)
-                  ? { ...item, language: candidate.language || 'en', definition_cn: fallbackMeaning }
-                  : item
-              ));
-            }
-
-            definitionBackfillCompletedRef.current.add(queueKey);
-          } else {
-            definitionBackfillQueueRef.current.set(queueKey, candidate);
-          }
-
+          if (!isCurrent()) return;
+          const retries = (definitionBackfillRetryRef.current.get(queueKey) || 0) + 1;
+          definitionBackfillRetryRef.current.set(queueKey, retries);
+          if (retries < 2) definitionBackfillQueueRef.current.set(queueKey, candidate);
+          else definitionBackfillCompletedRef.current.add(queueKey);
           console.warn(`Failed to backfill Chinese definition for ${candidate.text}:`, error);
         } finally {
-          definitionBackfillInFlightRef.current.delete(queueKey);
+          if (isCurrent()) definitionBackfillInFlightRef.current.delete(queueKey);
         }
-
-        await new Promise(resolve => setTimeout(resolve, 120));
       }
     } finally {
-      definitionBackfillRunningRef.current = false;
-
-      if (definitionBackfillQueueRef.current.size > 0 && session?.user?.id) {
-        void processDefinitionBackfillQueue();
+      // An obsolete A→B→A worker must not clear the newer account's running flag or queue.
+      if (isCurrent()) {
+        definitionBackfillRunningRef.current = false;
+        if (definitionBackfillQueueRef.current.size > 0) void processDefinitionBackfillQueue();
       }
     }
-  }, [session?.user?.id]);
+  }, [session?.user?.id, backfillWordDictionaryMetadata]);
 
   useEffect(() => {
+    const identityRevision = authIdentityRevisionRef.current;
+    if (definitionBackfillIdentityRevisionRef.current !== identityRevision) {
+      definitionBackfillIdentityRevisionRef.current = identityRevision;
+      definitionBackfillInFlightRef.current.clear();
+      definitionBackfillQueueRef.current.clear();
+      definitionBackfillCompletedRef.current.clear();
+      definitionBackfillRetryRef.current.clear();
+      definitionBackfillRunningRef.current = false;
+    }
     if (!session?.user?.id || words.length === 0) return;
 
     words.forEach(word => {
-      if (word.deleted || word.definition_cn?.trim()) return;
+      if (word.deleted || !needsDictionaryEnrichment(word)) return;
 
       const queueKey = word.lexeme_id || normalizeDefinitionBackfillKey(word.text, word.language || 'en');
       if (
@@ -1664,260 +1521,144 @@ const App: React.FC = () => {
       }
   };
 
-  // ☁️ Manual Sync Handler
+  const applyCloudSession = (userId: string, data: { session: InputSession; words: WordEntry[] }) => {
+    if (authUserIdRef.current !== userId) return;
+    setSessions(prev => prev.map(item => item.id === data.session.id ? { ...data.session, syncStatus: 'synced' } : item));
+    // Replace by session, preserving words whose IDs also exist in the cloud response.
+    const next = overlayLearningProgress(userId, [
+      ...latestWordsRef.current.filter(word => word.sessionId !== data.session.id), ...data.words,
+    ]);
+    latestWordsRef.current = next;
+    setWords(next);
+  };
+
+  const refreshAfterSessionSync = async (userId: string) => {
+    const cloud = await fetchUserData(userId);
+    if (authUserIdRef.current !== userId) return;
+    const backup = await loadLocalBackup(userId);
+    if (authUserIdRef.current !== userId) return;
+    // Keep other offline edits visible while refreshing one successful upload.
+    const pending = backup?.sessions.filter(item => item.syncStatus !== 'synced') ?? [];
+    const pendingIds = new Set(pending.map(item => item.id));
+    const currentWords = overlayLearningProgress(userId, [
+      ...cloud.words.filter(word => !pendingIds.has(word.sessionId)),
+      ...(backup?.words.filter(word => pendingIds.has(word.sessionId)) ?? []),
+    ]);
+    latestWordsRef.current = currentWords;
+    setWords(currentWords);
+    setSessions([...cloud.sessions.filter(item => !pendingIds.has(item.id)), ...pending]);
+  };
+
   const handleManualSync = async (sessionId: string) => {
-    if (!session?.user) {
-      showNotification('请先登录', 'error');
-      return;
-    }
-
+    const userId = session?.user?.id;
+    if (!userId || authUserIdRef.current !== userId) return;
+    const isCurrent = () => authUserIdRef.current === userId;
     setSyncingSessionId(sessionId);
-
     try {
-      // 从本地备份获取数据
-      const localBackup = await loadLocalBackup();
-      const localSession = localBackup?.sessions.find(s => s.id === sessionId);
-      const localWords = localBackup?.words.filter(w => w.sessionId === sessionId);
-
-      if (!localSession || !localWords) {
-        // 如果本地备份中没有，可能已经在云端了，尝试从云端刷新
-        showNotification('该 Session 未找到本地备份数据，正在从云端刷新...', 'warning');
-        const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
-        setSessions(cloudSessions);
-        setWords(cloudWords);
-        showNotification('✅ 数据已从云端刷新', 'success');
+      const localBackup = await loadLocalBackup(userId);
+      if (!isCurrent()) return;
+      const localSession = localBackup?.sessions.find(item => item.id === sessionId);
+      if (!localSession) {
+        await refreshAfterSessionSync(userId);
+        if (isCurrent()) showNotification('✅ 数据已从云端刷新', 'success');
         return;
       }
-
-      console.log(`[ManualSync] Syncing session ${sessionId}...`);
-
-      // 调用同步服务
-      const result: SyncResult = await syncSessionToCloud(
-        session.user.id,
-        localSession,
-        localWords
-      );
-
+      const localWords = localBackup.words.filter(word => word.sessionId === sessionId);
+      const result = await syncSessionToCloud(userId, localSession, localWords);
+      if (!isCurrent()) return;
+      const applied = await persistSessionSyncResult(userId, localSession, result);
+      if (!isCurrent()) return;
+      if (!applied) {
+        showNotification('本地词库在同步期间有新修改，已保留，稍后继续同步。', 'warning');
+        return;
+      }
       if (result.success) {
-        if (result.action === 'uploaded') {
-          // 上传成功 → 清除本地备份
-          const updatedBackup = {
-            ...localBackup!,
-            sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
-          };
-          await saveLocalBackup(updatedBackup);
-
-          // 刷新数据
-          const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
-          setSessions(cloudSessions);
-          setWords(cloudWords);
-
-          showNotification('✅ 同步成功！数据已上传到云端', 'success');
-        } else if (result.action === 'downloaded') {
-          // 云端较新 → 应用云端数据
-          if (result.cloudData) {
-            setSessions(prev => prev.map(s =>
-              s.id === sessionId ? { ...result.cloudData!.session, syncStatus: 'synced' as const } : s
-            ));
-            setWords(prev => {
-              const oldIds = new Set(prev
-                .filter(w => w.sessionId === sessionId)
-                .map(w => w.id));
-              const newWords = result.cloudData!.words.filter(
-                w => !oldIds.has(w.id)
-              );
-              return [...prev.filter(w => !oldIds.has(w.id)), ...newWords];
-            });
-
-            // 清除本地备份
-            const updatedBackup = {
-              ...localBackup!,
-              sessions: localBackup!.sessions.filter(s => s.id !== sessionId)
-            };
-            await saveLocalBackup(updatedBackup);
-          }
-          showNotification('📥 已应用云端最新数据', 'success');
-        } else if (result.action === 'skipped') {
-          // 数据相同，确保 syncStatus 为 synced
-          setSessions(prev => prev.map(s =>
-            s.id === sessionId ? { ...s, syncStatus: 'synced' as const } : s
-          ));
-          showNotification('✅ 数据已同步，无需操作', 'success');
-        }
+        if (result.cloudData) applyCloudSession(userId, result.cloudData);
+        else await refreshAfterSessionSync(userId);
+        if (isCurrent()) showNotification('✅ 同步完成，学习进度已保留', 'success');
       } else {
-        // 同步失败/冲突 → 更新 syncStatus 为 failed
-        console.error('[ManualSync] Sync failed:', result.action, result.message);
-
-        // 更新本地备份的 syncStatus
-        const updatedBackup = {
-          ...localBackup!,
-          sessions: localBackup!.sessions.map(s =>
-            s.id === sessionId ? { ...s, syncStatus: 'failed' as const } : s
-          )
-        };
-        await saveLocalBackup(updatedBackup);
-
-        // 更新当前 session 的 syncStatus
-        setSessions(prev => prev.map(s =>
-          s.id === sessionId ? { ...s, syncStatus: 'failed' as const } : s
-        ));
-
+        const syncStatus = result.action === 'conflict' ? 'conflict' : 'failed';
+        setSessions(prev => prev.map(item => item.id === sessionId ? { ...item, syncStatus } : item));
         if (result.action === 'conflict' && result.conflictData) {
-          setConflictModal({
-            sessionId,
-            cloud: result.conflictData.cloud,
-            local: result.conflictData.local
-          });
-        } else {
-          showNotification(`❌ 同步失败: ${result.message}`, 'error');
-        }
+          setConflictModal({ sessionId, cloud: result.conflictData.cloud, local: result.conflictData.local });
+        } else showNotification(`同步暂未完成：${result.message}`, 'warning');
       }
     } catch (error) {
-      console.error('[ManualSync] Error:', error);
-      showNotification(`❌ 同步失败: ${(error as Error).message}`, 'error');
+      if (isCurrent()) showNotification(`同步暂未完成：${(error as Error).message}`, 'warning');
     } finally {
-      setSyncingSessionId(null);
+      if (isCurrent()) setSyncingSessionId(null);
     }
   };
 
-  // ⚖️ Conflict Resolution Handler
   const handleConfirmConflictResolution = async () => {
-    if (!conflictModal || !conflictChoice || !session?.user) return;
-
+    const userId = session?.user?.id;
+    const conflict = conflictModal;
+    const choice = conflictChoice;
+    if (!conflict || !choice || !userId || authUserIdRef.current !== userId) return;
+    const isCurrent = () => authUserIdRef.current === userId;
     try {
-      const result: SyncResult = await resolveConflict(
-        session.user.id,
-        conflictModal.sessionId,
-        conflictChoice,
-        {
-          session: conflictModal.local,
-          words: [] // Words will be fetched separately
-        },
-        {
-          session: conflictModal.cloud,
-          words: []
-        }
-      );
-
-      if (result.success) {
-        // 清除冲突标记
-        setConflictModal(null);
-        setConflictChoice(null);
-
-        // 刷新数据
-        const { sessions: cloudSessions, words: cloudWords } = await fetchUserData(session.user.id);
-        setSessions(cloudSessions);
-        setWords(cloudWords);
-
-        // 清除本地备份
-        const localBackup = await loadLocalBackup();
-        if (localBackup) {
-          const updatedBackup = {
-            ...localBackup,
-            sessions: localBackup.sessions.filter(s => s.id !== conflictModal.sessionId)
-          };
-          await saveLocalBackup(updatedBackup);
-        }
-
-        showNotification('✅ 冲突已解决！', 'success');
-      } else {
-        showNotification(`❌ 解决冲突失败: ${result.message}`, 'error');
-      }
+      const backup = await loadLocalBackup(userId);
+      if (!isCurrent()) return;
+      const localSession = backup?.sessions.find(item => item.id === conflict.sessionId);
+      if (!localSession) throw new Error('本地冲突备份不存在，未清除任何数据。');
+      const localWords = backup.words.filter(word => word.sessionId === conflict.sessionId);
+      if (choice === 'local' && localSession.wordCount > 0 && !localWords.length) throw new Error('本地备份缺少单词，无法安全上传。');
+      const cloud = await fetchUserData(userId);
+      if (!isCurrent()) return;
+      const result = await resolveConflict(userId, conflict.sessionId, choice,
+        { session: localSession, words: localWords },
+        { session: cloud.sessions.find(item => item.id === conflict.sessionId) ?? conflict.cloud,
+          words: cloud.words.filter(word => word.sessionId === conflict.sessionId) });
+      if (!isCurrent()) return;
+      if (!result.success) throw new Error(result.message || '冲突尚未解决');
+      const applied = await persistSessionSyncResult(userId, localSession, result);
+      if (!isCurrent()) return;
+      if (!applied) throw new Error('本地词库已有新修改，请重新确认冲突。');
+      await refreshAfterSessionSync(userId);
+      if (!isCurrent()) return;
+      setConflictModal(null);
+      setConflictChoice(null);
+      showNotification('✅ 冲突已解决，学习进度已保留', 'success');
     } catch (error) {
-      console.error('[ConflictResolution] Error:', error);
-      showNotification(`❌ 解决冲突失败: ${(error as Error).message}`, 'error');
+      if (isCurrent()) showNotification(`冲突尚未解决：${(error as Error).message}`, 'warning');
     }
   };
 
-  // 🔄 Auto Sync (30 minutes)
+  // Older content sync shares the same captured account guard as learning sync.
   useEffect(() => {
-    if (!session?.user) return;
-
-    const interval = setInterval(async () => {
-      const backup = await loadLocalBackup();
-      if (!backup) return;
-
-      const pendingSessions = backup.sessions.filter(
-        s => s.syncStatus === 'pending' || s.syncStatus === 'failed'
-      );
-
-      if (pendingSessions.length === 0) return;
-
-      console.log(`[AutoSync] Found ${pendingSessions.length} pending sessions`);
-
-      const result = await syncAllPendingSessions(session.user.id);
-      console.log(
-        `[AutoSync] Complete: ${result.synced} synced, ${result.failed} failed, ${result.conflicts} conflicts`
-      );
-
-      // 更新本地状态
-      if (result.synced > 0 || result.conflicts > 0) {
-        const { sessions: cloudSessions, words: cloudWords } =
-          await fetchUserData(session.user.id);
-        setSessions(cloudSessions);
-        setWords(cloudWords);
-
-        if (result.synced > 0) {
-          showNotification(
-            `✅ 自动同步完成：${result.synced} 个 Session 已同步`,
-            'success'
-          );
-        }
-      }
-
-      // 处理冲突
-      if (result.conflicts > 0) {
-        showNotification(
-          `⚠️ 检测到 ${result.conflicts} 个同步冲突，请手动处理`,
-          'warning'
-        );
-      }
-    }, 30 * 60 * 1000); // 30分钟
-
-    return () => clearInterval(interval);
-  }, [session?.user]);
-
-  // 🌐 Network Status Listener
-  useEffect(() => {
-    const handleOnline = async () => {
-      console.log('🌐 Network restored, attempting to sync...');
-      showNotification('🌐 网络已恢复，正在同步...', 'success');
-
-      // 立即尝试同步所有待同步的Session
-      const backup = await loadLocalBackup();
-      if (backup && session?.user) {
-        const pendingSessions = backup.sessions.filter(
-          s => s.syncStatus === 'pending' || s.syncStatus === 'failed'
-        );
-
-        if (pendingSessions.length > 0) {
-          const result = await syncAllPendingSessions(session.user.id);
-          if (result.synced > 0) {
-            const { sessions: cloudSessions, words: cloudWords } =
-              await fetchUserData(session.user.id);
-            setSessions(cloudSessions);
-            setWords(cloudWords);
-          }
-        }
-      }
+    const userId = session?.user?.id;
+    if (!userId) return;
+    let cancelled = false;
+    let running = false;
+    const isCurrent = () => !cancelled && authUserIdRef.current === userId;
+    const syncContent = async () => {
+      if (!isCurrent() || running) return;
+      running = true;
+      try {
+        const backup = await loadLocalBackup(userId);
+        if (!isCurrent() || !backup?.sessions.some(item => item.syncStatus === 'pending' || item.syncStatus === 'failed')) return;
+        const result = await syncAllPendingSessions(userId);
+        if (!isCurrent()) return;
+        if (result.synced > 0) await refreshAfterSessionSync(userId);
+        if (isCurrent() && result.conflicts > 0) showNotification('检测到词库同步冲突，请手动处理。', 'warning');
+      } catch (error) {
+        if (isCurrent()) console.warn('[ContentSync] Backup preserved for retry:', error);
+      } finally { running = false; }
     };
-
-    const handleOffline = () => {
-      console.log('📴 Network lost, switching to offline mode');
-      showNotification(
-        '⚠️ 网络断开，数据将保存到本地',
-        'warning'
-      );
+    const onOnline = () => { void syncContent(); };
+    const onOffline = () => {
+      if (isCurrent()) showNotification('网络已断开，学习记录将保存在本机。', 'warning');
     };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
+    const timer = window.setInterval(() => { void syncContent(); }, 30 * 60 * 1000);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
-  }, [session?.user]);
+  }, [session?.user?.id]);
 
   const handleStartEdit = (sessionId: string) => {
     setEditingSessionId(sessionId);
@@ -1934,13 +1675,48 @@ const App: React.FC = () => {
     setMode('TEST');
   };
 
-  const handleStartPuzzleGame = () => {
-    setTestConfig({ kind: 'PUZZLE' });
+  const handleLearningWordUpdate = (id: string, updates: Partial<WordEntry>, attempt?: { result: LearningResult; eventId: string; occurredAt: number }) => {
+    const userId = session?.user?.id;
+    const current = latestWordsRef.current.find(word => word.id === id);
+    if (!userId || authUserIdRef.current !== userId || !current || !attempt) throw new Error('学习记录缺少账号或真实作答事件。');
+    try {
+      const updated = persistLearningAttempt(userId, current, attempt.result, attempt.eventId, attempt.occurredAt);
+      const next = latestWordsRef.current.map(word => word.id === id ? { ...updated, tags: updates.tags ?? updated.tags } : word);
+      latestWordsRef.current = next;
+      setWords(next);
+      void syncPendingLearningProgress(userId).then(() => {
+        if (authUserIdRef.current !== userId) return;
+        const merged = overlayLearningProgress(userId, latestWordsRef.current);
+        latestWordsRef.current = merged; setWords(merged);
+      }).catch(error => console.warn('[LearningSync] Saved locally:', error));
+    } catch (error) {
+      showNotification('本机学习记录保存失败，请保留页面并重试。', 'error');
+      throw error;
+    }
+  };
+
+  const saveGameLearning = async (roundId: string, occurredAt: number, results: LearningResult[]) => {
+    const userId = session?.user?.id;
+    if (!userId || authUserIdRef.current !== userId) throw new Error('请登录后保存学习记录。');
+    const next = recordLearningRound(userId, roundId, occurredAt, results, latestWordsRef.current);
+    latestWordsRef.current = next;
+    setWords(next);
+    showNotification('学习进度已保存在本机，正在后台同步。', 'success');
+    void syncPendingLearningProgress(userId).then(result => {
+      if (authUserIdRef.current !== userId) return;
+      const merged = overlayLearningProgress(userId, latestWordsRef.current);
+      latestWordsRef.current = merged; setWords(merged);
+      if (result.pending > 0) showNotification('学习进度已保存在本机，云端仍待同步。', 'warning');
+    }).catch(error => console.warn('[LearningSync] Saved locally:', error));
+  };
+
+  const handleStartWordOrbit = () => {
+    setTestConfig({ kind: 'ORBIT' });
     setMode('TEST');
   };
 
-  const handleStartSceneGame = () => {
-    setTestConfig({ kind: 'SCENE' });
+  const handleStartPuzzleGame = () => {
+    setTestConfig({ kind: 'PUZZLE' });
     setMode('TEST');
   };
 
@@ -2208,7 +1984,7 @@ const App: React.FC = () => {
           <h1 className="pl-16 font-headline text-3xl tracking-[0.02em] text-electric-blue">VOCAB MONSTER</h1>
         </div>
         <div className="hidden md:flex flex-1 justify-center px-4 min-w-0">
-          <GlobalChampionBanner onOpen={() => setShowGlobalLeaderboard(true)} />
+          <GlobalChampionBanner onOpen={() => { setHasOpenedGlobalLeaderboard(true); setShowGlobalLeaderboard(true); }} />
         </div>
         <div className="flex items-center gap-4">
           <CoinCounter balance={coinBalance} />
@@ -2226,6 +2002,15 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 p-4 md:p-8 pt-20 md:pt-24 pb-12 md:pb-16 max-w-[1400px] mx-auto w-full relative z-10">
+        {mode === 'DASHBOARD' && visibleWords.length > 0 && (
+          <section className="mb-6 rounded-2xl border border-electric-green/30 bg-light-charcoal p-5 flex flex-wrap items-center justify-between gap-4" aria-label="今日复习">
+            <div><p className="font-headline text-2xl text-white">{dueWords.length ? `今天有 ${dueWords.length} 个词需要复习` : '今天的到期复习已完成'}</p><p className="text-sm text-text-dark mt-1">到期优先 · 遗忘后及时重学 · 独立答对后逐步延长间隔</p></div>
+            <button className="rounded-xl bg-electric-green text-charcoal px-5 py-3 font-bold" onClick={() => {
+              const pool = dueWords.length ? dueWords : visibleWords;
+              handleStartTestFromLibrary(adaptiveWordSelector.calculateQueue(visibleWords, pool, 12).map(word => word.id));
+            }}>{dueWords.length ? `复习 ${Math.min(12, dueWords.length)} 个词` : '提前练习 / 学新词'}</button>
+          </section>
+        )}
         {mode === 'DASHBOARD' && (
           <Dashboard
             stats={getStats()}
@@ -2278,33 +2063,25 @@ const App: React.FC = () => {
           />
         )}
         {mode === 'TEST' && (
-          testConfig?.kind === 'STRIKE' ? (
+          testConfig?.kind === 'ORBIT' ? (
+            <WordOrbitGameMode allWords={visibleWords} sessions={sessions} onCancel={() => setMode('DASHBOARD')}
+              onComplete={(summary: WordOrbitSummary) => saveGameLearning(summary.roundId, summary.occurredAt, summary.results.map(result => ({
+                wordId: result.wordId, status: result.status, hintUsed: result.hintUsed, hadMistake: result.hadMistake, durationMs: result.responseTimeMs,
+              })))} />
+          ) : testConfig?.kind === 'STRIKE' ? (
             <WordStrikeGameMode
               allWords={visibleWords}
               sessions={sessions}
               onComplete={async (summary: WordStrikeGameSummary) => {
-                if (!summary.rankingEligible) {
-                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
-                  return;
-                }
-
+                if (!strikeRoundIds.current.has(summary)) strikeRoundIds.current.set(summary, { id: crypto.randomUUID(), occurredAt: Date.now() });
+                const record = strikeRoundIds.current.get(summary)!;
+                await saveGameLearning(record.id, record.occurredAt, summary.results.map(result => ({
+                  wordId: result.wordId, status: result.correct ? 'correct' : result.attemptsUsed > 0 ? 'incorrect' : 'unattempted',
+                  hintUsed: result.hintUsed, hadMistake: result.attemptsUsed > (result.correct ? 1 : 0),
+                  durationMs: result.activatedAtMs != null && result.solvedAtMs != null ? result.solvedAtMs - result.activatedAtMs : null,
+                })));
+                if (!summary.rankingEligible) return;
                 try {
-                  // Same contract as Puzzle: sync per-word stats BEFORE the
-                  // round record so a stats failure doesn't block recording.
-                  try {
-                    await syncGameResultsToWordStats(
-                      summary.results.map(r => ({
-                        wordId: r.wordId,
-                        correct: r.correct,
-                        hintUsed: r.hintUsed,
-                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
-                          ? r.solvedAtMs - r.activatedAtMs
-                          : null,
-                      })),
-                    );
-                  } catch (statsErr) {
-                    console.error('[WordStrikeGameMode] word stats sync failed (non-blocking):', statsErr);
-                  }
                   const round: any = await recordWordStrikeRound(summary);
                   const roundId = round?.round_id || round?.id;
                   if (roundId) {
@@ -2332,30 +2109,14 @@ const App: React.FC = () => {
               allWords={visibleWords}
               sessions={sessions}
               onComplete={async (summary: PuzzleGameSummary) => {
-                if (!summary.rankingEligible) {
-                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
-                  return;
-                }
-
+                await saveGameLearning(summary.roundId || `puzzle:${crypto.randomUUID()}`, summary.occurredAt || Date.now(), summary.results.map(result => ({
+                  wordId: result.wordId,
+                  status: result.status || (result.correct ? 'correct' : result.attemptsUsed > 0 ? 'incorrect' : 'unattempted'),
+                  hintUsed: result.hintUsed, hadMistake: result.attemptsUsed > (result.correct ? 1 : 0),
+                  durationMs: result.activatedAtMs != null && result.solvedAtMs != null ? result.solvedAtMs - result.activatedAtMs : null,
+                })));
+                if (!summary.rankingEligible || summary.rulesVersion) return;
                 try {
-                  // Sync per-word stats (error_count / consecutive_correct /
-                  // last_tested) so the adaptive selector sees Puzzle results
-                  // just like CLASSIC results. Must run BEFORE recordPuzzleGameRound
-                  // so a stats failure doesn't block round recording.
-                  try {
-                    await syncGameResultsToWordStats(
-                      summary.results.map(r => ({
-                        wordId: r.wordId,
-                        correct: r.correct,
-                        hintUsed: r.hintUsed,
-                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
-                          ? r.solvedAtMs - r.activatedAtMs
-                          : null,
-                      })),
-                    );
-                  } catch (statsErr) {
-                    console.error('[PuzzleGameMode] word stats sync failed (non-blocking):', statsErr);
-                  }
                   const round: any = await recordPuzzleGameRound(summary);
                   const roundId = round?.round_id || round?.id;
                   if (roundId) {
@@ -2376,85 +2137,22 @@ const App: React.FC = () => {
               }}
               onCancel={() => setMode('DASHBOARD')}
             />
-          ) : testConfig?.kind === 'SCENE' ? (
-            <SceneGameMode
-              allWords={visibleWords}
-              sessions={sessions}
-              onComplete={async (summary: SceneGameSummary) => {
-                // Scene games now charge when the image is SAVED (inside the
-                // `finalize` action), not at generation time. The header is
-                // refreshed live via onCoinsSpent at that moment; this final
-                // refresh is a safety re-sync after the round (and covers any
-                // reward/edge cases). No charge happens on a failed generation.
-                void refreshCoinBalance();
-                if (!summary.rankingEligible) {
-                  showNotification('⚠️ 本局候选词重复率超过 80%，成绩不计入排行榜。', 'warning');
-                  return;
-                }
-                try {
-                  // Sync per-word stats so the adaptive selector sees Scene
-                  // results just like CLASSIC results. Must run BEFORE
-                  // recordSceneGameRound so a stats failure doesn't block
-                  // round recording.
-                  try {
-                    await syncGameResultsToWordStats(
-                      summary.results.map(r => ({
-                        wordId: r.wordId,
-                        correct: r.correct,
-                        hintUsed: r.hintUsed,
-                        durationMs: r.activatedAtMs != null && r.solvedAtMs != null
-                          ? r.solvedAtMs - r.activatedAtMs
-                          : null,
-                      })),
-                    );
-                  } catch (statsErr) {
-                    console.error('[SceneGameMode] word stats sync failed (non-blocking):', statsErr);
-                  }
-                  await recordSceneGameRound(summary);
-                  showNotification(`🎬 场景成绩已记录：${summary.totalScore} 分`, 'success');
-                } catch (error) {
-                  console.error('[SceneGameMode] Failed to record scene game round:', error);
-                  showNotification('⚠️ 场景成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
-                }
-              }}
-              onCancel={() => setMode('DASHBOARD')}
-              coinBalance={coinBalance}
-              onInsufficientCoins={() => setShowInsufficientCoins(true)}
-              onCoinsSpent={(bal) => { if (typeof bal === 'number') setCoinBalance(bal); else void refreshCoinBalance(); }}
-              onNotify={showNotification}
-            />
           ) : (
             <TestModeV2
+              key={session.user.id}
               allWords={visibleWords}
               sessions={sessions}
               initialSessionIds={testConfig?.sessionIds || []}
               initialWordIds={testConfig?.wordIds}
-              onUpdateWord={(id, updates) => {
-                  setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
-              }}
+              onUpdateWord={handleLearningWordUpdate}
+              onSaveComplete={updateLocalStats}
               onComplete={async (summary: CompletedTestSummary) => {
-                // ✨ Now waits for database sync to complete before navigating
-                let showCoinPopup = false;
                 try {
                   await updateLocalStats(summary);
-                  // Award coins using leaderboard-equivalent formula (test_count + accuracy).
-                  const roundRef = typeof crypto !== 'undefined' && crypto?.randomUUID
-                    ? crypto.randomUUID()
-                    : `quiz-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                  const awarded = await awardQuizCoins(
-                    roundRef,
-                    summary.results.filter(r => r.correct).length,
-                    summary.results.length,
-                  );
-                  if (awarded > 0) {
-                    void refreshCoinBalance();
-                    setPendingCoinReward({ amount: awarded, source: 'quiz', navigateAfter: true });
-                    showCoinPopup = true;
-                  }
-                } catch (err) {
-                  console.error('[onComplete] Stats sync failed, navigating anyway:', err);
-                } finally {
-                  if (!showCoinPopup) setMode('DASHBOARD');
+                  if (authUserIdRef.current === session?.user?.id) setMode('DASHBOARD');
+                } catch (error) {
+                  console.error('[TestComplete] Local persistence failed:', error);
+                  showNotification('测试结果尚未保存，请保留结果页并重试。', 'error');
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
@@ -2614,7 +2312,7 @@ const App: React.FC = () => {
 
                         {/* Games moved out of QUICK TEST — they now live in the
                             GAME MODE picker (handleStartPuzzleGame /
-                            handleStartSceneGame are wired there). */}
+                            handleStartWordStrike are wired there). */}
 
                         <button
                             onClick={() => setShowQuickTestModal(false)}
@@ -2631,9 +2329,9 @@ const App: React.FC = () => {
         {showGamePickerModal && (
             <GameModePickerModal
                 visibleWords={visibleWords}
+                onSelectOrbit={() => { handleStartWordOrbit(); setShowGamePickerModal(false); }}
                 onSelectStrike={() => { handleStartWordStrike(); setShowGamePickerModal(false); }}
                 onSelectPuzzle={() => { handleStartPuzzleGame(); setShowGamePickerModal(false); }}
-                onSelectScene={() => { handleStartSceneGame(); setShowGamePickerModal(false); }}
                 onClose={() => setShowGamePickerModal(false)}
             />
         )}
@@ -2652,11 +2350,6 @@ const App: React.FC = () => {
             reward={dailyLoginReward}
             onClose={() => setDailyLoginReward(null)}
           />
-        )}
-
-        {/* Insufficient Coins Modal */}
-        {showInsufficientCoins && (
-          <InsufficientCoinsModal onClose={() => setShowInsufficientCoins(false)} />
         )}
 
         {/* Coin Reward Popup (quiz / puzzle / achievement bonus) */}
@@ -2691,10 +2384,14 @@ const App: React.FC = () => {
           }}
         />
       )}
-      <GlobalLeaderboardModal
-        open={showGlobalLeaderboard}
-        onClose={() => setShowGlobalLeaderboard(false)}
-      />
+      {hasOpenedGlobalLeaderboard && (
+        <div hidden={!showGlobalLeaderboard}>
+          <GlobalLeaderboardModal
+            open={showGlobalLeaderboard}
+            onClose={() => setShowGlobalLeaderboard(false)}
+          />
+        </div>
+      )}
       {showAdminConsole && (
         <AdminConsole 
           onClose={() => setShowAdminConsole(false)} 
@@ -4704,10 +4401,15 @@ const InputMode: React.FC<{
         // Word-family detection (single words only — mutually exclusive with the
         // 2-word collocation check below). If the input is an inflected form, we
         // surface its family (go/went/gone) so the user can choose to practise
-        // and store all forms. detectWordFamily never throws (returns null on
-        // any internal failure), so a lib hiccup just skips this branch silently.
+        // and store all forms. Load its lemma tables only after a valid token;
+        // an unavailable optional detector must not block the single-word flow.
         if (!isPhrase) {
-          const family = detectWordFamily(normalizedInput);
+          const family = await import('./services/wordFamilyService')
+            .then(({ detectWordFamily }) => detectWordFamily(normalizedInput))
+            .catch(error => {
+              console.warn('[wordFamilyService] Optional detector unavailable:', error);
+              return null;
+            });
           if (family?.isFamilyMember && family.forms && family.forms.length > 1) {
             const existingLower = new Set<string>([
               ...currentWords.map(w => w.text.toLowerCase()),

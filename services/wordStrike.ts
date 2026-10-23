@@ -10,7 +10,8 @@
 //   1. constants + local storage history (daily overlap cap)
 //   2. letter matching — the core game rule (per-position hit/miss)
 //   3. candidate filter + word selection (smart via adaptiveWordSelector / random)
-//   4. difficulty curve (gravity ramp + unit sizing)
+//   4. difficulty curve (speed ramp + unit sizing)
+//   4.5 spawn columns + fire control (vertical-drop rework)
 //   5. summary calculation (0-1000, same spirit as calculatePuzzleGameSummary)
 // ================================================================
 // NOTE on imports: this module runs under `node --test` (type-stripping, real
@@ -400,15 +401,6 @@ export const selectWordStrikeWords = async (
 // ----------------------------------------------------------------
 
 /**
- * Gravity ramps with each spawned brick: word 0 floats gently (0.05),
- * +0.01 per brick, capped at 0.18 (3.6× the starting pull, reached around
- * brick 13 so a full 12-word round keeps accelerating throughout). Pure so
- * the ramp is unit-testable and the physics layer stays dumb.
- */
-export const getWordStrikeGravityScale = (brickIndex: number): number =>
-  clamp(0.05 + 0.01 * brickIndex, 0.05, 0.18);
-
-/**
  * Square unit edge for a letter bar inside `worldWidth`: the whole bar spans
  * ~62% of the world, clamped to [26, 52]px. 26px is also the tunnelling
  * floor — the bullet moves 26px/step, so it can never skip a unit.
@@ -417,6 +409,142 @@ export const getWordStrikeUnitSize = (letterCount: number, worldWidth: number): 
   if (letterCount <= 0) return 26;
   return clamp(Math.floor((worldWidth * 0.62) / letterCount), 26, 52);
 };
+
+// ----------------------------------------------------------------
+// 4.5 spawn placement + fire control (vertical-drop rework)
+// ----------------------------------------------------------------
+
+/**
+ * Small deterministic 32-bit hash (Knuth multiplicative mix via Math.imul).
+ * Seeded by brick index so column picks are fully reproducible under
+ * `node --test` — no Math.random anywhere in this section.
+ */
+export const hashBrickIndex = (index: number): number => {
+  let h = Math.imul(index + 1, 2654435761);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return (h ^ (h >>> 16)) >>> 0;
+};
+
+/**
+ * Aim angle (radians, atan2 convention) from the gun pivot toward the brick,
+ * with 2 fixed-point lead iterations using the brick's current velocity and
+ * the bullet speed — so bullets converge on where the bar WILL be, not where
+ * it was. Falls back to straight right (0) when the target sits on the pivot
+ * — the elevator gun's resting bearing. Bullet speed (26 px/step) dwarfs
+ * brick speeds (<= ~2.2 px/step), so the lead never overshoots past the pivot.
+ */
+export const getWordStrikeAimAngle = (
+  pivotX: number,
+  pivotY: number,
+  targetX: number,
+  targetY: number,
+  targetVx = 0,
+  targetVy = 0,
+  bulletSpeedPerStep = 26
+): number => {
+  let aimX = targetX;
+  let aimY = targetY;
+  for (let i = 0; i < 2; i += 1) {
+    const dist = Math.hypot(aimX - pivotX, aimY - pivotY);
+    const steps = Math.min(60, dist / bulletSpeedPerStep);
+    aimX = targetX + targetVx * steps;
+    aimY = targetY + targetVy * steps;
+  }
+  const dx = aimX - pivotX;
+  const dy = aimY - pivotY;
+  if (dx === 0 && dy === 0) return 0;
+  return Math.atan2(dy, dx);
+};
+
+// ----------------------------------------------------------------
+// 4.7 vertical-drop geometry (spawn columns, speed ramp)
+// ----------------------------------------------------------------
+
+/**
+ * Horizontal fall zone: every bar lives fully inside [min, max] for its
+ * whole descent. Width 560px clears the longest possible chain (14 letters ×
+ * 39px = 546px) and starts right of the elevator/moster column (x ≤ ~257).
+ */
+export const WORD_STRIKE_ZONE_X = { min: 320, max: 880 } as const;
+
+/** Bar center height at spawn — the WHOLE chain is on-screen at once
+ *  (top edge ≥ 104px), the whole point of the vertical-drop rework. */
+export const WORD_STRIKE_SPAWN_CENTER_Y = 130;
+
+/** Deterministic column slots spread across the fall zone. */
+export const WORD_STRIKE_COLUMN_SLOTS = 4;
+
+/** Brick 0 drops on this slot index (0-based, right of center). */
+const STRIKE_TEACHING_COLUMN = 2;
+
+/**
+ * Spawn column slot for a brick. Deterministic per brickIndex: brick 0 uses
+ * the teaching slot, then the slot walks a ±1 stride (both strides are
+ * coprime with the 4 slots) seeded by the brick hash — consecutive bricks
+ * NEVER share a slot. Construction guarantee, not sampling luck. Pure.
+ */
+export const getWordStrikeSpawnColumnSlot = (brickIndex: number): number => {
+  let slot = STRIKE_TEACHING_COLUMN;
+  for (let k = 1; k <= brickIndex; k += 1) {
+    slot = (slot + (hashBrickIndex(k) % 2 === 0 ? 1 : 3)) % WORD_STRIKE_COLUMN_SLOTS;
+  }
+  return slot;
+};
+
+/**
+ * Spawn center X for a bar of `barWidth` px: slot t ∈ {0, ⅓, ⅔, 1} mapped
+ * into the slack left inside the fall zone, so ANY bar width (including the
+ * 546px maximum) stays fully inside [ZONE.min, ZONE.max] — the full word is
+ * visible the moment it materializes at the top of the field.
+ */
+export const getWordStrikeSpawnColumnX = (brickIndex: number, barWidth: number): number => {
+  const t = getWordStrikeSpawnColumnSlot(brickIndex) / (WORD_STRIKE_COLUMN_SLOTS - 1);
+  const slack = Math.max(0, WORD_STRIKE_ZONE_X.max - WORD_STRIKE_ZONE_X.min - barWidth);
+  return WORD_STRIKE_ZONE_X.min + barWidth / 2 + t * slack;
+};
+
+/** Speed ramp constants (px/step at gear 1.0, before SPEED_FACTOR). */
+const STRIKE_SPEED_BASE = 0.8;
+const STRIKE_SPEED_SLOPE = 0.04;
+const STRIKE_SPEED_MAX = 2.2;
+
+/**
+ * Constant downward brick speed (px/step) for a zero-gravity drop: brick 0
+ * sinks gently (0.8 → ≈26s to fall the ~380px at normal gear), +0.04 per
+ * brick, capped at 2.2 so late rounds stay typable. The drop distance is
+ * much shorter than the old horizontal crossing, so the whole ramp sits
+ * lower than the side-view tuning. Physics applies this × the speed gear.
+ */
+export const getWordStrikeBrickSpeed = (brickIndex: number): number =>
+  clamp(STRIKE_SPEED_BASE + STRIKE_SPEED_SLOPE * brickIndex, STRIKE_SPEED_BASE, STRIKE_SPEED_MAX);
+
+// ----------------------------------------------------------------
+// 4.6 top-down asset locations (pure strings — easy to point elsewhere)
+// ----------------------------------------------------------------
+
+export interface WordStrikeSpritePaths {
+  idle: string;
+  shoot: string;
+  hurt: string;
+  cheer: string;
+}
+
+/** Daily gunner sprite set (public/monsterImages/strike/), by day of week. */
+export const getWordStrikeSpritePaths = (day: number): WordStrikeSpritePaths => ({
+  idle: `/monsterImages/strike/M${day}_idle.webp`,
+  shoot: `/monsterImages/strike/M${day}_shoot.webp`,
+  hurt: `/monsterImages/strike/M${day}_hurt.webp`,
+  cheer: `/monsterImages/strike/M${day}_cheer.webp`,
+});
+
+export const WORD_STRIKE_BG_SRC = '/gameImages/strike_bg.webp';
+/** Blank crayon block faces — typed letters are rendered by the game on top. */
+export const WORD_STRIKE_BLOCK_SRCS = [
+  '/gameImages/block_red.webp',
+  '/gameImages/block_blue.webp',
+  '/gameImages/block_yellow.webp',
+  '/gameImages/block_green.webp',
+];
 
 // ----------------------------------------------------------------
 // 5. summary (0-1000)

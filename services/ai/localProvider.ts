@@ -1,5 +1,5 @@
 
-import { AIService, SpellingResult } from "./types";
+import type { AIService, SpellingResult } from "./types.ts";
 import nspell from "nspell";
 
 /**
@@ -7,8 +7,14 @@ import nspell from "nspell";
  * This provides high-quality offline spell checking.
  */
 export class LocalProvider implements Partial<AIService> {
-  private spell: any = null;
+  private spell: ReturnType<typeof nspell> | null = null;
   private loadingPromise: Promise<void> | null = null;
+  private loadTimeoutMs: number;
+
+  constructor(options: { loadTimeoutMs?: number } = {}) {
+    const timeout = options.loadTimeoutMs ?? 8000;
+    this.loadTimeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : 8000;
+  }
 
   private buildCaseCandidates(input: string): string[] {
     const trimmed = input.trim();
@@ -35,31 +41,47 @@ export class LocalProvider implements Partial<AIService> {
     return { isValid: false };
   }
 
-  constructor() {
-    this.ensureLoaded();
-  }
-
   private async ensureLoaded() {
+    if (this.spell) return;
     if (this.loadingPromise) return this.loadingPromise;
 
     this.loadingPromise = (async () => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         console.log("Loading local dictionary...");
-        const [affRes, dicRes] = await Promise.all([
-          fetch("/dictionaries/en.aff"),
-          fetch("/dictionaries/en.dic")
-        ]);
+        const download = (async () => {
+          const [affRes, dicRes] = await Promise.all([
+            fetch("/dictionaries/en.aff", { signal: controller.signal }),
+            fetch("/dictionaries/en.dic", { signal: controller.signal })
+          ]);
 
-        if (!affRes.ok || !dicRes.ok) throw new Error("Failed to load dictionary files");
+          if (!affRes.ok || !dicRes.ok) throw new Error("Failed to load dictionary files");
+          return Promise.all([affRes.text(), dicRes.text()]);
+        })();
 
-        const affData = await affRes.text();
-        const dicData = await dicRes.text();
+        // The same budget covers headers and both response bodies. Race as
+        // well as abort so even a stalled response that ignores cancellation
+        // cannot leave the first input waiting forever.
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error('Local dictionary download timed out'));
+          }, this.loadTimeoutMs);
+        });
+        const [affData, dicData] = await Promise.race([download, deadline]);
 
         this.spell = nspell(affData, dicData);
         console.log("Local dictionary loaded successfully.");
       } catch (error) {
+        controller.abort();
         console.error("LocalProvider: Failed to initialize nspell", error);
         this.spell = null;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        // A first attempt while offline must not disable local spelling for
+        // the rest of the session. A later validation can retry the download.
+        this.loadingPromise = null;
       }
     })();
 

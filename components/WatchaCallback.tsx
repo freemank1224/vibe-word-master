@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseUrl } from '../lib/supabaseClient';
 
 /**
  * 观猹OAuth2回调处理组件
@@ -54,8 +54,6 @@ export const WatchaCallback: React.FC = () => {
         }
 
         // 调用Edge Function处理OAuth回调
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || supabase.auth.url?.replace('/auth/v1', '');
 
         if (!supabaseUrl) {
           throw new Error('Supabase URL未配置');
