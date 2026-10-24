@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
 import { HoverTranslationText } from './HoverTranslationText';
 import { WordStrikeLeaderboardEntry, WordStrikeLeaderboardMetric, WordStrikeLeaderboardScope } from '../types';
 import { fetchWordStrikeLeaderboard } from '../services/dataService';
@@ -49,6 +50,7 @@ export const WordStrikeLeaderboardPanel: React.FC<WordStrikeLeaderboardPanelProp
   showDateControls = true,
 }) => {
   const [scope, setScope] = useState<WordStrikeLeaderboardScope>('all_time');
+  const { isZh } = useLanguage();
   const [metric, setMetric] = useState<WordStrikeLeaderboardMetric>('total_score');
   const [viewDate, setViewDate] = useState(new Date());
   const [entries, setEntries] = useState<WordStrikeLeaderboardEntry[]>([]);
@@ -184,8 +186,8 @@ export const WordStrikeLeaderboardPanel: React.FC<WordStrikeLeaderboardPanelProp
           <button
             key={nextMetric}
             onClick={() => setMetric(nextMetric)}
-            title={metricLabels[nextMetric].en}
-            aria-label={metricLabels[nextMetric].en}
+            title={metricLabels[nextMetric][isZh ? 'zh' : 'en']}
+            aria-label={metricLabels[nextMetric][isZh ? 'zh' : 'en']}
             className={`group relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border transition-colors ${
               metric === nextMetric
                 ? 'border-electric-green bg-electric-green/10 text-electric-green'
@@ -230,10 +232,10 @@ export const WordStrikeLeaderboardPanel: React.FC<WordStrikeLeaderboardPanelProp
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="truncate font-headline text-sm text-white">
-                  #{entry.rank_position} {entry.display_name || entry.email_masked || 'Player'}
+                  #{entry.rank_position} {entry.display_name || entry.email_masked || (isZh ? '玩家' : 'Player')}
                 </div>
                 <div className="mt-1 truncate text-[10px] font-mono text-text-dark">
-                  {entry.words_correct}/{entry.words_total} · {Math.round(entry.accuracy_rate * 100)}% · {entry.time_used_seconds}s
+                  {entry.words_correct}/{entry.words_total} · {Math.round(entry.accuracy_rate * 100)}% · {entry.time_used_seconds}{isZh ? '秒' : 's'}
                 </div>
               </div>
               <div className="shrink-0 text-right font-mono text-xs text-electric-green">

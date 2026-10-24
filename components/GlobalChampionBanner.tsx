@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
+import { leaderboardCategoryLabel, leaderboardScoreLabel } from '../utils/leaderboardLocale';
 import {
   ChampionInfo,
   fetchGlobalChampions,
@@ -28,6 +30,7 @@ const CATEGORY_ACCENT: Record<string, string> = {
  * - Pauses on hover; click anywhere → onOpen.
  */
 const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) => {
+  const { isZh } = useLanguage();
   const [champions, setChampions] = useState<ChampionInfo[]>([]);
   const [index, setIndex] = useState(0);
   const [loaded, setLoaded] = useState(false);
@@ -75,6 +78,8 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
 
   const current = champions[index];
   const accent = CATEGORY_ACCENT[current.category] ?? 'text-electric-blue';
+  const categoryLabel = leaderboardCategoryLabel(current.category, isZh);
+  const scoreLabel = leaderboardScoreLabel(current.category, current.scoreValue, isZh);
 
   return (
     <button
@@ -92,8 +97,8 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
       onBlur={() => {
         pausedRef.current = false;
       }}
-      title={`${current.categoryLabel} 冠军 · 点击查看全球排行榜`}
-      aria-label={`全球排行榜：${current.categoryLabel} 冠军 ${current.championName}，${current.scoreLabel}`}
+      title={isZh ? `${categoryLabel} 冠军 · 点击查看全球排行榜` : `${categoryLabel} champion · Open global leaderboard`}
+      aria-label={isZh ? `全球排行榜：${categoryLabel} 冠军 ${current.championName}，${scoreLabel}` : `Global leaderboard: ${categoryLabel} champion ${current.championName}, ${scoreLabel}`}
       className="group relative flex h-11 max-w-[460px] items-center overflow-hidden rounded-full border border-electric-blue/40 bg-light-charcoal/70 px-4 text-left transition-colors hover:border-electric-blue hover:bg-mid-charcoal/50 cursor-pointer animate-champion-glow"
     >
       {/* Rotating slide — keyed by index so it re-mounts & replays the flip-in animation. */}
@@ -105,14 +110,14 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
           {current.categoryIcon || 'emoji_events'}
         </span>
         <span className="shrink-0 text-xs font-mono uppercase tracking-[0.18em] text-white/70">
-          {current.categoryLabel}
+          {categoryLabel}
         </span>
         <span className="hidden h-4 w-px bg-mid-charcoal sm:inline-block" />
         <span className="truncate text-sm font-semibold text-electric-blue">
           {current.championName}
         </span>
         <span className="hidden shrink-0 font-mono text-sm text-electric-green md:inline-block">
-          {current.scoreLabel}
+          {scoreLabel}
         </span>
       </div>
 

@@ -14,6 +14,11 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
   const t = useT();
   const { isZh } = useLanguage();
   const LOGIN_SWITCH_TEXT = isZh ? '切换至"登录"模式' : 'Please switch to "Login" mode to sign in.';
+  const localizedError = (error: unknown, en: string, zh: string) => {
+    if (isZh) return zh;
+    const detail = error instanceof Error ? error.message : '';
+    return detail && !/\p{Script=Han}/u.test(detail) ? detail : en;
+  };
 
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
@@ -73,7 +78,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             setMsg(t.msgEmailNotConfirmedSignup);
           } else {
             setMsgType('error');
-            setMsg(isZh ? `注册失败：${error.message}` : `Signup failed: ${error.message}`);
+            setMsg(localizedError(error, 'Signup failed. Please try again.', '注册失败，请稍后重试。'));
           }
         } else {
           const identities = (data.user as any)?.identities;
@@ -122,7 +127,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
             setMsg(t.msgEmailNotConfirmedLogin);
           } else {
             setMsgType('error');
-            setMsg(isZh ? `登录失败：${error.message}` : `Login failed: ${error.message}`);
+            setMsg(localizedError(error, 'Login failed. Please try again.', '登录失败，请稍后重试。'));
           }
         } else {
           // Reset failed attempts on successful login
@@ -133,7 +138,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
         }
       }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.';
+      const errorMessage = localizedError(error, 'An unexpected error occurred. Please try again.', '发生异常，请稍后重试。');
       setMsgType('error');
       setMsg(errorMessage);
     } finally {
@@ -152,7 +157,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
       if (error) throw error;
     } catch (error: unknown) {
       setMsgType('error');
-      const errorMessage = error instanceof Error ? error.message : 'Failed to login with Google';
+      const errorMessage = localizedError(error, 'Failed to sign in with Google. Please try again.', '无法使用 Google 登录，请稍后重试。');
       setMsg(errorMessage);
     }
   };
@@ -162,7 +167,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
       startWatchaOAuth();
     } catch (error: unknown) {
       setMsgType('error');
-      const errorMessage = error instanceof Error ? error.message : 'Failed to login with Watcha';
+      const errorMessage = localizedError(error, 'Failed to sign in with Watcha. Please try again.', '无法使用观猹登录，请稍后重试。');
       setMsg(errorMessage);
     }
   };
@@ -178,7 +183,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
       setMsg(t.msgResendEmailSuccess);
     } catch (error: unknown) {
       setMsgType('error');
-      const errorMessage = error instanceof Error ? error.message : 'Failed to resend activation email. Please try again later.';
+      const errorMessage = localizedError(error, 'Failed to resend activation email. Please try again later.', '激活邮件发送失败，请稍后重试。');
       setMsg(errorMessage);
     }
   };
@@ -264,7 +269,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
           <div className="text-center mb-8">
             <img
               src={currentTheme.src}
-              alt="Mascot"
+              alt={isZh ? '怪兽吉祥物' : 'Monster mascot'}
               className="w-[144px] h-[144px] mx-auto mb-2 object-contain"
             />
             <h1 className="font-headline text-4xl text-white tracking-tight"><HoverTranslationText text="VOCAB MONSTER" translation="词汇怪兽" /></h1>
@@ -313,7 +318,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                       type="button"
                       onClick={handleResendActivation}
                       className="text-xs bg-electric-blue/20 text-electric-blue px-3 py-1.5 rounded-lg hover:bg-electric-blue/30 transition-colors"
-                      title="重新发送激活邮件"
+                      title={isZh ? '重新发送激活邮件' : 'Resend activation email'}
                     >
                       📧 <HoverTranslationText text="Resend Email" translation="重新发送邮件" />
                     </button>
@@ -322,7 +327,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
                       type="button"
                       onClick={() => onForgotPassword?.()}
                       className="text-xs bg-white/10 text-white px-3 py-1.5 rounded-lg hover:bg-white/20 transition-colors"
-                      title="重置密码"
+                      title={isZh ? '重置密码' : 'Reset password'}
                     >
                       🔑 <HoverTranslationText text="Forgot Password" translation="忘记密码" />
                     </button>
@@ -396,7 +401,7 @@ export const Auth: React.FC<AuthProps> = ({ onForgotPassword }) => {
         >
           <img
             src="https://watcha.tos-cn-beijing.volces.com/products/logo/1752064513_guan-cha-insights.png?x-tos-process=image/resize,w_72/format,webp"
-            alt="观猹"
+            alt={isZh ? '观猹' : 'Watcha'}
             className="w-5 h-5 object-contain"
           />
           {t.continueWithWatcha}

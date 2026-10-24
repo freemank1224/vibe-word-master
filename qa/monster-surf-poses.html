@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monster Surf · 42 action frames · Development QA</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { padding: 7px; background: #111122; color: #e9e9fa; font: 12px/1.25 ui-monospace, monospace; }
+      header { height: 31px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+      h1 { margin: 0; color: #00e6f6; font-size: 16px; }
+      #status { color: #25e578; }
+      main { height: calc(100% - 31px); display: grid; grid-template-columns: 88px repeat(7, minmax(0, 1fr)); grid-template-rows: 24px repeat(6, minmax(0, 1fr)); gap: 5px; }
+      .column, .row { display: grid; place-items: center; border: 1px solid #33364b; border-radius: 6px; background: #1e2238; font-weight: bold; }
+      .row { text-align: center; color: #b6b9d0; font-size: 11px; }
+      figure { min-height: 0; min-width: 0; position: relative; margin: 0; overflow: hidden; border: 1px solid #484d65; border-radius: 7px; background: #68d5e1; }
+      canvas { width: 100%; height: 100%; display: block; }
+      figcaption { position: absolute; bottom: 4px; left: 6px; color: #225160; font-size: 10px; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>MONSTER SURF — 7 CHARACTERS × 6 REAL ACTION FRAMES</h1>
+      <span id="status">Loading original generated sheets…</span>
+    </header>
+    <main id="gallery" aria-label="Every character and surfing pose"></main>
+    <script type="module">
+      import { createSurfRenderer } from '/features/monster-surf/renderer.ts';
+      import { startSurf } from '/features/monster-surf/game.ts';
+
+      const gallery = document.querySelector('#gallery');
+      const status = document.querySelector('#status');
+      const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+      const actions = [
+        { pose: 'straight', label: 'STRAIGHT\nCROUCH', phase: 'surfing', vx: 0 },
+        { pose: 'left', label: 'CARVE\nLEFT', phase: 'surfing', vx: -180 },
+        { pose: 'right', label: 'CARVE\nRIGHT', phase: 'surfing', vx: 180 },
+        { pose: 'celebrate', label: 'CORRECT\nCELEBRATE', phase: 'cleared', vx: 0 },
+        { pose: 'hurt', label: 'HURT\nOFF BALANCE', phase: 'hurt', vx: 0 },
+        { pose: 'fall', label: 'FALL\nOFF BOARD', phase: 'sinking', vx: 0 },
+      ];
+      const corner = document.createElement('div');
+      corner.className = 'column'; corner.textContent = 'ACTION'; gallery.append(corner);
+      days.forEach((day, id) => {
+        const heading = document.createElement('div');
+        heading.className = 'column'; heading.textContent = `M${id} · ${day}`; gallery.append(heading);
+      });
+      const cases = [];
+      for (const action of actions) {
+        const label = document.createElement('div');
+        label.className = 'row'; label.style.whiteSpace = 'pre-line'; label.textContent = action.label; gallery.append(label);
+        days.forEach((day, monster) => {
+          const figure = document.createElement('figure');
+          const canvas = document.createElement('canvas');
+          const caption = document.createElement('figcaption');
+          canvas.dataset.expectedPose = action.pose;
+          canvas.dataset.expectedCharacter = String(monster);
+          canvas.setAttribute('aria-label', `${day}, ${action.pose}`);
+          caption.textContent = `M${monster} / ${action.pose}`;
+          figure.append(canvas, caption); gallery.append(figure);
+          cases.push({ canvas, action, monster });
+        });
+      }
+      window.__SURF_POSE_QA = { ready: false, count: cases.length, results: [] };
+      try {
+        const sprites = await Promise.all(days.map(async (_, id) => {
+          const image = new Image(); image.src = `/monster-surf/characters/M${id}-surf.png`;
+          await image.decode(); return image;
+        }));
+        const renderers = cases.map(({ canvas, action, monster }) => {
+          const renderer = createSurfRenderer(canvas, sprites);
+          const state = { ...startSurf(monster), phase: action.phase, vx: action.vx,
+            elapsedMs: 1050, phaseMs: 180, items: [], obstacles: [], correct: 0 };
+          return { canvas, renderer, state, action, monster };
+        });
+        const render = () => {
+          for (const { renderer, state } of renderers) renderer.render(state, true);
+          const results = renderers.map(({ canvas, action, monster }) => {
+            const bounds = { x: Number(canvas.dataset.riderX), y: Number(canvas.dataset.riderY),
+              width: Number(canvas.dataset.riderWidth), height: Number(canvas.dataset.riderHeight) };
+            const visible = canvas.dataset.riderVisible === 'true';
+            const view = canvas.getBoundingClientRect();
+            const contained = bounds.x >= 0 && bounds.y >= 0
+              && bounds.x + bounds.width <= view.width && bounds.y + bounds.height <= view.height;
+            return { monster, expected: action.pose, actual: canvas.dataset.surfPose, visible, contained, bounds,
+              pass: visible && contained && canvas.dataset.surfPose === action.pose && canvas.dataset.surfCharacter === String(monster) };
+          });
+          window.__SURF_POSE_QA = { ready: true, count: cases.length, passed: results.filter(result => result.pass).length, results };
+          status.textContent = `${window.__SURF_POSE_QA.passed} / ${cases.length} poses verified · ${innerWidth} × ${innerHeight} · real sprite bounds`;
+        };
+        requestAnimationFrame(render);
+        window.addEventListener('resize', render);
+        window.addEventListener('pagehide', () => renderers.forEach(({ renderer }) => renderer.destroy()), { once: true });
+      } catch (error) {
+        window.__SURF_POSE_QA = { ready: false, error: String(error) };
+        status.textContent = String(error); status.style.color = '#ff8a8a';
+      }
+    </script>
+  </body>
+</html>

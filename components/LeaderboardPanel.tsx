@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { LeaderboardEntry, DayStats, PuzzleLeaderboardScope } from '../types';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { useLanguage } from '../contexts/LanguageContext';
 import { HoverTranslationText } from './HoverTranslationText';
 import { PuzzleLeaderboardPanel } from './PuzzleLeaderboardPanel';
 
@@ -66,6 +67,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
   stats = {},
   words = []
 }) => {
+  const { isZh } = useLanguage();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -324,7 +326,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
                 <div className="w-full max-w-sm rounded-3xl border border-mid-charcoal bg-mid-charcoal/50 p-4">
                   <div className="flex items-end justify-center gap-3">
                     <div className="text-4xl font-bold leading-none text-electric-blue">{qualificationStatus.currentTests}</div>
-                    <div className="pb-1 text-text-dark font-mono text-sm">/ {qualificationStatus.requiredTests} tests today</div>
+                    <div className="pb-1 text-text-dark font-mono text-sm">/ {qualificationStatus.requiredTests} {isZh ? '今日测验' : 'tests today'}</div>
                   </div>
                   <div className="mt-3 w-full bg-dark-charcoal rounded-full h-2.5 overflow-hidden">
                     <div
@@ -355,8 +357,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
                     />
                   </div>
                   <div className="text-center text-text-dark font-mono text-xs">
-                    {qualificationStatus.requiredTests - qualificationStatus.currentTests} more test
-                    {qualificationStatus.requiredTests - qualificationStatus.currentTests > 1 ? 's' : ''} to go!
+                    {isZh ? `再完成 ${qualificationStatus.requiredTests - qualificationStatus.currentTests} 次测验即可达标！` : `${qualificationStatus.requiredTests - qualificationStatus.currentTests} more tests to go!`}
                   </div>
                 </div>
               )}
@@ -367,7 +368,7 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
             onClick={fetchLeaderboard}
             className="px-6 py-2 bg-electric-blue text-white font-mono text-sm rounded-full hover:bg-electric-blue/80 transition-colors"
           >
-            Refresh Status
+            {isZh ? '刷新状态' : 'Refresh Status'}
           </button>
         </div>
       );
@@ -404,22 +405,22 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
                           </span>
                         )}
                       </span>
-                      {entry.is_current_user && <span className="ml-2 text-xs text-electric-blue">(You)</span>}
+                      {entry.is_current_user && <span className="ml-2 text-xs text-electric-blue">{isZh ? '（你）' : '(You)'}</span>}
                     </div>
                     <div className="font-mono text-xs text-text-dark">
-                      {entry.tests_completed} tests • {entry.new_words_added} new • {(entry.accuracy_rate * 100).toFixed(0)}% acc
+                      {isZh ? `${entry.tests_completed} 次测验 · ${entry.new_words_added} 个新词 · 正确率 ${(entry.accuracy_rate * 100).toFixed(0)}%` : `${entry.tests_completed} tests • ${entry.new_words_added} new • ${(entry.accuracy_rate * 100).toFixed(0)}% acc`}
                     </div>
                   </div>
                 </div>
                 <div className="text-right relative group">
                   <div className="font-bold text-white font-mono">{Math.round(entry.total_score)}</div>
-                  <div className="font-mono text-xs text-text-dark">points</div>
+                  <div className="font-mono text-xs text-text-dark">{isZh ? '分' : 'points'}</div>
                   <div className="absolute right-0 top-full mt-1 hidden group-hover:block z-20 w-48 p-2 rounded-xl border border-mid-charcoal bg-dark-charcoal shadow-2xl">
                     <div className="font-mono text-[11px] text-text-light space-y-0.5 leading-tight">
-                      <div className="flex justify-between"><span>Tests</span><span>{scoreBreakdown.testCountScore.toFixed(1)}</span></div>
-                      <div className="flex justify-between"><span>New</span><span>{scoreBreakdown.newWordsScore.toFixed(1)}</span></div>
-                      <div className="flex justify-between"><span>Accuracy</span><span>{scoreBreakdown.accuracyScore.toFixed(1)}</span></div>
-                      <div className="flex justify-between"><span>Difficulty</span><span>{scoreBreakdown.difficultyScore.toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span>{isZh ? '测验' : 'Tests'}</span><span>{scoreBreakdown.testCountScore.toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span>{isZh ? '新词' : 'New'}</span><span>{scoreBreakdown.newWordsScore.toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span>{isZh ? '正确率' : 'Accuracy'}</span><span>{scoreBreakdown.accuracyScore.toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span>{isZh ? '难度' : 'Difficulty'}</span><span>{scoreBreakdown.difficultyScore.toFixed(1)}</span></div>
                     </div>
                   </div>
                 </div>
@@ -432,17 +433,17 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
           <div className="mt-6 pt-4 border-t border-mid-charcoal">
             <div className="flex justify-between items-center">
               <div className="text-center">
-                <div className="font-mono text-xs text-text-dark">Your Ranking</div>
+                <div className="font-mono text-xs text-text-dark">{isZh ? '你的排名' : 'Your Ranking'}</div>
                 <div className={`font-headline text-3xl ${getRankColor(currentUserEntry.rank_position)}`}>
                   {getRankIcon(currentUserEntry.rank_position)}
                 </div>
               </div>
               <div className="text-center">
-                <div className="font-mono text-xs text-text-dark">Score</div>
+                <div className="font-mono text-xs text-text-dark">{isZh ? '得分' : 'Score'}</div>
                 <div className="font-mono text-xl text-white">{Math.round(currentUserEntry.total_score)}</div>
               </div>
               <div className="text-center">
-                <div className="font-mono text-xs text-text-dark">Percentile</div>
+                <div className="font-mono text-xs text-text-dark">{isZh ? '百分位' : 'Percentile'}</div>
                 <div className="font-mono text-xl text-electric-blue">
                   {entries.length > 0
                     ? Math.round(((entries.length - currentUserEntry.rank_position + 1) / entries.length) * 100)

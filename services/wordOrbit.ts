@@ -6,11 +6,22 @@ export const WORD_ORBIT_BATCH_SIZE = 24;
 export type OrbitObstacle = 'rock' | 'arch' | 'gap';
 export type OrbitAction = 'jump' | 'slide' | 'jet' | 'fall';
 export type OrbitPhase = 'ready' | 'playing' | 'paused' | 'finished';
+export type OrbitLanguage = 'en' | 'zh';
+
+// Store message intent rather than rendered text so a language change can update
+// an in-progress run without replacing its question, input, or clock.
+export type OrbitMessage =
+  | { key: 'intro' | 'timeUp' | 'empty' | 'wrong' | 'leave' | 'autoPause' | 'pause' | 'resume' | 'missedBurst' | 'recover' | 'fall' }
+  | { key: 'missed' | 'skip' | 'correct' | 'corrected'; question: WordOrbitQuestion }
+  | { key: 'hint'; letter: string }
+  | { key: 'combo'; combo: number }
+  | { key: 'action'; action: OrbitAction };
 
 export interface WordOrbitQuestion {
   wordId: string;
   answer: string;
   clue: string;
+  clueEn?: string;
   before?: string;
   after?: string;
 }
@@ -50,19 +61,58 @@ export interface WordOrbitState {
   score: number;
   distance: number;
   results: WordOrbitResult[];
-  feedback: string;
+  feedback: OrbitMessage;
   invalid: boolean;
 }
-export interface OrbitEffect { action: OrbitAction; obstacle: OrbitObstacle; text: string }
+export interface OrbitEffect { action: OrbitAction; obstacle: OrbitObstacle; text: OrbitMessage }
 export interface OrbitTransition { state: WordOrbitState; effects: OrbitEffect[] }
 export const ORBIT_TERRAINS = [
-  { obstacle: 'rock', action: 'jump', name: '岩台', verb: '翻越' },
-  { obstacle: 'arch', action: 'slide', name: '低拱门', verb: '滑铲' },
-  { obstacle: 'gap', action: 'jet', name: '裂隙', verb: '飞跃' },
+  { obstacle: 'rock', action: 'jump', name: '岩台', verb: '翻越', nameEn: 'Rock ledge', verbEn: 'Vault' },
+  { obstacle: 'arch', action: 'slide', name: '低拱门', verb: '滑铲', nameEn: 'Low arch', verbEn: 'Slide' },
+  { obstacle: 'gap', action: 'jet', name: '裂隙', verb: '飞跃', nameEn: 'Rift', verbEn: 'Leap' },
 ] as const;
 export const ORBIT_ACTION_SECONDS: Record<OrbitAction, number> = { jump: .86, slide: .85, jet: 1, fall: .75 };
 export const orbitWordBudget = (answer: string) => Math.min(15_000, 8_000 + answer.length * 700);
 export const normalizeOrbitAnswer = (value: string) => value.trim().toLocaleLowerCase('en').replace(/[’‘]/g, "'");
+
+export function wordOrbitClue(question: WordOrbitQuestion, language: OrbitLanguage): string {
+  if (language === 'zh') return question.clue;
+  if (question.clueEn) return question.clueEn;
+  if (!/\p{Script=Han}/u.test(question.clue)) return question.clue;
+  if (question.before !== undefined) return 'Complete the sentence.';
+  // Older entries may have only a Chinese definition. A partial spelling still
+  // gives an answerable English-only prompt without revealing the whole word.
+  const pattern = Array.from(question.answer).map((letter, index) =>
+    index === 0 || question.answer.length > 3 && index === question.answer.length - 1 || index > 1 && index % 2 === 0 ? letter : '_').join(' ');
+  return `Complete the word: ${pattern}`;
+}
+
+export function formatOrbitMessage(message: OrbitMessage, language: OrbitLanguage): string {
+  const zh = language === 'zh';
+  switch (message.key) {
+    case 'intro': return zh ? '答对翻越，答错保留输入，改对继续。' : 'Answer to vault. Mistakes keep your input—correct it and keep running.';
+    case 'timeUp': return zh ? '时间到，收好这一程。' : 'Time’s up. A journey worth keeping.';
+    case 'empty': return zh ? '先填入一个单词。' : 'Type a word first.';
+    case 'wrong': return zh ? '摔了一跤。输入保留，改对就能补跳。' : 'You stumbled. Fix your answer to vault back up.';
+    case 'leave': return zh ? '本轮已结束，正在保存已作答单词。' : 'Run ended. Saving your completed answers.';
+    case 'autoPause': return zh ? '离开画面时已暂停。' : 'Paused while you were away.';
+    case 'pause': return zh ? '已暂停，输入还在。' : 'Paused. Your answer is still here.';
+    case 'resume': return zh ? '继续跑，下一步由你决定。' : 'Keep running. Your next move is up to you.';
+    case 'missedBurst': return zh ? '没赶上，下一步继续' : 'Missed it. Keep going!';
+    case 'recover': return zh ? '稳住，补跳！' : 'Back on your feet!';
+    case 'fall': return zh ? '哎哟！还能救' : 'Ouch! You can recover';
+    case 'correct': return `${message.question.answer} · ${zh ? '漂亮！' : 'Nicely done!'}`;
+    case 'corrected': return `${message.question.answer} · ${zh ? '修正成功，继续。' : 'Corrected. Keep going!'}`;
+    case 'missed': return `${zh ? '没赶上' : 'Missed'}: ${message.question.answer} · ${wordOrbitClue(message.question, language)}`;
+    case 'skip': return `${zh ? '绕行' : 'Skipped'}: ${message.question.answer} · ${wordOrbitClue(message.question, language)}`;
+    case 'hint': return zh ? `首字母 ${message.letter} · 本题不累计连击。` : `Starts with ${message.letter} · This word won’t add to your combo.`;
+    case 'combo': return zh ? `连越 ${message.combo}！` : `${message.combo} in a row!`;
+    case 'action': {
+      const terrain = ORBIT_TERRAINS.find(item => item.action === message.action);
+      return zh ? `${terrain?.verb || '越障'}成功` : `${terrain?.verbEn || 'Obstacle'} cleared!`;
+    }
+  }
+}
 
 // Short, manually checked sentences are used only for matching Chinese senses.
 // Other words use their saved meaning, so a round never waits for generated content.
@@ -83,13 +133,17 @@ const SENTENCES: Record<string, { before: string; after: string; meaning: RegExp
 
 export function toWordOrbitQuestion(word: WordEntry): WordOrbitQuestion | null {
   const answer = normalizeOrbitAnswer(word.text || '');
-  const selectedMeaning = word.meaning_options?.find(option => option.key === word.selected_meaning_key)?.meaningZh;
-  const clue = (selectedMeaning || word.definition_cn || '').trim();
+  const selectedMeaning = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
+  const clue = (selectedMeaning?.meaningZh || word.definition_cn || selectedMeaning?.definitionEn || word.definition_en || '').trim();
   if (word.deleted || !/^[a-z]+(?:[-'][a-z]+)*$/.test(answer) || answer.length < 2 || answer.length > 18 || !clue || clue.length > 240) return null;
   // A clue containing the answer would make the recall task meaningless.
   if (new RegExp(`\\b${answer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(clue)) return null;
+  const englishMeaning = (selectedMeaning ? selectedMeaning.definitionEn : word.definition_en)?.trim();
+  const clueEn = englishMeaning && !/\p{Script=Han}/u.test(englishMeaning)
+    ? englishMeaning.replace(new RegExp(`\\b${answer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '____').slice(0, 240)
+    : undefined;
   const sentence = SENTENCES[answer];
-  return { wordId: word.id, answer, clue, ...(sentence?.meaning.test(clue) ? { before: sentence.before, after: sentence.after } : {}) };
+  return { wordId: word.id, answer, clue, clueEn, ...(sentence?.meaning.test(clue) ? { before: sentence.before, after: sentence.after } : {}) };
 }
 
 type OrbitSelectQueue = (all: WordEntry[], pool: WordEntry[], count: number, sessions?: InputSession[]) => WordEntry[];
@@ -116,7 +170,7 @@ export function createWordOrbitState(questions: WordOrbitQuestion[], roundId: st
     roundId, occurredAt, questions, phase: 'ready', index: 0, input: '',
     remainingMs: WORD_ORBIT_DURATION_MS, questionRemainingMs: orbitWordBudget(questions[0]?.answer || ''), questionElapsedMs: 0,
     hadMistake: false, hintUsed: false, combo: 0, bestCombo: 0, correctCount: 0, score: 0, distance: 0, results: [],
-    feedback: '答对翻越，答错保留输入，改对继续。', invalid: false,
+    feedback: { key: 'intro' }, invalid: false,
   };
 }
 
@@ -139,13 +193,13 @@ export function advanceWordOrbit(state: WordOrbitState, deltaMs: number): OrbitT
   let next = { ...state, remainingMs: Math.max(0, state.remainingMs - elapsed), questionRemainingMs: Math.max(0, state.questionRemainingMs - elapsed), questionElapsedMs: state.questionElapsedMs + elapsed, distance: state.distance + elapsed * .005 };
   if (next.remainingMs <= 0) {
     const attempted = Boolean(next.input.trim()) || next.hadMistake || next.hintUsed;
-    return { state: { ...next, phase: 'finished', results: [...next.results, record(next, attempted ? 'incorrect' : 'unattempted')], feedback: '时间到，收好这一程。' }, effects: [] };
+    return { state: { ...next, phase: 'finished', results: [...next.results, record(next, attempted ? 'incorrect' : 'unattempted')], feedback: { key: 'timeUp' } }, effects: [] };
   }
   if (next.questionRemainingMs <= 0) {
     const terrain = ORBIT_TERRAINS[next.index % 3];
     const question = next.questions[next.index];
-    const effects: OrbitEffect[] = next.hadMistake ? [] : [{ action: 'fall', obstacle: terrain.obstacle, text: '没赶上，下一步继续' }];
-    next = { ...next, combo: 0, results: [...next.results, record(next, 'incorrect')], feedback: `没赶上：${question.answer} · ${question.clue}` };
+    const effects: OrbitEffect[] = next.hadMistake ? [] : [{ action: 'fall', obstacle: terrain.obstacle, text: { key: 'missedBurst' } }];
+    next = { ...next, combo: 0, results: [...next.results, record(next, 'incorrect')], feedback: { key: 'missed', question } };
     return { state: nextQuestion(next), effects };
   }
   return { state: next, effects: [] };
@@ -158,28 +212,28 @@ export function submitWordOrbit(state: WordOrbitState, deltaMs = 0): OrbitTransi
   const current = advanced.state;
   const question = current.questions[current.index];
   const terrain = ORBIT_TERRAINS[current.index % 3];
-  if (!current.input.trim()) return { state: { ...current, feedback: '先填入一个单词。' }, effects: [] };
+  if (!current.input.trim()) return { state: { ...current, feedback: { key: 'empty' } }, effects: [] };
   if (normalizeOrbitAnswer(current.input) === question.answer) {
     const clean = !current.hadMistake && !current.hintUsed;
     const combo = clean ? current.combo + 1 : 0;
     const points = clean ? 100 + Math.min(combo, 10) * 10 : 50;
-    const next = { ...current, combo, bestCombo: Math.max(current.bestCombo, combo), correctCount: current.correctCount + 1, score: current.score + points, distance: current.distance + 12, results: [...current.results, record(current, 'correct')], feedback: `${question.answer} · ${clean ? '漂亮！' : '修正成功，继续。'}` };
-    return { state: nextQuestion(next), effects: [{ action: terrain.action, obstacle: terrain.obstacle, text: combo && combo % 3 === 0 ? `连越 ${combo}！` : current.hadMistake ? '稳住，补跳！' : `${terrain.verb}成功` }] };
+    const next: WordOrbitState = { ...current, combo, bestCombo: Math.max(current.bestCombo, combo), correctCount: current.correctCount + 1, score: current.score + points, distance: current.distance + 12, results: [...current.results, record(current, 'correct')], feedback: { key: clean ? 'correct' : 'corrected', question } };
+    return { state: nextQuestion(next), effects: [{ action: terrain.action, obstacle: terrain.obstacle, text: combo && combo % 3 === 0 ? { key: 'combo', combo } : current.hadMistake ? { key: 'recover' } : { key: 'action', action: terrain.action } }] };
   }
   return {
-    state: { ...current, combo: 0, hadMistake: true, invalid: true, questionRemainingMs: current.hadMistake ? current.questionRemainingMs : Math.max(3_000, current.questionRemainingMs), feedback: '摔了一跤。输入保留，改对就能补跳。' },
-    effects: current.hadMistake ? [] : [{ action: 'fall', obstacle: terrain.obstacle, text: '哎哟！还能救' }],
+    state: { ...current, combo: 0, hadMistake: true, invalid: true, questionRemainingMs: current.hadMistake ? current.questionRemainingMs : Math.max(3_000, current.questionRemainingMs), feedback: { key: 'wrong' } },
+    effects: current.hadMistake ? [] : [{ action: 'fall', obstacle: terrain.obstacle, text: { key: 'fall' } }],
   };
 }
 
 export function hintWordOrbit(state: WordOrbitState): WordOrbitState {
   if (state.phase !== 'playing' || state.hintUsed) return state;
-  return { ...state, hintUsed: true, combo: 0, feedback: `首字母 ${state.questions[state.index].answer[0].toUpperCase()} · 本题不累计连击。` };
+  return { ...state, hintUsed: true, combo: 0, feedback: { key: 'hint', letter: state.questions[state.index].answer[0].toUpperCase() } };
 }
 export function skipWordOrbit(state: WordOrbitState): WordOrbitState {
   if (state.phase !== 'playing') return state;
   const question = state.questions[state.index];
-  return nextQuestion({ ...state, combo: 0, results: [...state.results, record(state, 'skipped')], feedback: `绕行：${question.answer} · ${question.clue}` });
+  return nextQuestion({ ...state, combo: 0, results: [...state.results, record(state, 'skipped')], feedback: { key: 'skip', question } });
 }
 export function summarizeWordOrbit(state: WordOrbitState, completedAt = Date.now()): WordOrbitSummary {
   // Review intervals start at the actual completion, including after a long pause.

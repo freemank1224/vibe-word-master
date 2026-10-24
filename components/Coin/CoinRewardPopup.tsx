@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLanguage } from '../../contexts/LanguageContext';
 import confetti from 'canvas-confetti';
 import { CoinIcon } from './CoinIcon';
 import { playCoinReward } from '../../utils/audioFeedback';
@@ -17,6 +18,7 @@ interface CoinRewardPopupProps {
  * then auto-dismisses after 3s. User can also tap to dismiss early.
  */
 export const CoinRewardPopup: React.FC<CoinRewardPopupProps> = ({ amount, source, onClose }) => {
+  const { isZh } = useLanguage();
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
@@ -43,12 +45,12 @@ export const CoinRewardPopup: React.FC<CoinRewardPopupProps> = ({ amount, source
   }, [onClose]);
 
   const sourceLabel = source === 'quiz'
-    ? 'Quiz Reward'
+    ? (isZh ? '测试奖励' : 'Quiz Reward')
     : source === 'puzzle'
-    ? 'Puzzle Reward'
+    ? (isZh ? '九宫格奖励' : 'Puzzle Reward')
     : source === 'word_strike'
-    ? 'Word Strike Reward'
-    : 'All Achievements Bonus!';
+    ? (isZh ? '单词射击奖励' : 'Word Strike Reward')
+    : (isZh ? '全部成就奖励！' : 'All Achievements Bonus!');
 
   return (
     <div

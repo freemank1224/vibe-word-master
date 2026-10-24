@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { PieChartProps } from './types';
+import { useLanguage } from '../../contexts/LanguageContext';
 import { HoverTranslationText } from '../HoverTranslationText';
 
 export const PieChart: React.FC<PieChartProps> = ({
@@ -113,6 +114,7 @@ interface ProgressPieChartProps {
 }
 
 export const ProgressPieChart: React.FC<ProgressPieChartProps> = ({ words, className = '' }) => {
+  const { isZh } = useLanguage();
   const chartData = useMemo(() => {
     const total = words.length;
     const tested = words.filter(w => w.tested).length;
@@ -120,17 +122,17 @@ export const ProgressPieChart: React.FC<ProgressPieChartProps> = ({ words, class
 
     return [
       {
-        label: 'Tested',
+        label: isZh ? '已测验' : 'Tested',
         value: tested,
         color: '#3B82F6' // electric-blue
       },
       {
-        label: 'Untested',
+        label: isZh ? '未测验' : 'Untested',
         value: untested,
         color: '#404040' // mid-charcoal
       }
     ];
-  }, [words]);
+  }, [words, isZh]);
 
   const totalWords = chartData.reduce((sum, item) => sum + item.value, 0);
   const testedWords = chartData[0].value;
@@ -146,7 +148,7 @@ export const ProgressPieChart: React.FC<ProgressPieChartProps> = ({ words, class
             {totalWords > 0 ? Math.round((testedWords / totalWords) * 100) : 0}%
           </div>
           <div className="text-[9px] text-text-dark font-mono uppercase tracking-wider">
-            Coverage
+            <HoverTranslationText text="Coverage" translation="覆盖率" />
           </div>
         </div>
       }
@@ -156,6 +158,7 @@ export const ProgressPieChart: React.FC<ProgressPieChartProps> = ({ words, class
 };
 
 export const MasteryPieChart: React.FC<ProgressPieChartProps> = ({ words, className = '' }) => {
+  const { isZh } = useLanguage();
   const chartData = useMemo(() => {
     const tested = words.filter(w => w.tested);
 
@@ -169,22 +172,22 @@ export const MasteryPieChart: React.FC<ProgressPieChartProps> = ({ words, classN
 
     return [
       {
-        label: 'Mastered',
+        label: isZh ? '已掌握' : 'Mastered',
         value: mastered,
         color: '#10B981' // electric-green - 已完全掌握
       },
       {
-        label: 'Learning',
+        label: isZh ? '学习中' : 'Learning',
         value: learning,
         color: '#F59E0B' // orange - 学习中
       },
       {
-        label: 'Difficult',
+        label: isZh ? '困难词' : 'Difficult',
         value: difficult,
         color: '#EF4444' // red - 困难词
       }
     ];
-  }, [words]);
+  }, [words, isZh]);
 
   const totalTested = chartData.reduce((sum, item) => sum + item.value, 0);
   const masteredWords = chartData[0].value;

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
+import { wordMeaningForLanguage } from '../utils/wordMeaningLocale';
 import { HoverTranslationText } from './HoverTranslationText';
 import { WordStrikeLeaderboardPanel } from './WordStrikeLeaderboardPanel';
 import { InputSession, WordEntry, WordStrikeCardResult, WordStrikeGameSummary } from '../types';
@@ -134,6 +136,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   // ----------------------------------------------------------------
   // React state — low-frequency HUD aggregates only
   // ----------------------------------------------------------------
+  const { isZh } = useLanguage();
   const [phase, setPhase] = useState<WordStrikePhase>('INTRO');
   const [selectionMode, setSelectionMode] = useState<'smart' | 'random'>('random');
   const [selectionOverlapRate, setSelectionOverlapRate] = useState(0);
@@ -1112,7 +1115,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                         <HoverTranslationText text="Hint" translation="提示" />
                       </div>
                       <div className="mt-2 text-2xl font-headline text-white">
-                        <HoverTranslationText text="Audio + CN" translation="读音 + 中文" />
+                        <HoverTranslationText text="Audio + meaning" translation="读音 + 释义" />
                       </div>
                     </div>
                   </div>
@@ -1288,12 +1291,12 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                   value={SPEED_ORDER.indexOf(speed)}
                   onChange={(e) => changeSpeed(SPEED_ORDER[Number(e.target.value)])}
                   className="mt-3 w-full accent-electric-green"
-                  aria-label="march speed"
+                  aria-label={isZh ? '推进速度' : 'March speed'}
                 />
                 <div className="mt-1 flex justify-between font-mono text-[10px] text-text-dark">
-                  <span>慢 SLOW</span>
-                  <span>中 NORMAL</span>
-                  <span>快 FAST</span>
+                  <span><HoverTranslationText text="SLOW" translation="慢" /></span>
+                  <span><HoverTranslationText text="NORMAL" translation="中" /></span>
+                  <span><HoverTranslationText text="FAST" translation="快" /></span>
                 </div>
               </div>
 
@@ -1367,7 +1370,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                       : 'text-text-dark hover:text-text-light'
                   }`}
                 >
-                  <HoverTranslationText text={SPEED_LABELS[s].en} translation={SPEED_LABELS[s].zh} />
+                  <HoverTranslationText text={SPEED_LABELS[s].en} translation={SPEED_LABELS[s][isZh ? 'zh' : 'en']} />
                 </button>
               ))}
             </div>
@@ -1397,7 +1400,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                         void playWordPronunciation(word.text, word.language || 'en', undefined, word.audio_url)
                       }
                       className="shrink-0 rounded-full p-1 text-electric-blue/70 transition-colors hover:bg-electric-blue/10 hover:text-electric-blue"
-                      aria-label="replay"
+                      aria-label={isZh ? '重播' : 'Replay'}
                     >
                       <span className="material-symbols-outlined text-[18px]">volume_up</span>
                     </button>
@@ -1406,7 +1409,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                     <div className="mt-0.5 font-mono text-[10px] text-electric-blue/60">{word.phonetic}</div>
                   )}
                   <div className="mt-1.5 text-xs leading-5 text-text-light/90">
-                    {word.definition_cn || word.definition_en || ''}
+                    {wordMeaningForLanguage(word, isZh)}
                   </div>
                 </div>
               ))}
@@ -1431,7 +1434,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                     speed === s ? 'bg-electric-green text-charcoal' : 'text-text-dark'
                   }`}
                 >
-                  {SPEED_LABELS[s].zh}
+                  {SPEED_LABELS[s][isZh ? 'zh' : 'en']}
                 </button>
               ))}
             </div>
@@ -1457,7 +1460,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
                 ))
               )}
             </div>
-            <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.15em] text-text-dark">~ 重读</span>
+            <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.15em] text-text-dark"><HoverTranslationText text="~ Replay" translation="~ 重读" /></span>
           </div>
         )}
 

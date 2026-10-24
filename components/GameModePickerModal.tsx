@@ -62,7 +62,7 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
       icon: 'rocket_launch',
       accent: { text: 'text-electric-green group-hover:text-charcoal', hoverBg: 'hover:bg-electric-green hover:text-charcoal', border: '' },
       ready: orbitReadyCount > 0,
-      readyLabel: { en: 'Add a word with a Chinese meaning first', zh: '请先添加带中文释义的英文单词' },
+      readyLabel: { en: 'Add an English word with a definition first', zh: '请先添加带释义的英文单词' },
       onSelect: onSelectOrbit,
     },
     {

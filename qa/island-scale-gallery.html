@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monster Surf · Native island scale QA</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { padding: 12px; background: #111122; color: #e9e9fa; font: 13px/1.4 ui-monospace, monospace; }
+      header { height: 63px; display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+      h1 { margin: 0 0 3px; font-size: 20px; color: #00e6f6; }
+      p { margin: 0; color: #aeb5cf; }
+      nav { display: flex; gap: 15px; align-items: center; }
+      a { color: #25e578; }
+      #overview { width: 100%; height: calc(100% - 63px); display: block; border-radius: 14px; }
+      #scene { display: none; width: 1000px; height: 600px; border-radius: 14px; margin: 16px auto; }
+      #scene-description { display: none; text-align: center; }
+      #probe { position: absolute; left: -3000px; top: 0; width: 1000px; height: 600px; pointer-events: none; }
+      body.scene #overview { display: none; }
+      body.scene #scene, body.scene #scene-description { display: block; }
+      #status { color: #25e578; text-align: right; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>ISLANDS · ONE SHARED ART SCALE</h1>
+        <p>Native land sizes and object counts. Every tree, building and rock uses the same source-pixel scale.</p>
+      </div>
+      <div>
+        <nav><a href="?view=overview">8-island overview</a><a href="?view=scene">Actual renderer · 1 world unit = 1 px</a></nav>
+        <div id="status">Loading generated island artwork…</div>
+      </div>
+    </header>
+    <canvas id="overview" aria-label="Eight islands displayed at one shared scale"></canvas>
+    <canvas id="scene" aria-label="Small, medium and large islands together in the real game renderer"></canvas>
+    <p id="scene-description">Island 0 (small) · Island 3 (medium) · Island 6 (large) — fixed 1000 px game canvas; identical trees keep the same physical scale.</p>
+    <canvas id="probe" aria-hidden="true"></canvas>
+    <script type="module">
+      import { createSurfRenderer } from '/features/monster-surf/renderer.ts';
+      import { startSurf } from '/features/monster-surf/game.ts';
+      import { SURF_ISLAND_ART, SURF_ISLAND_SOURCE_TO_WORLD } from '/features/monster-surf/islandArt.ts';
+
+      const overview = document.querySelector('#overview');
+      const scene = document.querySelector('#scene');
+      const probe = document.querySelector('#probe');
+      const status = document.querySelector('#status');
+      const sceneMode = new URL(location.href).searchParams.get('view') === 'scene';
+      const showCollisions = new URL(location.href).searchParams.get('collisions') === '1';
+      document.body.classList.toggle('scene', sceneMode);
+      const WORLD_TO_SCREEN = 1.5;
+      const SOURCE_TO_SCREEN = SURF_ISLAND_SOURCE_TO_WORLD * WORLD_TO_SCREEN;
+      window.__SURF_ISLAND_SCALE_QA = { ready: false };
+
+      function makeObstacle(variant, x, y, id = variant) {
+        const art = SURF_ISLAND_ART[variant];
+        return { id, x, y, variant, hit: false, rx: art.collisionRx, ry: art.collisionRy };
+      }
+
+      function paintOverview(atlas) {
+        const box = overview.getBoundingClientRect();
+        if (box.width < 1 || box.height < 1) return;
+        const dpr = Math.min(devicePixelRatio || 1, 2);
+        overview.width = Math.round(box.width * dpr); overview.height = Math.round(box.height * dpr);
+        const ctx = overview.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+        ctx.fillStyle = '#74dce5'; ctx.fillRect(0, 0, box.width, box.height);
+        const cellWidth = box.width / 4;
+        const cellHeight = box.height / 2;
+        SURF_ISLAND_ART.forEach((art, variant) => {
+          const column = variant % 4; const row = Math.floor(variant / 4);
+          const left = column * cellWidth; const top = row * cellHeight;
+          const x = left + cellWidth / 2; const y = top + cellHeight * 0.65;
+          ctx.strokeStyle = '#23798d2b'; ctx.lineWidth = 1;
+          ctx.strokeRect(left + 10, top + 10, cellWidth - 20, cellHeight - 20);
+          ctx.font = 'bold 17px ui-monospace, monospace'; ctx.fillStyle = '#164857';
+          ctx.textAlign = 'left'; ctx.fillText(`${variant} · ${art.name}`, left + 25, top + 40);
+          ctx.font = '12px ui-monospace, monospace';
+          ctx.fillText(`${art.size.toUpperCase()} · ${art.crop.width} × ${art.crop.height} source px`, left + 25, top + 61);
+          if (showCollisions) {
+            ctx.fillStyle = '#eafff244'; ctx.beginPath();
+            ctx.ellipse(x, y, art.collisionRx * WORLD_TO_SCREEN, art.collisionRy * WORLD_TO_SCREEN, 0, 0, Math.PI * 2); ctx.fill();
+          }
+          ctx.drawImage(atlas, art.crop.x, art.crop.y, art.crop.width, art.crop.height,
+            x - art.anchorX * SOURCE_TO_SCREEN, y - art.anchorY * SOURCE_TO_SCREEN,
+            art.crop.width * SOURCE_TO_SCREEN, art.crop.height * SOURCE_TO_SCREEN);
+          const rulerY = top + cellHeight - 48;
+          const rulerWidth = 100 * SOURCE_TO_SCREEN;
+          ctx.strokeStyle = '#18596b'; ctx.lineWidth = 2; ctx.beginPath();
+          ctx.moveTo(x - rulerWidth / 2, rulerY); ctx.lineTo(x + rulerWidth / 2, rulerY);
+          ctx.moveTo(x - rulerWidth / 2, rulerY - 5); ctx.lineTo(x - rulerWidth / 2, rulerY + 5);
+          ctx.moveTo(x + rulerWidth / 2, rulerY - 5); ctx.lineTo(x + rulerWidth / 2, rulerY + 5); ctx.stroke();
+          ctx.textAlign = 'center'; ctx.font = '11px ui-monospace, monospace'; ctx.fillStyle = '#18596b';
+          ctx.fillText(`100 source px = ${Math.round(rulerWidth)} screen px · ×${SOURCE_TO_SCREEN.toFixed(2)} everywhere`, x, rulerY + 24);
+        });
+      }
+
+      try {
+        const atlas = new Image(); atlas.src = '/monster-surf/islands-native-v4.png'; await atlas.decode();
+        const probeContext = probe.getContext('2d');
+        const originalDrawImage = probeContext.drawImage.bind(probeContext);
+        const draws = [];
+        probeContext.drawImage = function (...args) {
+          if (args[0] === atlas && args.length === 9) draws.push({ sourceWidth: args[3], sourceHeight: args[4], width: args[7], height: args[8] });
+          return originalDrawImage(...args);
+        };
+        const probeRenderer = createSurfRenderer(probe, [], atlas);
+        const state = { ...startSurf(1), phase: 'surfing', elapsedMs: 1050, items: [],
+          obstacles: SURF_ISLAND_ART.map((_, variant) => makeObstacle(variant, 125 + variant % 4 * 250, -90 + Math.floor(variant / 4) * 270)) };
+        probeRenderer.render(state, true);
+        const canonicalPixels = probe.toDataURL();
+        const firstDraws = draws.splice(0);
+        probeRenderer.render({ ...state, obstacles: state.obstacles.map(item => ({ ...item, rx: item.rx * 2.7, ry: item.ry * 0.41 })) }, true);
+        const changedPixels = probe.toDataURL();
+        const secondDraws = draws.splice(0);
+        const fixedScalePassed = firstDraws.length === 8 && firstDraws.every(draw =>
+          Math.abs(draw.width - draw.sourceWidth * SURF_ISLAND_SOURCE_TO_WORLD) < 0.001 &&
+          Math.abs(draw.height - draw.sourceHeight * SURF_ISLAND_SOURCE_TO_WORLD) < 0.001);
+        const ignoresInstanceScaling = canonicalPixels === changedPixels && JSON.stringify(firstDraws) === JSON.stringify(secondDraws);
+        probeRenderer.destroy();
+
+        let sceneRenderer;
+        let sceneState;
+        if (sceneMode) {
+          const monster = new Image(); monster.src = '/monster-surf/characters/M1-surf.png'; await monster.decode();
+          const sprites = []; sprites[1] = monster;
+          sceneRenderer = createSurfRenderer(scene, sprites, atlas);
+          sceneState = { ...startSurf(1), phase: 'surfing', elapsedMs: 1050, x: 490, items: [],
+            obstacles: [makeObstacle(0, 125, -100), makeObstacle(3, 480, -105), makeObstacle(6, 810, -35)] };
+        }
+        const render = () => {
+          if (sceneMode) sceneRenderer.render(sceneState, true); else paintOverview(atlas);
+          window.__SURF_ISLAND_SCALE_QA = {
+            ready: true, count: SURF_ISLAND_ART.length, fixedScalePassed, ignoresInstanceScaling, showCollisionOverlay: showCollisions,
+            sourceToWorld: SURF_ISLAND_SOURCE_TO_WORLD, overviewSourceToScreen: SOURCE_TO_SCREEN,
+            rendererDraws: firstDraws,
+            dimensions: SURF_ISLAND_ART.map((art, variant) => ({ variant, name: art.name, size: art.size,
+              sourceWidth: art.crop.width, sourceHeight: art.crop.height,
+              worldWidth: art.crop.width * SURF_ISLAND_SOURCE_TO_WORLD, worldHeight: art.crop.height * SURF_ISLAND_SOURCE_TO_WORLD,
+              collisionRx: art.collisionRx, collisionRy: art.collisionRy })),
+          };
+          status.textContent = `8 native islands · fixed renderer scale: ${fixedScalePassed ? 'PASS' : 'FAIL'} · instance size cannot stretch art: ${ignoresInstanceScaling ? 'PASS' : 'FAIL'}`;
+          if (!fixedScalePassed || !ignoresInstanceScaling) status.style.color = '#ff8a8a';
+        };
+        requestAnimationFrame(render); window.addEventListener('resize', render);
+        window.addEventListener('pagehide', () => sceneRenderer?.destroy(), { once: true });
+      } catch (error) {
+        window.__SURF_ISLAND_SCALE_QA = { ready: false, error: String(error) };
+        status.textContent = String(error); status.style.color = '#ff8a8a';
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+/* Scoped to the embedded variant; standard test mode keeps its existing layout. */
+.lwi-embedded{position:relative;min-width:0;flex:1;width:100%;height:86px}
+.lwi-embedded .lwi-measure{position:absolute;visibility:hidden;pointer-events:none;font:700 50px "Playfair Display",Georgia,serif;white-space:pre}
+.lwi-embedded .lwi-frame,.lwi-embedded .lwi-field{position:relative;width:100%;height:100%;min-width:0}
+.lwi-embedded .lwi-input{display:block;width:100%;height:67px;min-width:0;margin:0;padding:0 10px 5px;border:0;border-bottom:2px solid #7180933b;border-radius:0;background:transparent;color:#f3f4ff;outline:none;box-shadow:none;font-family:"Playfair Display",Georgia,serif;font-size:50px;font-weight:700;line-height:1.15;letter-spacing:.04em;text-align:center;caret-color:#00f0ff;transition:color .15s,border-color .15s}
+.lwi-embedded .lwi-input:focus{outline:none;box-shadow:none;border-color:#00f0ff55}
+.lwi-embedded .lwi-input::placeholder{font:400 13px Lexend,system-ui,sans-serif;letter-spacing:0;color:#91a4bd;opacity:.8}
+.lwi-embedded .lwi-input.lwi-status-correct{color:#2ee67c;border-color:#2ee67c66}
+.lwi-embedded .lwi-input.lwi-status-wrong{color:#ff9aab;border-color:#ff849d55}
+.lwi-embedded .lwi-blocks{position:absolute;left:0;right:0;bottom:2px;display:flex;justify-content:center;pointer-events:none}
+.lwi-embedded .lwi-positions{display:flex;gap:8px;width:100%;padding:0 4px}
+.lwi-embedded .lwi-position{flex:1;min-width:3px;height:5px;border-radius:3px;background:#ffffff1a;transition:background-color .12s,box-shadow .12s}
+.lwi-embedded .lwi-position[data-state=correct]{background:#2ee67c;box-shadow:0 0 7px #2ee67c55}
+.lwi-embedded .lwi-position[data-state=wrong]{background:#ff627e;box-shadow:0 0 7px #ff627e45}
+.lwi-embedded .lwi-position[data-state=current]{background:#00f0ff55;box-shadow:0 0 0 1px #00f0ff70}
+.lwi-embedded .lwi-position[data-current=true]{outline:1px solid #00e6f6;outline-offset:3px}
+@media(prefers-reduced-motion:reduce){.lwi-embedded .lwi-input,.lwi-embedded .lwi-position{transition:none}}

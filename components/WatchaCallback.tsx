@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
 import { supabase, supabaseUrl } from '../lib/supabaseClient';
 
 /**
@@ -6,9 +7,50 @@ import { supabase, supabaseUrl } from '../lib/supabaseClient';
  * 处理从观猹授权服务器返回的回调
  * 通过Edge Function代理处理token交换，避免CORS问题
  */
+const CALLBACK_MESSAGES = {
+  "processing": {
+    "en": "Processing sign-in…",
+    "zh": "正在处理登录…"
+  },
+  "missingCode": {
+    "en": "The authorization code is missing. Please sign in again.",
+    "zh": "缺少授权码，请重新登录。"
+  },
+  "signingIn": {
+    "en": "Signing in…",
+    "zh": "正在登录…"
+  },
+  "invalidState": {
+    "en": "The sign-in verification expired. Please sign in again.",
+    "zh": "登录验证已失效，请重新登录。"
+  },
+  "missingVerifier": {
+    "en": "The sign-in session expired. Please sign in again.",
+    "zh": "登录会话已失效，请重新登录。"
+  },
+  "failed": {
+    "en": "Sign-in failed. Please try again.",
+    "zh": "登录失败，请重试。"
+  },
+  "settingSession": {
+    "en": "Signed in. Setting up your session…",
+    "zh": "登录成功，正在设置会话…"
+  },
+  "failedSession": {
+    "en": "Could not set up your session. Please sign in again.",
+    "zh": "无法设置登录会话，请重新登录。"
+  },
+  "success": {
+    "en": "Signed in. Redirecting…",
+    "zh": "登录成功，正在跳转…"
+  }
+} as const;
+
 export const WatchaCallback: React.FC = () => {
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing');
-  const [message, setMessage] = useState('正在处理登录...');
+  const { language, isZh } = useLanguage();
+  const [messageKey, setMessage] = useState<keyof typeof CALLBACK_MESSAGES>('processing');
+  const message = CALLBACK_MESSAGES[messageKey][language];
 
   useEffect(() => {
     const processCallback = async () => {
@@ -20,20 +62,20 @@ export const WatchaCallback: React.FC = () => {
 
         // 检查是否有错误
         if (error) {
-          const errorDescription = searchParams.get('error_description') || error;
+          console.error('[Watcha sign-in]', error);
           setStatus('error');
-          setMessage(errorDescription);
+          setMessage('failed');
           return;
         }
 
         if (!code) {
           setStatus('error');
-          setMessage('缺少授权码');
+          setMessage('missingCode');
           return;
         }
 
         setStatus('processing');
-        setMessage('正在登录...');
+        setMessage('signingIn');
 
         // 从sessionStorage获取PKCE code_verifier
         const codeVerifier = sessionStorage.getItem('watcha_code_verifier');
@@ -43,13 +85,13 @@ export const WatchaCallback: React.FC = () => {
         const urlState = searchParams.get('state');
         if (state && urlState !== state) {
           setStatus('error');
-          setMessage('State验证失败，可能存在CSRF攻击');
+          setMessage('invalidState');
           return;
         }
 
         if (!codeVerifier) {
           setStatus('error');
-          setMessage('缺少PKCE verifier，请重新登录');
+          setMessage('missingVerifier');
           return;
         }
 
@@ -77,7 +119,7 @@ export const WatchaCallback: React.FC = () => {
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: '未知错误' }));
           setStatus('error');
-          setMessage(errorData.error || '登录失败，请重试');
+          setMessage('failed');
           console.error('Edge Function错误:', errorData);
           return;
         }
@@ -86,12 +128,12 @@ export const WatchaCallback: React.FC = () => {
 
         if (!result.success) {
           setStatus('error');
-          setMessage(result.error || '登录失败，请重试');
+          setMessage('failed');
           return;
         }
 
         setStatus('processing');
-        setMessage(`登录成功！正在设置会话...`);
+        setMessage('settingSession');
 
         // 设置session
         const { error: sessionError } = await supabase.auth.setSession({
@@ -102,12 +144,12 @@ export const WatchaCallback: React.FC = () => {
         if (sessionError) {
           console.error('设置session失败:', sessionError);
           setStatus('error');
-          setMessage('设置登录会话失败');
+          setMessage('failedSession');
           return;
         }
 
         setStatus('success');
-        setMessage('登录成功！正在跳转...');
+        setMessage('success');
 
         // 跳转回首页
         setTimeout(() => {
@@ -116,7 +158,7 @@ export const WatchaCallback: React.FC = () => {
       } catch (err) {
         console.error('OAuth回调处理错误:', err);
         setStatus('error');
-        setMessage(err instanceof Error ? err.message : '未知错误');
+        setMessage('failed');
       }
     };
 
@@ -155,9 +197,9 @@ export const WatchaCallback: React.FC = () => {
 
         {/* Message */}
         <h2 className="text-2xl font-headline text-white mb-2">
-          {status === 'processing' && '登录中'}
-          {status === 'success' && '登录成功'}
-          {status === 'error' && '登录失败'}
+          {status === 'processing' && (isZh ? '登录中' : 'Signing in')}
+          {status === 'success' && (isZh ? '登录成功' : 'Signed in')}
+          {status === 'error' && (isZh ? '登录失败' : 'Sign-in failed')}
         </h2>
         <p className="text-text-dark mb-6">{message}</p>
 
@@ -167,7 +209,7 @@ export const WatchaCallback: React.FC = () => {
             onClick={() => (window.location.href = '/')}
             className="px-6 py-3 bg-electric-blue text-charcoal font-headline rounded-xl hover:bg-white transition-colors"
           >
-            返回登录
+            {isZh ? '返回登录' : 'Back to sign-in'}
           </button>
         )}
       </div>

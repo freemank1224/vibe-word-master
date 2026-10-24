@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Monster Surf · Coin formations</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:20px;background:#111122;color:#ededfa;font:14px/1.5 system-ui,sans-serif}
+    h1{margin:0;color:#00e6f6;font-size:24px}header p{margin:5px 0 16px;color:#adb4cd}
+    main{display:grid;grid-template-columns:1fr 1fr;gap:18px}article{min-width:0;background:#212237;border-radius:14px;overflow:hidden}
+    h2{margin:0;padding:10px 16px;font-size:15px}canvas{display:block;width:100%;height:370px}#status{float:right;color:#25e578;font-size:13px}
+  </style>
+</head>
+<body>
+  <header><span id="status">Loading…</span><h1>MONSTER SURF · COIN FORMATIONS</h1><p>Actual course generator and renderer · identical world scale · no collection yet</p></header>
+  <main></main>
+  <script type="module">
+    import { courseCoins } from '/features/monster-surf/course.ts';
+    import { startSurf } from '/features/monster-surf/game.ts';
+    import { createSurfRenderer } from '/features/monster-surf/renderer.ts';
+    const query = new URL(location.href).searchParams;
+    const pickup = query.has('pickup');
+    const reduced = query.has('reduced');
+    if (pickup) document.querySelector('header p').textContent = `Actual renderer · grouped coin pickup · ${reduced ? 'reduced motion' : 'short pull arcs and local +N feedback'}`;
+    window.__SURF_COIN_QA = { ready: false };
+    try {
+      const monsterId = new Date().getDay();
+      const sprite = new Image(); sprite.src = `/monster-surf/characters/M${monsterId}-surf.png`; await sprite.decode();
+      const sprites = []; sprites[monsterId] = sprite;
+      const views = [[0, '3 × 3 MATRIX'], [1, 'DIAMOND'], [2, 'ARC'], [4, 'FAN']].map(([section, title]) => {
+        const article = document.createElement('article');
+        const heading = document.createElement('h2'); heading.textContent = title;
+        const canvas = document.createElement('canvas'); article.append(heading, canvas); document.querySelector('main').append(article);
+        const items = courseCoins(section).filter(coin => coin.formation !== 'ribbon');
+        const middleY = (Math.min(...items.map(c => c.y)) + Math.max(...items.map(c => c.y))) / 2;
+        const renderer = createSurfRenderer(canvas, sprites);
+        const state = { ...startSurf(monsterId), phase: 'surfing', elapsedMs: 900, x: pickup ? items[0].guideX : 120,
+          distance: middleY, obstacles: [], items, correct: 0, coins: 0 };
+        return { renderer, state, section, items };
+      });
+      const render = () => views.forEach(view => {
+        view.renderer.render(view.state, true);
+        if (pickup) {
+          const collected = { ...view.state, elapsedMs: 1000, coins: view.items.length,
+            items: view.items.map(item => ({ ...item, collectedAt: 1000 })) };
+          view.renderer.render(collected, reduced);
+          view.renderer.render({ ...collected, elapsedMs: reduced ? 1080 : 1200 }, reduced);
+        }
+      });
+      render(); window.addEventListener('resize', render);
+      window.__SURF_COIN_QA = { ready: true, pickup, reduced, formations: views.map(view => ({ section: view.section,
+        kind: view.items[0].formation, count: view.items.length, rows: new Set(view.items.map(c => c.y)).size,
+        coins: view.items.map(({x,y,guideX}) => ({x,y,guideX})) })) };
+      document.querySelector('#status').textContent = '4 formations · native course data';
+      window.addEventListener('pagehide', () => views.forEach(view => view.renderer.destroy()), { once: true });
+    } catch (error) { window.__SURF_COIN_QA = { ready: false, error: String(error) }; document.querySelector('#status').textContent = String(error); }
+  </script>
+</body>
+</html>

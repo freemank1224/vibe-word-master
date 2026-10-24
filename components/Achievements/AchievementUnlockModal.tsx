@@ -3,6 +3,8 @@ import confetti from 'canvas-confetti';
 import { Achievement } from '../../services/achievementService';
 import { ACHIEVEMENT_ICONS } from './AchievementIcons';
 import { CoinIcon } from '../Coin/CoinIcon';
+import { useLanguage } from '../../contexts/LanguageContext';
+import { achievementLocale } from '../../utils/achievementLocale';
 
 interface AchievementUnlockModalProps {
   achievement: Achievement;
@@ -10,6 +12,8 @@ interface AchievementUnlockModalProps {
 }
 
 export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ achievement, onClose }) => {
+  const { isZh } = useLanguage();
+  const copy = achievementLocale(achievement, isZh);
   useEffect(() => {
     // Fire confetti on mount
     const duration = 3000;
@@ -53,11 +57,11 @@ export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ 
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-electric-blue/20 rounded-full blur-3xl -z-10"></div>
 
         <div className="mb-2 text-electric-blue font-headline uppercase tracking-widest text-sm">
-          Achievement Unlocked!
+          {isZh ? '成就已解锁！' : 'Achievement Unlocked!'}
         </div>
 
         <h2 className="text-3xl font-bold text-white mb-6 font-headline tracking-wide">
-          {achievement.title}
+          {copy.title}
         </h2>
         
         <div className="flex justify-center mb-6">
@@ -69,7 +73,7 @@ export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ 
         </div>
 
         <p className="text-text-light text-lg mb-4 leading-relaxed">
-          {achievement.description}
+          {copy.description}
         </p>
 
         <div className="mb-8 inline-flex items-center gap-1.5 rounded-full border border-electric-green/40 bg-electric-green/10 px-4 py-1.5 font-mono text-sm text-electric-green">
@@ -80,7 +84,7 @@ export const AchievementUnlockModal: React.FC<AchievementUnlockModalProps> = ({ 
           onClick={onClose}
           className="w-full bg-electric-blue text-dark-charcoal font-bold py-3 px-8 rounded-xl hover:bg-white transition-colors uppercase tracking-wider shadow-lg hover:shadow-electric-blue/50"
         >
-          Awesome!
+          {isZh ? '太棒了！' : 'Awesome!'}
         </button>
       </div>
     </div>

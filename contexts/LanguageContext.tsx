@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
 export type Language = 'en' | 'zh';
 
@@ -21,6 +21,8 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     try { return localStorage.getItem('vibe_language') === 'zh' ? 'zh' : 'en'; }
     catch { return 'en'; }
   });
+
+  useEffect(() => { document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; }, [language]);
 
   const setLanguage = (next: Language) => {
     updateLanguage(next);

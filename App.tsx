@@ -52,8 +52,11 @@ import { LandingPage } from './components/LandingPage';
 import { HoverTranslationText } from './components/HoverTranslationText';
 import { getShanghaiDateString } from './utils/timezone';
 import { WORD_LEARNING_CONFIG } from './config/wordLearningConfig';
-import { LanguageProvider } from './contexts/LanguageContext';
+import { useLanguage } from './contexts/LanguageContext';
+import { DailyReviewReminder, ReviewBadge } from './components/DailyReviewReminder';
+import { createReviewReminderHistory, shouldShowDailyReviewReminder } from './utils/dailyReviewReminder';
 import { useT } from './hooks/useT';
+import { wordMeaningForLanguage } from './utils/wordMeaningLocale';
 import GlobalChampionBanner from './components/GlobalChampionBanner';
 
 const Auth = createLazyFeature(() => import('./components/Auth'), '登录');
@@ -194,6 +197,10 @@ let _lastDailyClaimUserId: string | null = null;
 
 const App: React.FC = () => {
   const t = useT();
+  const { isZh, language } = useLanguage();
+  const localeRef = useRef(isZh);
+  localeRef.current = isZh;
+  const copy = useCallback((en: string, zh: string) => localeRef.current ? zh : en, []);
   const [session, setSession] = useState<any>(null);
   const [showLanding, setShowLanding] = useState(true);
   const [mode, setMode] = useState<AppMode>('DASHBOARD');
@@ -209,12 +216,16 @@ const App: React.FC = () => {
   const strikeRoundIds = useRef(new WeakMap<WordStrikeGameSummary, { id: string; occurredAt: number }>());
 
   // 通知系统
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
+  const [notification, setNotification] = useState<{ message: string | { en: string; zh: string }; type: 'success' | 'warning' | 'error' } | null>(null);
   const imageGenDebugRef = useRef<ImageGenDebugEntry[]>([]);
 
-  const showNotification = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
+  const showNotification = (message: string | { en: string; zh: string }, type: 'success' | 'warning' | 'error' = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000); // 5秒后自动消失
+  };
+
+  const showLocalizedNotification = (en: string, zh: string, type: 'success' | 'warning' | 'error' = 'success') => {
+    showNotification({ en, zh }, type);
   };
 
   const appendImageGenDebug = useCallback((stage: string, payload?: any) => {
@@ -411,7 +422,7 @@ const App: React.FC = () => {
       // Toggle Admin Console with `~` or Backtick
       if ((e.key === '`' || e.key === '~') && !isEditing) {
         if (!isSuperAdmin) {
-          showNotification(`仅超级管理员 ${superAdminEmail} 可打开管理面板`, 'warning');
+          showLocalizedNotification(`Only the administrator ${superAdminEmail} can open this panel.`, `仅超级管理员 ${superAdminEmail} 可打开管理面板`, 'warning');
           return;
         }
         setShowAdminConsole(prev => !prev);
@@ -421,7 +432,7 @@ const App: React.FC = () => {
       if (isPronunciationShortcut && !isEditing) {
         if (!isSuperAdmin) {
           e.preventDefault();
-          showNotification(`仅超级管理员 ${superAdminEmail} 可打开音频维护面板`, 'warning');
+          showLocalizedNotification(`Only the administrator ${superAdminEmail} can open audio maintenance.`, `仅超级管理员 ${superAdminEmail} 可打开音频维护面板`, 'warning');
           return;
         }
         e.preventDefault();
@@ -444,6 +455,11 @@ const App: React.FC = () => {
   // A negative balance represents the wallet RPC loading state.
   const [coinBalance, setCoinBalance] = useState(-1);
   const [dailyLoginReward, setDailyLoginReward] = useState<DailyLoginReward | null>(null);
+  const [dailyRewardSettled, setDailyRewardSettled] = useState(false);
+  const [loginReviewDay, setLoginReviewDay] = useState(getShanghaiDateString);
+  const [reviewReminderOwner, setReviewReminderOwner] = useState<string | null>(null);
+  const reviewBadgeRef = useRef<HTMLButtonElement>(null);
+  const reviewHistoryRef = useRef(createReviewReminderHistory(() => window.localStorage));
   const [pendingCoinReward, setPendingCoinReward] = useState<{ amount: number; source: 'quiz' | 'puzzle' | 'word_strike' | 'achievement_bonus'; navigateAfter?: boolean } | null>(null);
 
   // Monotonic sequence guarding setCoinBalance against stale fetches. Each
@@ -528,6 +544,7 @@ const App: React.FC = () => {
         clearAuthTimers();
         _lastDailyClaimUserId = null;
         setCoinBalance(-1); setPendingCoinReward(null); setDailyLoginReward(null);
+        setDailyRewardSettled(false); setReviewReminderOwner(null); setLoginReviewDay(getShanghaiDateString());
         setConflictModal(null); setConflictChoice(null); setSyncingSessionId(null); setPendingSyncCount(0);
         setEditingSessionId(null); setTestConfig(null); setShowQuickTestModal(false); setShowGamePickerModal(false);
         setShowDeleteConfirm(false); setIdsToDelete([]); setDeleteProgress(null); setIsDeleting(false);
@@ -540,25 +557,13 @@ const App: React.FC = () => {
         setWords([]); setSessions([]); setDailyStats({}); setMode('DASHBOARD');
       }
       setSession(nextSession);
-    };
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!observedAuthEvent) applySession(session);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!alive) return;
-      observedAuthEvent = true;
-      applySession(session);
-
       // ─── Daily login reward ────────────────────────────────────
       // Fire once per active account period. The RPC itself is idempotent
       // (same-day re-claim returns already_claimed_today=true), but we
       // also guard client-side to avoid unnecessary network calls and
       // repeated modal pops during auth event flurries.
-      if (session?.user?.id && session.user.id !== _lastDailyClaimUserId) {
-        const userId = session.user.id;
+      if (nextSession?.user?.id && nextSession.user.id !== _lastDailyClaimUserId) {
+        const userId = nextSession.user.id;
         const identityRevision = authIdentityRevisionRef.current;
         _lastDailyClaimUserId = userId;
         const isCurrent = () => alive && authUserIdRef.current === userId
@@ -575,10 +580,24 @@ const App: React.FC = () => {
             if (!reward.already_claimed_today && reward.total_awarded > 0) setDailyLoginReward(reward);
           } catch (error) {
             if (isCurrent()) console.warn('[Wallet] Daily reward request failed:', error);
+          } finally {
+            if (isCurrent()) setDailyRewardSettled(true);
           }
         }, 800);
         authTimers.add(timer);
       }
+
+    };
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!observedAuthEvent) applySession(session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!alive) return;
+      observedAuthEvent = true;
+      applySession(session);
 
       // Check if user's email is confirmed after login/signup
       if (session?.user && !session.user.email_confirmed_at) {
@@ -590,10 +609,7 @@ const App: React.FC = () => {
           const timer = window.setTimeout(() => {
             authTimers.delete(timer);
             if (!alive || authUserIdRef.current !== userId || authIdentityRevisionRef.current !== identityRevision) return;
-            showNotification(
-              '⚠️ Please confirm your email address! Check your inbox (including spam folder) to activate your account.',
-              'warning'
-            );
+            showLocalizedNotification("Please confirm your email address. Check your inbox and spam folder to activate your account.", "请验证邮箱以激活账号，并检查收件箱和垃圾邮件文件夹。", 'warning');
           }, 1000);
           authTimers.add(timer);
           localStorage.setItem(notificationKey, 'true');
@@ -678,8 +694,8 @@ const App: React.FC = () => {
         .catch((err) => {
             if (!isCurrent()) return;
             console.error("Data load error:", err);
-            if (initialLoad) setDataError("Failed to fetch data from the cloud. Please check your connection.");
-            else showNotification('云端刷新暂未完成，当前数据已保留，请稍后重试。', 'warning');
+            if (initialLoad) setDataError(copy("Failed to fetch data from the cloud. Please check your connection.", "无法读取云端数据，请检查网络连接。"));
+            else showLocalizedNotification("Cloud refresh is incomplete. Your current data is safe; please try again later.", "云端刷新暂未完成，当前数据已保留，请稍后重试。", 'warning');
         })
         .finally(() => { if (isCurrent()) setLoadingData(false); });
     }
@@ -707,11 +723,11 @@ const App: React.FC = () => {
         const coins = result.receipts.reduce((sum, receipt) => sum + receipt.coins_awarded, 0);
         if (coins > 0) setPendingCoinReward({ amount: coins, source: 'quiz' });
       }
-      if (result.failed > 0) showNotification('测试记录仍保存在本机，将自动重试同步。', 'warning');
+      if (result.failed > 0) showLocalizedNotification("Your test records are saved on this device. Sync will retry automatically.", "测试记录仍保存在本机，将自动重试同步。", 'warning');
     } catch (error) {
       if (authUserIdRef.current !== userId) return;
       console.error('[StatsSync]', error);
-      showNotification('统计同步暂未完成，本机记录已保留。', 'warning');
+      showLocalizedNotification("Statistics sync is incomplete. Your local records are safe.", "统计同步暂未完成，本机记录已保留。", 'warning');
     }
   }, [refreshCoinBalance]);
 
@@ -720,10 +736,10 @@ const App: React.FC = () => {
     if (!userId) { setPendingSyncCount(0); return; }
     try {
       setPendingSyncCount(getPendingSyncCount(userId));
-      if (hasUnattributedLegacySyncs()) showNotification('检测到旧版离线记录缺少账号归属，已保留，暂不自动上传。', 'warning');
+      if (hasUnattributedLegacySyncs()) showLocalizedNotification("Older offline records have no account owner. They are retained on this device for now.", "检测到旧版离线记录缺少账号归属，已保留，暂不自动上传。", 'warning');
     } catch (error) {
       console.error('[StatsSync] Local queue could not be read:', error);
-      showNotification('本机离线记录读取异常，请保留浏览器数据。', 'error');
+      showLocalizedNotification("Offline records could not be read. Please keep your browser data.", "本机离线记录读取异常，请保留浏览器数据。", 'error');
     }
     const sync = () => { void flushStatsQueue(userId); };
     sync();
@@ -781,7 +797,9 @@ const App: React.FC = () => {
   // Achievement Reconciliation (Phase 1: Silent Sync on Load)
   useEffect(() => {
     // Only run this once when data is loaded and we haven't reconciled yet
-    if (loadingData || isReconciled) return;
+    if (loadingData || isReconciled || !dataUserId
+      || loadedDataIdentityRef.current?.userId !== dataUserId
+      || loadedDataIdentityRef.current?.revision !== dataIdentityRevision) return;
 
     // We also need to make sure we actually have loaded data. 
     // If sessions/words are empty but loadingData is false, it might mean empty account OR failed load.
@@ -895,8 +913,8 @@ const App: React.FC = () => {
   const completedStatsRef = useRef(new Set<string>());
   const updateLocalStats = async (summary: CompletedTestSummary) => {
     const userId = session?.user?.id;
-    if (!userId || authUserIdRef.current !== userId) throw new Error('请登录后保存测试结果。');
-    if (!summary.roundId || !summary.occurredAt) throw new Error('测试结果缺少原始编号和时间。');
+    if (!userId || authUserIdRef.current !== userId) throw new Error(copy("Please sign in to save test results.", "请登录后保存测试结果。"));
+    if (!summary.roundId || !summary.occurredAt) throw new Error(copy("The original test ID or timestamp is missing.", "测试结果缺少原始编号和时间。"));
     if (!summary.results.length) return;
     const roundKey = `${userId}:${summary.roundId}`;
     if (completedStatsRef.current.has(roundKey)) return;
@@ -1047,7 +1065,7 @@ const App: React.FC = () => {
             }
 
             if (!isCurrent()) return;
-            showNotification(`🖼️ 已生成图片：${w.text}`, 'success');
+            showLocalizedNotification(`Image generated: ${w.text}`, `🖼️ 已生成图片：${w.text}`, 'success');
             setWords(prev => prev.map(word =>
               word.id === w.id
               ? { ...word, image_url: publicUrl || word.image_url, image_asset_id: assetId || word.image_asset_id }
@@ -1055,13 +1073,13 @@ const App: React.FC = () => {
             ));
           } else {
             appendImageGenDebug('image_gen_request_failed', { id: w.id, text: w.text, reason: 'no publicUrl or dataUrl' });
-            showNotification(`⚠️ 图片生成失败：${w.text}（已自动尝试备用服务）`, 'warning');
+            showLocalizedNotification(`Image generation failed for ${w.text}, including the fallback service.`, `⚠️ 图片生成失败：${w.text}（已自动尝试备用服务）`, 'warning');
           }
         } catch (e) {
           if (!isCurrent()) return;
           console.warn(`Background image generation failed for ${w.text}:`, e);
           appendImageGenDebug('image_gen_exception', { id: w.id, text: w.text, error: (e as any)?.message || String(e) });
-          showNotification(`⚠️ 图片生成异常：${w.text}`, 'warning');
+          showLocalizedNotification(`Image generation failed: ${w.text}`, `⚠️ 图片生成异常：${w.text}`, 'warning');
         }
       } else {
         appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path, assetId: w.image_asset_id });
@@ -1089,12 +1107,12 @@ const App: React.FC = () => {
     word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }
   ): Promise<boolean> => {
     if (!session?.user?.id) {
-      showNotification('请先登录后再生成图片', 'warning');
+      showLocalizedNotification("Please sign in before generating images.", "请先登录后再生成图片", 'warning');
       return false;
     }
 
     if (word.hasExistingImage) {
-      const confirmed = window.confirm(`"${word.text}" 已有图片，是否重新生成并替换当前图片？`);
+      const confirmed = window.confirm(copy(`"${word.text}" already has an image. Generate a new one and replace it?`, `"${word.text}" 已有图片，是否重新生成并替换当前图片？`));
       if (!confirmed) return false;
     }
 
@@ -1105,7 +1123,7 @@ const App: React.FC = () => {
       hasExistingImage: !!word.hasExistingImage,
     });
     appendImageGenDebug('manual_image_gen_queue_before_enqueue', getImageGenerationQueueSnapshot());
-    showNotification(`🕒 已加入生图队列：${word.text}`, 'success');
+    showLocalizedNotification(`Image queued: ${word.text}`, `🕒 已加入生图队列：${word.text}`, 'success');
 
     try {
       const generated = await requestQueuedWordImage(word.text, {
@@ -1118,7 +1136,7 @@ const App: React.FC = () => {
 
       if (!publicUrl && !generated.dataUrl) {
         appendImageGenDebug('manual_image_gen_failed', { id: word.id, text: word.text, reason: 'no publicUrl or dataUrl' });
-        showNotification(`⚠️ 图片生成失败：${word.text}`, 'warning');
+        showLocalizedNotification(`Image generation failed: ${word.text}`, `⚠️ 图片生成失败：${word.text}`, 'warning');
         return false;
       }
 
@@ -1159,11 +1177,11 @@ const App: React.FC = () => {
       appendImageGenDebug('manual_image_gen_success', {
         id: word.id, text: word.text, publicUrl, assetId, provider: generated.providerId, source: generated.source,
       });
-      showNotification(`🖼️ 已${word.hasExistingImage ? '重新生成' : '生成'}图片：${word.text}`, 'success');
+      showLocalizedNotification(`Image generated: ${word.text}`, `🖼️ 已${word.hasExistingImage ? '重新生成' : '生成'}图片：${word.text}`, 'success');
       return true;
     } catch (error: any) {
       appendImageGenDebug('manual_image_gen_exception', { id: word.id, text: word.text, error: error?.message || String(error) });
-      showNotification(`⚠️ 手动生图异常：${word.text}`, 'warning');
+      showLocalizedNotification(`Image generation failed: ${word.text}`, `⚠️ 手动生图异常：${word.text}`, 'warning');
       return false;
     }
   }, [appendImageGenDebug, session?.user?.id]);
@@ -1252,7 +1270,7 @@ const App: React.FC = () => {
       });
 
       if (idsToProcess.size > 0 && wordsToProcess.length === 0) {
-        showNotification('⚠️ 生图任务未启动：保存后未匹配到可处理词条（请查看控制台 dumpImageGenDebug()）', 'warning');
+        showLocalizedNotification("Image generation could not start. No matching saved words were found. Please try again.", "⚠️ 生图任务未启动：保存后未匹配到可处理词条（请查看控制台 dumpImageGenDebug()）", 'warning');
       }
 
       processBackgroundData(session.user.id, wordsToProcess);
@@ -1313,10 +1331,7 @@ const App: React.FC = () => {
   const savedLocally = await saveSessionToLocal(sessionData, wordsData, 'pending', session.user.id);
 
       if (!savedLocally) {
-        showNotification(
-          '❌ 当前设备本地存储已满，离线备份失败。请先不要离开此页面，清理设备存储后重试保存。',
-          'error'
-        );
+        showLocalizedNotification("Local storage is full and the offline backup failed. Keep this page open, free some storage, and save again.", "❌ 当前设备本地存储已满，离线备份失败。请先不要离开此页面，清理设备存储后重试保存。", 'error');
         return;
       }
 
@@ -1340,7 +1355,7 @@ const App: React.FC = () => {
       setEditingSessionId(null);
 
       // 用户友好提示
-      showNotification('⚠️ Saved locally due to connection error. Will auto-sync when connection is restored.', 'warning');
+      showLocalizedNotification("Saved locally due to connection error. Sync will resume when you reconnect.", "连接失败，数据已保存在本机，网络恢复后会自动同步。", 'warning');
     }
   };
 
@@ -1476,7 +1491,7 @@ const App: React.FC = () => {
       } catch (e) {
           console.error("❌ Delete failed", e);
           setDeleteProgress({ step: 'complete', message: `Error: ${(e as Error).message}` });
-          alert("Failed to delete sessions. Check console.");
+          alert(copy("Could not delete the selected sessions. Please try again.", "无法删除所选学习批次，请重试。"));
       } finally {
           setIsDeleting(false);
       }
@@ -1517,7 +1532,7 @@ const App: React.FC = () => {
           }
       } catch (e) {
           console.error("❌ Delete individual word failed", e);
-          alert("Failed to delete word: " + (e as Error).message);
+          alert(copy("Could not delete this word. Please try again.", "无法删除这个单词，请重试。"));
       }
   };
 
@@ -1560,7 +1575,7 @@ const App: React.FC = () => {
       const localSession = localBackup?.sessions.find(item => item.id === sessionId);
       if (!localSession) {
         await refreshAfterSessionSync(userId);
-        if (isCurrent()) showNotification('✅ 数据已从云端刷新', 'success');
+        if (isCurrent()) showLocalizedNotification("Data refreshed from the cloud.", "✅ 数据已从云端刷新", 'success');
         return;
       }
       const localWords = localBackup.words.filter(word => word.sessionId === sessionId);
@@ -1569,22 +1584,22 @@ const App: React.FC = () => {
       const applied = await persistSessionSyncResult(userId, localSession, result);
       if (!isCurrent()) return;
       if (!applied) {
-        showNotification('本地词库在同步期间有新修改，已保留，稍后继续同步。', 'warning');
+        showLocalizedNotification("Your library changed during sync. Those edits are safe and will sync later.", "本地词库在同步期间有新修改，已保留，稍后继续同步。", 'warning');
         return;
       }
       if (result.success) {
         if (result.cloudData) applyCloudSession(userId, result.cloudData);
         else await refreshAfterSessionSync(userId);
-        if (isCurrent()) showNotification('✅ 同步完成，学习进度已保留', 'success');
+        if (isCurrent()) showLocalizedNotification("Sync complete. Your learning progress is preserved.", "✅ 同步完成，学习进度已保留", 'success');
       } else {
         const syncStatus = result.action === 'conflict' ? 'conflict' : 'failed';
         setSessions(prev => prev.map(item => item.id === sessionId ? { ...item, syncStatus } : item));
         if (result.action === 'conflict' && result.conflictData) {
           setConflictModal({ sessionId, cloud: result.conflictData.cloud, local: result.conflictData.local });
-        } else showNotification(`同步暂未完成：${result.message}`, 'warning');
+        } else showLocalizedNotification("Sync is incomplete. Your local records are safe; please try again.", `同步暂未完成：${result.message}`, 'warning');
       }
     } catch (error) {
-      if (isCurrent()) showNotification(`同步暂未完成：${(error as Error).message}`, 'warning');
+      if (isCurrent()) showLocalizedNotification("Sync is incomplete. Your local records are safe; please try again.", `同步暂未完成：${(error as Error).message}`, 'warning');
     } finally {
       if (isCurrent()) setSyncingSessionId(null);
     }
@@ -1600,9 +1615,9 @@ const App: React.FC = () => {
       const backup = await loadLocalBackup(userId);
       if (!isCurrent()) return;
       const localSession = backup?.sessions.find(item => item.id === conflict.sessionId);
-      if (!localSession) throw new Error('本地冲突备份不存在，未清除任何数据。');
+      if (!localSession) throw new Error(copy("The local conflict backup is missing. No data was removed.", "本地冲突备份不存在，未清除任何数据。"));
       const localWords = backup.words.filter(word => word.sessionId === conflict.sessionId);
-      if (choice === 'local' && localSession.wordCount > 0 && !localWords.length) throw new Error('本地备份缺少单词，无法安全上传。');
+      if (choice === 'local' && localSession.wordCount > 0 && !localWords.length) throw new Error(copy("The local backup is missing words and cannot be uploaded safely.", "本地备份缺少单词，无法安全上传。"));
       const cloud = await fetchUserData(userId);
       if (!isCurrent()) return;
       const result = await resolveConflict(userId, conflict.sessionId, choice,
@@ -1610,17 +1625,17 @@ const App: React.FC = () => {
         { session: cloud.sessions.find(item => item.id === conflict.sessionId) ?? conflict.cloud,
           words: cloud.words.filter(word => word.sessionId === conflict.sessionId) });
       if (!isCurrent()) return;
-      if (!result.success) throw new Error(result.message || '冲突尚未解决');
+      if (!result.success) throw new Error(result.message || copy("The conflict is not resolved yet.", "冲突尚未解决"));
       const applied = await persistSessionSyncResult(userId, localSession, result);
       if (!isCurrent()) return;
-      if (!applied) throw new Error('本地词库已有新修改，请重新确认冲突。');
+      if (!applied) throw new Error(copy("The local library has changed. Please review the conflict again.", "本地词库已有新修改，请重新确认冲突。"));
       await refreshAfterSessionSync(userId);
       if (!isCurrent()) return;
       setConflictModal(null);
       setConflictChoice(null);
-      showNotification('✅ 冲突已解决，学习进度已保留', 'success');
+      showLocalizedNotification("Conflict resolved. Your learning progress is preserved.", "✅ 冲突已解决，学习进度已保留", 'success');
     } catch (error) {
-      if (isCurrent()) showNotification(`冲突尚未解决：${(error as Error).message}`, 'warning');
+      if (isCurrent()) showLocalizedNotification("The conflict is not resolved yet. Please review and try again.", `冲突尚未解决：${(error as Error).message}`, 'warning');
     }
   };
 
@@ -1640,14 +1655,14 @@ const App: React.FC = () => {
         const result = await syncAllPendingSessions(userId);
         if (!isCurrent()) return;
         if (result.synced > 0) await refreshAfterSessionSync(userId);
-        if (isCurrent() && result.conflicts > 0) showNotification('检测到词库同步冲突，请手动处理。', 'warning');
+        if (isCurrent() && result.conflicts > 0) showLocalizedNotification("A library sync conflict needs your review.", "检测到词库同步冲突，请手动处理。", 'warning');
       } catch (error) {
         if (isCurrent()) console.warn('[ContentSync] Backup preserved for retry:', error);
       } finally { running = false; }
     };
     const onOnline = () => { void syncContent(); };
     const onOffline = () => {
-      if (isCurrent()) showNotification('网络已断开，学习记录将保存在本机。', 'warning');
+      if (isCurrent()) showLocalizedNotification("You are offline. Learning records will be saved on this device.", "网络已断开，学习记录将保存在本机。", 'warning');
     };
     const timer = window.setInterval(() => { void syncContent(); }, 30 * 60 * 1000);
     window.addEventListener('online', onOnline);
@@ -1678,7 +1693,7 @@ const App: React.FC = () => {
   const handleLearningWordUpdate = (id: string, updates: Partial<WordEntry>, attempt?: { result: LearningResult; eventId: string; occurredAt: number }) => {
     const userId = session?.user?.id;
     const current = latestWordsRef.current.find(word => word.id === id);
-    if (!userId || authUserIdRef.current !== userId || !current || !attempt) throw new Error('学习记录缺少账号或真实作答事件。');
+    if (!userId || authUserIdRef.current !== userId || !current || !attempt) throw new Error(copy("The learning record is missing its account or answer event.", "学习记录缺少账号或真实作答事件。"));
     try {
       const updated = persistLearningAttempt(userId, current, attempt.result, attempt.eventId, attempt.occurredAt);
       const next = latestWordsRef.current.map(word => word.id === id ? { ...updated, tags: updates.tags ?? updated.tags } : word);
@@ -1690,23 +1705,23 @@ const App: React.FC = () => {
         latestWordsRef.current = merged; setWords(merged);
       }).catch(error => console.warn('[LearningSync] Saved locally:', error));
     } catch (error) {
-      showNotification('本机学习记录保存失败，请保留页面并重试。', 'error');
+      showLocalizedNotification("Learning records could not be saved locally. Keep this page open and try again.", "本机学习记录保存失败，请保留页面并重试。", 'error');
       throw error;
     }
   };
 
   const saveGameLearning = async (roundId: string, occurredAt: number, results: LearningResult[]) => {
     const userId = session?.user?.id;
-    if (!userId || authUserIdRef.current !== userId) throw new Error('请登录后保存学习记录。');
+    if (!userId || authUserIdRef.current !== userId) throw new Error(copy("Please sign in to save learning records.", "请登录后保存学习记录。"));
     const next = recordLearningRound(userId, roundId, occurredAt, results, latestWordsRef.current);
     latestWordsRef.current = next;
     setWords(next);
-    showNotification('学习进度已保存在本机，正在后台同步。', 'success');
+    showLocalizedNotification("Progress saved on this device. Syncing in the background.", "学习进度已保存在本机，正在后台同步。", 'success');
     void syncPendingLearningProgress(userId).then(result => {
       if (authUserIdRef.current !== userId) return;
       const merged = overlayLearningProgress(userId, latestWordsRef.current);
       latestWordsRef.current = merged; setWords(merged);
-      if (result.pending > 0) showNotification('学习进度已保存在本机，云端仍待同步。', 'warning');
+      if (result.pending > 0) showLocalizedNotification("Progress saved on this device. Cloud sync is still pending.", "学习进度已保存在本机，云端仍待同步。", 'warning');
     }).catch(error => console.warn('[LearningSync] Saved locally:', error));
   };
 
@@ -1724,6 +1739,22 @@ const App: React.FC = () => {
     setTestConfig({ kind: 'STRIKE' });
     setMode('TEST');
   };
+
+  const reviewDay = getShanghaiDateString(reviewClock);
+  const reviewDataReady = !loadingData && !dataError
+    && loadedDataIdentityRef.current?.userId === dataUserId
+    && loadedDataIdentityRef.current?.revision === dataIdentityRevision;
+  const reviewBlocked = reviewDay !== loginReviewDay || mode !== 'DASHBOARD' || !!dailyLoginReward || !!pendingCoinReward
+    || !isReconciled || showAccountPanel || showGlobalLeaderboard
+    || showQuickTestModal || showGamePickerModal || showDeleteConfirm || !!conflictModal;
+  const reviewPending = shouldShowDailyReviewReminder({ userId: dataUserId, day: reviewDay, dueCount: dueWords.length,
+    dataReady: reviewDataReady, rewardReady: dailyRewardSettled, blocked: reviewBlocked }, reviewHistoryRef.current);
+  useEffect(() => {
+    if (reviewPending) {
+      reviewHistoryRef.current.markSeen(dataUserId!, reviewDay);
+      setReviewReminderOwner(dataUserId);
+    }
+  }, [dataUserId, reviewDay, reviewPending]);
 
   if (!isSupabaseConfigured) {
     return (
@@ -1811,7 +1842,7 @@ const App: React.FC = () => {
               ? 'warning'
               : 'error'}
           </span>
-          <p className="font-medium">{notification.message}</p>
+          <p className="font-medium">{typeof notification.message === 'string' ? notification.message : isZh ? notification.message.zh : notification.message.en}</p>
         </div>
       )}
 
@@ -1820,7 +1851,7 @@ const App: React.FC = () => {
         <div className="fixed top-4 right-4 z-[150] px-4 py-2 rounded-lg shadow-lg bg-yellow-500/90 border border-yellow-500 text-white flex items-center gap-2 animate-in slide-in-from-right-4 fade-in duration-300">
           <span className="material-symbols-outlined text-lg">sync_problem</span>
           <span className="text-sm font-medium">
-            {pendingSyncCount === 1 ? '1 条待同步' : `${pendingSyncCount} 条待同步`}
+            {copy(`${pendingSyncCount} pending sync`, `${pendingSyncCount} 条待同步`)}
           </span>
         </div>
       )}
@@ -1835,7 +1866,7 @@ const App: React.FC = () => {
             </div>
 
             <p className="text-text-light mb-8 text-sm leading-relaxed">
-              检测到云端和本地有不同版本的该 Session。请选择要保留的版本：
+              {copy("This session has different cloud and local versions. Choose the version to keep:", "云端与本机的学习批次存在不同版本，请选择要保留的版本：")}
             </p>
 
             <div className="grid md:grid-cols-2 gap-6 mb-8">
@@ -1850,19 +1881,19 @@ const App: React.FC = () => {
               >
                 <div className="flex items-center gap-2 mb-4">
                   <span className="material-symbols-outlined text-electric-blue">cloud</span>
-                  <h4 className="text-lg font-headline text-white">云端版本</h4>
+                  <h4 className="text-lg font-headline text-white">{copy("Cloud version","云端版本")}</h4>
                 </div>
                 <div className="space-y-2 text-sm">
                   <p className="text-text-light">
-                    <span className="text-text-dark">时间：</span>
-                    {new Date(conflictModal.cloud.timestamp).toLocaleString()}
+                    <span className="text-text-dark">{copy("Time: ","时间：")}</span>
+                    {new Date(conflictModal.cloud.timestamp).toLocaleString(language === "zh" ? "zh-CN" : "en-US")}
                   </p>
                   <p className="text-text-light">
-                    <span className="text-text-dark">单词数：</span>
-                    {conflictModal.cloud.wordCount} 个
+                    <span className="text-text-dark">{copy("Words: ","单词数：")}</span>
+                    {conflictModal.cloud.wordCount}
                   </p>
                   <p className="text-text-light">
-                    <span className="text-text-dark">标签：</span>
+                    <span className="text-text-dark">{copy("Tag: ","标签：")}</span>
                     {conflictModal.cloud.libraryTag}
                   </p>
                 </div>
@@ -1879,19 +1910,19 @@ const App: React.FC = () => {
               >
                 <div className="flex items-center gap-2 mb-4">
                   <span className="material-symbols-outlined text-electric-green">devices</span>
-                  <h4 className="text-lg font-headline text-white">本地版本</h4>
+                  <h4 className="text-lg font-headline text-white">{copy("Local version","本地版本")}</h4>
                 </div>
                 <div className="space-y-2 text-sm">
                   <p className="text-text-light">
-                    <span className="text-text-dark">时间：</span>
-                    {new Date(conflictModal.local.timestamp).toLocaleString()}
+                    <span className="text-text-dark">{copy("Time: ","时间：")}</span>
+                    {new Date(conflictModal.local.timestamp).toLocaleString(language === "zh" ? "zh-CN" : "en-US")}
                   </p>
                   <p className="text-text-light">
-                    <span className="text-text-dark">单词数：</span>
-                    {conflictModal.local.wordCount} 个
+                    <span className="text-text-dark">{copy("Words: ","单词数：")}</span>
+                    {conflictModal.local.wordCount}
                   </p>
                   <p className="text-text-light">
-                    <span className="text-text-dark">标签：</span>
+                    <span className="text-text-dark">{copy("Tag: ","标签：")}</span>
                     {conflictModal.local.libraryTag}
                   </p>
                 </div>
@@ -1907,7 +1938,7 @@ const App: React.FC = () => {
                 }}
                 className="flex-1 py-4 rounded-xl bg-mid-charcoal text-text-light hover:bg-white hover:text-charcoal transition-all font-mono text-xs uppercase tracking-widest"
               >
-                取消
+                {copy("Cancel", "取消")}
               </button>
               <button
                 onClick={handleConfirmConflictResolution}
@@ -1915,7 +1946,7 @@ const App: React.FC = () => {
                 className="flex-1 py-4 rounded-xl bg-electric-green text-charcoal hover:bg-white transition-all font-headline text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined">check_circle</span>
-                使用 {conflictChoice === 'cloud' ? '云端' : '本地'} 版本
+                {conflictChoice === 'cloud' ? copy('Use cloud version', '使用云端版本') : copy('Use local version', '使用本机版本')}
               </button>
             </div>
           </div>
@@ -1988,6 +2019,11 @@ const App: React.FC = () => {
         </div>
         <div className="flex items-center gap-4">
           <CoinCounter balance={coinBalance} />
+          <ReviewBadge count={dueWords.length} disabled={mode !== 'DASHBOARD'} anchorRef={reviewBadgeRef} onClick={() => {
+            if (mode !== 'DASHBOARD' || !dailyRewardSettled || dailyLoginReward || pendingCoinReward || achievementQueue.length) return;
+            reviewHistoryRef.current.markSeen(session.user.id, getShanghaiDateString());
+            setReviewReminderOwner(session.user.id);
+          }} />
           <div
             className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-dark cursor-pointer hover:text-white transition-colors group"
             onClick={() => setShowAccountPanel(true)}
@@ -1995,22 +2031,13 @@ const App: React.FC = () => {
             <span className="material-symbols-outlined text-sm group-hover:text-electric-blue transition-colors">cloud_done</span>
             <span className="group-hover:underline underline-offset-4">{session.user.email}</span>
           </div>
-          <button onClick={handleLogout} className="p-2 text-text-light hover:text-red-400 transition-colors" title="Logout">
+          <button onClick={handleLogout} className="p-2 text-text-light hover:text-red-400 transition-colors" title={copy("Log out", "退出登录")}>
             <span className="material-symbols-outlined">logout</span>
           </button>
         </div>
       </header>
 
       <main className="flex-1 p-4 md:p-8 pt-20 md:pt-24 pb-12 md:pb-16 max-w-[1400px] mx-auto w-full relative z-10">
-        {mode === 'DASHBOARD' && visibleWords.length > 0 && (
-          <section className="mb-6 rounded-2xl border border-electric-green/30 bg-light-charcoal p-5 flex flex-wrap items-center justify-between gap-4" aria-label="今日复习">
-            <div><p className="font-headline text-2xl text-white">{dueWords.length ? `今天有 ${dueWords.length} 个词需要复习` : '今天的到期复习已完成'}</p><p className="text-sm text-text-dark mt-1">到期优先 · 遗忘后及时重学 · 独立答对后逐步延长间隔</p></div>
-            <button className="rounded-xl bg-electric-green text-charcoal px-5 py-3 font-bold" onClick={() => {
-              const pool = dueWords.length ? dueWords : visibleWords;
-              handleStartTestFromLibrary(adaptiveWordSelector.calculateQueue(visibleWords, pool, 12).map(word => word.id));
-            }}>{dueWords.length ? `复习 ${Math.min(12, dueWords.length)} 个词` : '提前练习 / 学新词'}</button>
-          </section>
-        )}
         {mode === 'DASHBOARD' && (
           <Dashboard
             stats={getStats()}
@@ -2090,16 +2117,16 @@ const App: React.FC = () => {
                       void refreshCoinBalance();
                       setPendingCoinReward({ amount: awarded, source: 'word_strike' });
                     } else {
-                      showNotification(`🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
+                      showLocalizedNotification(`Score recorded: ${summary.totalScore} points`, `🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
                     }
                   } else {
-                    showNotification(`🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
+                    showLocalizedNotification(`Score recorded: ${summary.totalScore} points`, `🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
                   }
                 } catch (error) {
                   // Migration not applied yet (RPC 42883) lands here — the game
                   // stays playable and the round just isn't ranked.
                   console.error('[WordStrikeGameMode] Failed to record word strike round:', error);
-                  showNotification('⚠️ 射击成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
+                  showLocalizedNotification("Your score could not sync. The round results remain on this page.", "⚠️ 射击成绩上传失败，但本局结果仍已保留在页面中。", 'warning');
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
@@ -2125,14 +2152,14 @@ const App: React.FC = () => {
                       void refreshCoinBalance();
                       setPendingCoinReward({ amount: awarded, source: 'puzzle' });
                     } else {
-                      showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                      showLocalizedNotification(`Puzzle score recorded: ${summary.totalScore} points`, `🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
                     }
                   } else {
-                    showNotification(`🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
+                    showLocalizedNotification(`Puzzle score recorded: ${summary.totalScore} points`, `🧩 字谜成绩已记录：${summary.totalScore} 分`, 'success');
                   }
                 } catch (error) {
                   console.error('[PuzzleGameMode] Failed to record puzzle game round:', error);
-                  showNotification('⚠️ 字谜成绩上传失败，但本局结果仍已保留在页面中。', 'warning');
+                  showLocalizedNotification("Your puzzle score could not sync. The round results remain on this page.", "⚠️ 字谜成绩上传失败，但本局结果仍已保留在页面中。", 'warning');
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
@@ -2152,7 +2179,7 @@ const App: React.FC = () => {
                   if (authUserIdRef.current === session?.user?.id) setMode('DASHBOARD');
                 } catch (error) {
                   console.error('[TestComplete] Local persistence failed:', error);
-                  showNotification('测试结果尚未保存，请保留结果页并重试。', 'error');
+                  showLocalizedNotification("Test results have not been saved. Keep the results page open and try again.", "测试结果尚未保存，请保留结果页并重试。", 'error');
                 }
               }}
               onCancel={() => setMode('DASHBOARD')}
@@ -2336,8 +2363,17 @@ const App: React.FC = () => {
             />
         )}
         
+        {mode === 'DASHBOARD' && reviewReminderOwner === session.user.id && dueWords.length > 0 && !dailyLoginReward && !pendingCoinReward && (
+          <DailyReviewReminder count={dueWords.length} anchorRef={reviewBadgeRef}
+            onClose={() => { setReviewReminderOwner(null); reviewBadgeRef.current?.focus(); }}
+            onStart={() => {
+              setReviewReminderOwner(null);
+              handleStartTestFromLibrary(adaptiveWordSelector.calculateQueue(visibleWords, dueWords, 12).map(word => word.id));
+            }} />
+        )}
+
         {/* Achievement Unlock Modal */}
-        {achievementQueue.length > 0 && (
+        {!dailyLoginReward && !pendingCoinReward && !reviewPending && reviewReminderOwner !== session.user.id && achievementQueue.length > 0 && (
             <AchievementUnlockModal
                 achievement={achievementQueue[0]}
                 onClose={() => setAchievementQueue(prev => prev.slice(1))}
@@ -2353,7 +2389,7 @@ const App: React.FC = () => {
         )}
 
         {/* Coin Reward Popup (quiz / puzzle / achievement bonus) */}
-        {pendingCoinReward && (
+        {!dailyLoginReward && pendingCoinReward && (
           <CoinRewardPopup
             amount={pendingCoinReward.amount}
             source={pendingCoinReward.source}
@@ -2509,6 +2545,8 @@ const SessionMatrix: React.FC<{
   onManualSync?: (id: string) => void,
   syncingSessionId?: string | null
 }> = ({ sessions, selectedIds, onToggleSelect, onStartTest, onEdit, onDelete, onExpand, onManualSync, syncingSessionId }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
   const MAX_SLOTS = 12; // 2 rows x 6 cols
   const count = sessions.length;
   const showMoreButton = count > MAX_SLOTS;
@@ -2552,7 +2590,7 @@ const SessionMatrix: React.FC<{
           <div className={`flex flex-col justify-between flex-1 ${isHighDensity ? 'p-3' : 'p-6'}`}>
             <div className="flex justify-between items-start mb-2 z-10">
               <span className={`font-mono text-text-dark truncate ${isHighDensity ? 'text-[10px]' : 'text-xs'}`}>
-                  {new Date(s.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}
+                  {new Date(s.timestamp).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}
               </span>
               {/* CHECKBOX for Multi-Select */}
               <div className="flex items-center">
@@ -2569,13 +2607,13 @@ const SessionMatrix: React.FC<{
               </div>
             
             <div className="flex justify-between items-end z-10">
-              <div data-no-drag-select="true" className="cursor-pointer" onClick={() => onEdit(s.id)} title="Click to Edit Words">
+              <div data-no-drag-select="true" className="cursor-pointer" onClick={() => onEdit(s.id)} title={tr("Click to Edit Words", "点击编辑单词")}>
                 <p className={`font-headline text-white group-hover:text-electric-blue leading-none transition-colors ${isHighDensity ? 'text-xl' : 'text-5xl'}`}>
-                  {s.wordCount} <span className={`text-text-dark font-body font-normal ${isHighDensity ? 'text-[10px]' : 'text-sm'}`}>WORDS</span>
+                  {s.wordCount} <span className={`text-text-dark font-body font-normal ${isHighDensity ? 'text-[10px]' : 'text-sm'}`}>{tr("WORDS", "个词")}</span>
                 </p>
                 <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
                    <span className="material-symbols-outlined text-[10px] text-electric-blue">edit</span>
-                   <span className="text-[10px] text-electric-blue uppercase">Edit</span>
+                   <span className="text-[10px] text-electric-blue uppercase">{tr("Edit", "编辑")}</span>
                 </div>
               </div>
               
@@ -2585,7 +2623,7 @@ const SessionMatrix: React.FC<{
                     onDelete(s.id);
                 }}
                 className={`bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center z-20 ${isHighDensity ? 'p-1.5' : 'p-3'}`}
-                title="Delete Session"
+                title={tr("Delete Session", "删除学习批次")}
               >
                 <span className={`material-symbols-outlined ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>delete</span>
               </button>
@@ -2603,7 +2641,7 @@ const SessionMatrix: React.FC<{
                       ? 'bg-electric-blue/20 text-electric-blue cursor-wait'
                       : 'bg-mid-charcoal text-text-dark hover:bg-electric-blue hover:text-white'
                   }`}
-                  title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
+                  title={syncingSessionId === s.id ? tr('Syncing…', '正在同步…') : tr('Sync to cloud', '同步到云端')}
                 >
                   <span className={`material-symbols-outlined ${syncingSessionId === s.id ? 'animate-spin' : ''} ${isHighDensity ? 'text-lg' : 'text-2xl'}`}>
                     {syncingSessionId === s.id ? 'refresh' : (
@@ -2625,7 +2663,7 @@ const SessionMatrix: React.FC<{
             className="bg-mid-charcoal/30 hover:bg-mid-charcoal rounded-xl border-2 border-dashed border-mid-charcoal hover:border-electric-blue transition-all flex flex-col items-center justify-center gap-2 group"
         >
             <span className="material-symbols-outlined text-4xl text-text-dark group-hover:text-white transition-transform group-hover:scale-110">grid_view</span>
-            <span className="font-headline text-xl text-text-dark group-hover:text-white">{count - visibleCount} MORE</span>
+            <span className="font-headline text-xl text-text-dark group-hover:text-white">{count - visibleCount} {tr('MORE', '个更多批次')}</span>
         </button>
       )}
     </div>
@@ -2647,6 +2685,8 @@ const ImagePreviewModal: React.FC<{
   onClose: () => void;
   onOpenSession?: (sessionId: string) => void;
 }> = ({ items, currentId, onChangeCurrentId, onClose, onOpenSession }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
   const [scale, setScale] = useState(1);
   const galleryRef = useRef<HTMLDivElement>(null);
   const activeThumbRef = useRef<HTMLButtonElement | null>(null);
@@ -2720,7 +2760,7 @@ const ImagePreviewModal: React.FC<{
         <div
           className="relative rounded-2xl overflow-hidden border border-mid-charcoal"
           onWheel={handleWheel}
-          title="可使用鼠标滚轮缩放图片"
+          title={tr("Scroll to zoom the picture", "可使用鼠标滚轮缩放图片")}
         >
           <img
             src={current.imageSrc}
@@ -2735,7 +2775,7 @@ const ImagePreviewModal: React.FC<{
                 onClick={() => onOpenSession(current.sessionId!)}
                 className="px-3 py-1.5 rounded-lg bg-electric-blue text-charcoal hover:bg-white transition-colors text-xs font-headline"
               >
-                打开所属 Session
+                {tr('Open source session', '打开所属学习批次')}
               </button>
             </div>
           )}
@@ -2752,14 +2792,14 @@ const ImagePreviewModal: React.FC<{
             <button
               onClick={onClose}
               className="w-8 h-8 rounded-lg bg-black/45 text-text-light hover:bg-red-500 hover:text-white transition-colors flex items-center justify-center"
-              title="关闭预览"
+              title={tr("Close preview", "关闭预览")}
             >
               <span className="material-symbols-outlined text-base">close</span>
             </button>
           </div>
 
           <div className="absolute left-0 right-0 bottom-0 px-4 py-3 bg-gradient-to-t from-black/75 to-transparent">
-            <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em]">Image Preview</p>
+            <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em]">{tr("Image Preview", "图片预览")}</p>
             <p className="text-white font-serif text-lg truncate">{current.text}</p>
           </div>
         </div>
@@ -2770,7 +2810,7 @@ const ImagePreviewModal: React.FC<{
             <button
               onClick={(event) => { event.stopPropagation(); navigate(-10); }}
               className="shrink-0 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
-              title="向前 10 张"
+              title={tr("Previous 10 pictures", "向前 10 张")}
             >
               <span className="material-symbols-outlined text-lg">keyboard_double_arrow_left</span>
             </button>
@@ -2796,7 +2836,7 @@ const ImagePreviewModal: React.FC<{
             <button
               onClick={(event) => { event.stopPropagation(); navigate(10); }}
               className="shrink-0 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
-              title="向后 10 张"
+              title={tr("Next 10 pictures", "向后 10 张")}
             >
               <span className="material-symbols-outlined text-lg">keyboard_double_arrow_right</span>
             </button>
@@ -2812,7 +2852,7 @@ const ImagePreviewModal: React.FC<{
               navigate(-1);
             }}
             className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 w-11 h-11 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
-            title="上一张（←）"
+            title={tr("Previous picture (←)", "上一张（←）")}
           >
             <span className="material-symbols-outlined text-xl">chevron_left</span>
           </button>
@@ -2822,7 +2862,7 @@ const ImagePreviewModal: React.FC<{
               navigate(1);
             }}
             className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 z-30 w-11 h-11 rounded-full bg-black/45 text-white hover:bg-black/65 hover:scale-110 transition-all flex items-center justify-center"
-            title="下一张（→）"
+            title={tr("Next picture (→)", "下一张（→）")}
           >
             <span className="material-symbols-outlined text-xl">chevron_right</span>
           </button>
@@ -2853,6 +2893,8 @@ const Dashboard: React.FC<{
   onDismissRecentSessionsHighlight?: () => void,
   persistedUnlocks?: Set<string>,
 }> = ({ stats, sessions, words, cachedImageDataUrls = {}, selectedSessionIds, onToggleSessionSelect, onStartInput, onStartTest, onStartEdit, onOpenLibrary, onQuickTest, onOpenGamePicker, onDeleteSessions, onManualSync, syncingSessionId, highlightRecentSessions = false, onDismissRecentSessionsHighlight, persistedUnlocks }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
   const t = useT();
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [previewImage, setPreviewImage] = useState<{ id: string; text: string; imageSrc: string; sessionId: string } | null>(null);
@@ -2967,7 +3009,7 @@ const Dashboard: React.FC<{
                           key={item.id}
                           className="relative w-full h-full shrink-0 text-left"
                           onClick={() => openPreview(item)}
-                          title="点击预览大图（可右键保存）"
+                          title={tr("Preview picture (right-click to save)", "点击预览大图（可右键保存）")}
                         >
                           <img
                             src={item.imageSrc}
@@ -2985,14 +3027,14 @@ const Dashboard: React.FC<{
                       <button
                         onClick={() => setCarouselIndex(prev => (prev - 1 + wordsWithImages.length) % wordsWithImages.length)}
                         className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 transition-colors flex items-center justify-center"
-                        title="上一张"
+                        title={tr("Previous picture", "上一张")}
                       >
                         <span className="material-symbols-outlined text-base">chevron_left</span>
                       </button>
                       <button
                         onClick={() => setCarouselIndex(prev => (prev + 1) % wordsWithImages.length)}
                         className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-black/45 text-white hover:bg-black/65 transition-colors flex items-center justify-center"
-                        title="下一张"
+                        title={tr("Next picture", "下一张")}
                       >
                         <span className="material-symbols-outlined text-base">chevron_right</span>
                       </button>
@@ -3000,7 +3042,7 @@ const Dashboard: React.FC<{
                   )}
 
                   <div className="absolute bottom-4 left-4 right-4 z-10 animate-in slide-in-from-bottom-2 fade-in duration-700 delay-150 pointer-events-none">
-                    <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1 drop-shadow-sm">Featured</p>
+                    <p className="text-[10px] font-mono text-electric-blue uppercase tracking-[0.2em] mb-1 drop-shadow-sm">{tr("Featured", "精选单词")}</p>
                     <p className="font-serif text-2xl text-white italic capitalize drop-shadow-lg">{wordsWithImages[carouselIndex].text}</p>
                     {wordsWithImages.length > 1 && (
                       <div className="flex gap-1 mt-3 pointer-events-auto">
@@ -3009,7 +3051,7 @@ const Dashboard: React.FC<{
                                 key={idx}
                                 onClick={() => setCarouselIndex(idx)}
                                 className={`h-1 rounded-full transition-all duration-500 ${idx === carouselIndex ? 'w-4 bg-electric-blue' : 'w-1 bg-white/20 hover:bg-white/40'}`}
-                                title={`切换到第 ${idx + 1} 张`}
+                                title={tr(`Show picture ${idx + 1}`, `切换到第 ${idx + 1} 张`)}
                               />
                           ))}
                       </div>
@@ -3018,7 +3060,7 @@ const Dashboard: React.FC<{
                 </>
               ) : (
                 <div className="w-full h-full relative animate-in fade-in duration-700">
-                  <img src="/publicImages/ALL.webp" alt="Welcome" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  <img src="/publicImages/ALL.webp" alt={tr("Welcome", "欢迎")} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
                   <div className="absolute inset-0 bg-gradient-to-t from-dark-charcoal via-transparent to-transparent opacity-80"></div>
                 </div>
               )}
@@ -3164,7 +3206,7 @@ const Dashboard: React.FC<{
                                     className="w-4 h-4 rounded border-mid-charcoal text-electric-green bg-dark-charcoal cursor-pointer"
                                 />
                       <div data-no-drag-select="true" onClick={() => onStartEdit(s.id)} className="cursor-pointer">
-                                    <p className="text-xs font-mono text-text-dark mb-1">{new Date(s.timestamp).toLocaleDateString()}</p>
+                                    <p className="text-xs font-mono text-text-dark mb-1">{new Date(s.timestamp).toLocaleDateString(isZh ? 'zh-CN' : 'en-US')}</p>
                                     <p className="font-headline text-2xl text-white group-hover:text-electric-blue">{t.wordsUnit(s.wordCount)}</p>
                                 </div>
                              </div>
@@ -3181,7 +3223,7 @@ const Dashboard: React.FC<{
                                       ? 'bg-electric-blue/20 text-electric-blue cursor-wait'
                                       : 'bg-mid-charcoal text-text-dark hover:bg-electric-blue hover:text-white'
                                   }`}
-                                  title={syncingSessionId === s.id ? '正在同步...' : '点击同步到云端'}
+                                  title={syncingSessionId === s.id ? tr('Syncing…', '正在同步…') : tr('Sync to cloud', '同步到云端')}
                                 >
                                   <span className={`material-symbols-outlined text-lg ${syncingSessionId === s.id ? 'animate-spin' : ''}`}>
                                     {syncingSessionId === s.id ? 'refresh' : (
@@ -3192,10 +3234,10 @@ const Dashboard: React.FC<{
                                   </span>
                                 </button>
 
-                                <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title="编辑">
+                                <button onClick={() => onStartEdit(s.id)} className="p-2 bg-mid-charcoal rounded-lg text-text-light hover:text-electric-blue transition-colors" title={tr("Edit", "编辑")}>
                                     <span className="material-symbols-outlined text-lg">edit</span>
                                 </button>
-                                <button onClick={() => onDeleteSessions([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors" title="删除">
+                                <button onClick={() => onDeleteSessions([s.id])} className="p-2 bg-mid-charcoal rounded-lg text-text-dark hover:bg-red-500 hover:text-white transition-colors" title={tr("Delete", "删除")}>
                                     <span className="material-symbols-outlined text-lg">delete</span>
                                 </button>
                              </div>
@@ -3273,6 +3315,8 @@ const LibraryMode: React.FC<{
   cachedImageDataUrls?: Record<string, string>;
   onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>;
 }> = ({ words, onClose, onTest, userId, onRefresh, cachedImageWordIds = new Set(), cachedImageDataUrls = {}, onGenerateImageForWord }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [previewId, setPreviewId] = useState<string | null>(null);
     const [generatingWordIds, setGeneratingWordIds] = useState<Set<string>>(new Set());
@@ -3299,31 +3343,31 @@ const LibraryMode: React.FC<{
         if (errorCount === 0) return {
             level: 'none',
             color: 'text-electric-green',
-            label: 'Perfect',
+            label: tr('Perfect', '无错误'),
             icon: 'check_circle'
         }
         if (errorCount < 0.5) return {
             level: 'low',
             color: 'text-yellow-400',
-            label: 'Minor',
+            label: tr('Minor', '轻微'),
             icon: 'info'
         }
         if (errorCount < 1.0) return {
             level: 'medium',
             color: 'text-orange-400',
-            label: 'Moderate',
+            label: tr('Moderate', '中等'),
             icon: 'warning'
         }
         if (errorCount < 2.0) return {
             level: 'high',
             color: 'text-red-400',
-            label: 'Severe',
+            label: tr('Severe', '严重'),
             icon: 'error'
         }
         return {
             level: 'critical',
             color: 'text-red-600',
-            label: 'Critical',
+            label: tr('Critical', '高风险'),
             icon: 'dangerous'
         }
     };
@@ -3581,15 +3625,15 @@ const LibraryMode: React.FC<{
                         <span className="material-symbols-outlined">arrow_back</span>
                      </button>
                      <div>
-                        <h2 className="font-headline text-3xl text-white tracking-wide">LIBRARY</h2>
-                        <p className="font-mono text-[10px] text-text-dark uppercase">{new Set(words.map((w: WordEntry) => w.text)).size} UNIQUE WORDS ({selectedLibraries.has('All') ? 'SHOWING ALL' : `FILTERED: ${libraryFilteredWords.length}`})</p>
+                        <h2 className="font-headline text-3xl text-white tracking-wide">{tr("LIBRARY", "单词库")}</h2>
+                        <p className="font-mono text-[10px] text-text-dark uppercase">{new Set(words.map((w: WordEntry) => w.text)).size} {tr('UNIQUE WORDS', '个不同单词')} ({selectedLibraries.has('All') ? tr('SHOWING ALL', '显示全部') : tr(`FILTERED: ${libraryFilteredWords.length}`, `筛选后：${libraryFilteredWords.length}`)})</p>
                      </div>
                 </div>
 
                 <div className="bg-light-charcoal p-5 rounded-2xl border border-mid-charcoal shadow-lg">
                     <h3 className="font-headline text-xl text-electric-blue mb-4 flex items-center gap-2">
                         <span className="material-symbols-outlined">casino</span>
-                        RANDOMIZER
+                        {tr("RANDOMIZER", "随机选词")}
                     </h3>
                     <div className="flex gap-2">
                         <input 
@@ -3604,7 +3648,7 @@ const LibraryMode: React.FC<{
                             onClick={handleRandomSelect}
                             className="flex-1 bg-mid-charcoal hover:bg-electric-blue hover:text-charcoal text-white rounded-lg px-4 py-2 font-headline tracking-wider transition-colors"
                         >
-                            PICK RANDOM
+                            {tr("PICK RANDOM", "随机选择")}
                         </button>
                     </div>
                 </div>
@@ -3625,7 +3669,7 @@ const LibraryMode: React.FC<{
                     <div className="flex justify-between items-center mb-4">
                         <h3 className="font-headline text-xl text-electric-blue flex items-center gap-2">
                             <span className="material-symbols-outlined">filter_list</span>
-                            FILTERS
+                            {tr("FILTERS", "筛选")}
                         </h3>
                         <button
                             onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
@@ -3643,19 +3687,19 @@ const LibraryMode: React.FC<{
                             {/* 实时统计 */}
                             <div className="bg-dark-charcoal/50 rounded-lg p-3 space-y-2">
                                 <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-text-dark uppercase">Mistake Words</span>
+                                    <span className="text-[10px] text-text-dark uppercase">{tr("Mistake Words", "错词数量")}</span>
                                     <span className="font-mono text-sm text-red-400">
                                         {words.filter(w => w.tags?.includes('Mistake')).length}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-text-dark uppercase">High Risk (≥2)</span>
+                                    <span className="text-[10px] text-text-dark uppercase">{tr("High Risk (≥2)", "高风险词（≥2）")}</span>
                                     <span className="font-mono text-sm text-orange-400">
                                         {words.filter(w => w.error_count >= 2).length}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-text-dark uppercase">Visible</span>
+                                    <span className="text-[10px] text-text-dark uppercase">{tr("Visible", "当前可见")}</span>
                                     <span className="font-mono text-sm text-electric-blue">
                                         {sortedWords.filter(w => w.text.toLowerCase().includes(searchTerm.toLowerCase())).length}
                                     </span>
@@ -3685,10 +3729,10 @@ const LibraryMode: React.FC<{
                                 </div>
                                 <div className="flex-1">
                                     <div className="text-sm text-text-light group-hover:text-white transition-colors">
-                                        Mistake Bank Only
+                                        {tr("Mistake Bank Only", "仅显示错词")}
                                     </div>
                                     <div className="text-[10px] text-text-dark font-mono uppercase">
-                                        Show only words with errors
+                                        {tr("Show only words with errors", "只显示有错误记录的单词")}
                                     </div>
                                 </div>
                             </label>
@@ -3698,14 +3742,14 @@ const LibraryMode: React.FC<{
                             <div className="space-y-2">
                                 <div className="flex justify-between items-center">
                                     <label className="text-sm text-text-light">
-                                        Min Error Count
+                                        {tr("Min Error Count", "最低错误次数")}
                                     </label>
                                     <span className={`font-mono text-sm px-2 py-0.5 rounded ${
                                         filterMinErrorCount
                                             ? 'bg-orange-500/20 text-orange-400'
                                             : 'bg-mid-charcoal text-text-dark'
                                     }`}>
-                                        {filterMinErrorCount ? `≥ ${filterMinErrorCount}` : 'All'}
+                                        {filterMinErrorCount ? `≥ ${filterMinErrorCount}` : tr('All', '全部')}
                                     </span>
                                 </div>
                                 <input
@@ -3743,24 +3787,24 @@ const LibraryMode: React.FC<{
                                 }}
                                 className="w-full px-4 py-2 rounded-lg border border-mid-charcoal text-text-dark hover:text-electric-blue hover:border-electric-blue transition-all font-mono text-xs uppercase"
                             >
-                                Reset Filters
+                                {tr("Reset Filters", "重置筛选")}
                             </button>
 
                             {/* Status Icons Legend */}
                             {/* 状态图标图例 */}
                             <div className="mt-4 pt-4 border-t border-mid-charcoal space-y-2">
-                                <div className="text-[10px] text-text-dark uppercase tracking-wide mb-2">Status Icons</div>
+                                <div className="text-[10px] text-text-dark uppercase tracking-wide mb-2">{tr("Status Icons", "状态图标")}</div>
 
                                 <div className="flex items-center gap-2 text-xs">
                                     <span className="material-symbols-outlined text-sm text-red-400">error</span>
-                                    <span className="text-text-light">Error Count</span>
-                                    <span className="text-text-dark ml-auto text-[10px]">Higher = more errors</span>
+                                    <span className="text-text-light">{tr("Error Count", "错误次数")}</span>
+                                    <span className="text-text-dark ml-auto text-[10px]">{tr("Higher = more errors", "数值越高，错误越多")}</span>
                                 </div>
 
                                 <div className="flex items-center gap-2 text-xs">
                                     <span className="material-symbols-outlined text-sm text-red-500">bookmark</span>
-                                    <span className="text-text-light">In Mistake Bank</span>
-                                    <span className="text-text-dark ml-auto text-[10px]">Added for review</span>
+                                    <span className="text-text-light">{tr("In Mistake Bank", "已加入错词库")}</span>
+                                    <span className="text-text-dark ml-auto text-[10px]">{tr("Added for review", "已加入复习")}</span>
                                 </div>
                             </div>
                         </div>
@@ -3771,9 +3815,9 @@ const LibraryMode: React.FC<{
                     <div className="flex justify-between items-center mb-4">
                         <h3 className="font-headline text-xl text-electric-blue flex items-center gap-2">
                             <span className="material-symbols-outlined">grid_view</span>
-                            A-Z MATRIX
+                            {tr("A-Z MATRIX", "字母矩阵")}
                         </h3>
-                        <span className="text-[10px] text-text-dark uppercase">Drag to select</span>
+                        <span className="text-[10px] text-text-dark uppercase">{tr("Drag to select", "拖动以多选")}</span>
                     </div>
                     
                     <div 
@@ -3847,7 +3891,7 @@ const LibraryMode: React.FC<{
                             type="text" 
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
-                            placeholder="Search library..."
+                            placeholder={tr("Search library...", "搜索单词库…")}
                             className="w-full bg-dark-charcoal border border-mid-charcoal rounded-xl py-2 pl-10 pr-4 text-white focus:border-electric-blue outline-none transition-all font-mono text-sm"
                         />
                     </div>
@@ -3859,21 +3903,21 @@ const LibraryMode: React.FC<{
                                     onClick={clearSelection}
                                     className="px-4 py-2 rounded-lg text-text-dark hover:text-red-400 font-mono text-xs uppercase hover:bg-mid-charcoal transition-colors"
                                 >
-                                    Reset
+                                    {tr("Reset", "清空选择")}
                                 </button>
                                 <button
                                     onClick={(e) => requestDeleteWords(e, Array.from(selectedIds))}
                                     className="px-4 py-2 bg-red-500/10 border border-red-500/40 text-red-400 font-headline text-sm rounded-xl hover:bg-red-500/20 hover:border-red-400 transition-colors flex items-center gap-1 animate-in zoom-in"
                                 >
                                     <span className="material-symbols-outlined text-base">delete</span>
-                                    DELETE ({selectedIds.size})
+                                    {tr('DELETE', '删除')} ({selectedIds.size})
                                 </button>
                                 <button 
                                     onClick={() => onTest(Array.from(selectedIds))}
                                     className="px-6 py-2 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors flex items-center gap-2 shadow-[0_0_15px_rgba(0,240,255,0.3)] animate-in zoom-in"
                                 >
                                     <span className="material-symbols-outlined">checklist</span>
-                                    TEST ({selectedIds.size})
+                                    {tr('TEST', '测验')} ({selectedIds.size})
                                 </button>
                             </>
                          )}
@@ -3885,7 +3929,7 @@ const LibraryMode: React.FC<{
                     {Object.keys(grouped).length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-text-dark opacity-50">
                             <span className="material-symbols-outlined text-6xl mb-4">search_off</span>
-                            <p className="font-headline text-xl">No words found</p>
+                            <p className="font-headline text-xl">{tr("No words found", "未找到单词")}</p>
                         </div>
                     ) : (
                         Object.keys(grouped).sort().map(letter => {
@@ -3898,7 +3942,7 @@ const LibraryMode: React.FC<{
                                 >
                                     <div className="flex items-center gap-4 mb-4 border-b border-mid-charcoal/50 pb-2">
                                         <h3 className="font-headline text-3xl text-electric-blue w-8">{letter}</h3>
-                                        <span className="text-[10px] font-mono text-text-dark opacity-50 ml-auto">{grouped[letter].length} items</span>
+                                        <span className="text-[10px] font-mono text-text-dark opacity-50 ml-auto">{grouped[letter].length} {tr('items', '个词')}</span>
                                     </div>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                                         {grouped[letter].map(word => {
@@ -3927,8 +3971,8 @@ const LibraryMode: React.FC<{
                                                       }}
                                                       disabled={isGenerating}
                                                       className={`absolute top-1 right-1 z-10 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
-                                                      title={isGenerating ? '生成中…' : hasGeneratedImage ? '点击查看大图' : '未生成，点击立即生成'}
-                                                      aria-label={isGenerating ? `正在生成 ${word.text} 的图片` : hasGeneratedImage ? `查看 ${word.text} 的大图` : `生成 ${word.text} 的图片`}
+                                                      title={isGenerating ? tr('Generating…', '生成中…') : hasGeneratedImage ? tr('View picture', '点击查看大图') : tr('Generate picture', '未生成，点击立即生成')}
+                                                      aria-label={isGenerating ? tr(`Generating a picture for ${word.text}`, `正在生成 ${word.text} 的图片`) : hasGeneratedImage ? tr(`View the picture for ${word.text}`, `查看 ${word.text} 的大图`) : tr(`Generate a picture for ${word.text}`, `生成 ${word.text} 的图片`)}
                                                     >
                                                       <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
                                                     </button>
@@ -3937,8 +3981,8 @@ const LibraryMode: React.FC<{
                                                     <button
                                                         onClick={(e) => requestDeleteWords(e, [word.id])}
                                                         className="absolute top-1 right-8 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-text-dark hover:text-red-400 transition-all z-10"
-                                                        title={`删除 "${word.text}"`}
-                                                        aria-label={`删除 ${word.text}`}
+                                                        title={tr(`Delete "${word.text}"`, `删除 "${word.text}"`)}
+                                                        aria-label={tr(`Delete ${word.text}`, `删除 ${word.text}`)}
                                                     >
                                                         <span className="material-symbols-outlined text-sm">delete</span>
                                                     </button>
@@ -3951,7 +3995,7 @@ const LibraryMode: React.FC<{
                                                       <div className="min-w-0 flex-1">
                                                         <span className={`block font-mono text-sm truncate ${selectedIds.has(word.id) ? 'text-white' : 'text-text-light'}`}>{word.text}</span>
                                                         <span className={`mt-1 block text-xs leading-relaxed line-clamp-2 ${selectedIds.has(word.id) ? 'text-electric-blue/90' : 'text-text-dark'}`}>
-                                                          {word.definition_cn?.trim() || '正在获取中文释义...'}
+                                                          {wordMeaningForLanguage(word, isZh)}
                                                         </span>
                                                       </div>
                                                     </div>
@@ -3961,8 +4005,8 @@ const LibraryMode: React.FC<{
                                                       <button
                                                         onClick={(e) => handlePreviewAudio(e, word)}
                                                         className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-electric-blue hover:text-charcoal transition-colors ${playingPreviewWordId === word.id ? 'text-electric-green animate-pulse' : 'text-text-dark'}`}
-                                                        title={`Play pronunciation: ${word.text}`}
-                                                        aria-label={`Play pronunciation for ${word.text}`}
+                                                        title={tr(`Play pronunciation: ${word.text}`, `播放 ${word.text} 的发音`)}
+                                                        aria-label={tr(`Play pronunciation for ${word.text}`, `播放 ${word.text} 的发音`)}
                                                       >
                                                         <span className="material-symbols-outlined text-lg">volume_up</span>
                                                       </button>
@@ -4004,36 +4048,36 @@ const LibraryMode: React.FC<{
                         <div className="flex items-center gap-3 mb-4 text-red-400">
                             <span className="material-symbols-outlined text-4xl">{isWordDeleting ? 'delete_sweep' : 'warning'}</span>
                             <h3 className="text-2xl font-headline tracking-tight">
-                                {isWordDeleting ? '删除中...' : '确认删除'}
+                                {isWordDeleting ? tr('Deleting…', '删除中…') : tr('Confirm deletion', '确认删除')}
                             </h3>
                         </div>
 
                         {isWordDeleting ? (
                             <div className="flex items-center gap-3 py-4">
                                 <div className="w-5 h-5 border-2 border-red-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                                <p className="text-text-light font-mono text-sm">正在删除，请稍候...</p>
+                                <p className="text-text-light font-mono text-sm">{tr("Deleting. Please wait…", "正在删除，请稍候...")}</p>
                             </div>
                         ) : (
                             <>
                                 <p className="text-text-light mb-2">
-                                    即将删除
+                                    {tr('Delete', '即将删除')}
                                     <span className="text-red-400 font-bold mx-1">{pendingDeleteIds.length}</span>
-                                    个单词，此操作不可撤销。
+                                    {tr('word(s)? This cannot be undone.', '个单词，此操作不可撤销。')}
                                 </p>
-                                <p className="text-text-dark text-xs font-mono mb-6">删除后这些单词的学习记录也将一并移除。</p>
+                                <p className="text-text-dark text-xs font-mono mb-6">{tr("Their learning records will also be removed.", "删除后这些单词的学习记录也将一并移除。")}</p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <button
                                         onClick={() => setPendingDeleteIds(null)}
                                         className="py-3 rounded-xl bg-mid-charcoal text-text-light hover:bg-text-dark hover:text-charcoal transition-all font-headline tracking-wider"
                                     >
-                                        取消
+                                        {tr("Cancel", "取消")}
                                     </button>
                                     <button
                                         onClick={confirmDeleteWords}
                                         className="py-3 rounded-xl bg-red-500 text-white hover:bg-red-400 transition-all font-headline tracking-wider flex items-center justify-center gap-2"
                                     >
                                         <span className="material-symbols-outlined text-base">delete_forever</span>
-                                        确认删除
+                                        {tr("Confirm deletion", "确认删除")}
                                     </button>
                                 </div>
                             </>
@@ -4057,6 +4101,8 @@ const InputMode: React.FC<{
   cachedImageDataUrls?: Record<string, string>,
   onGenerateImageForWord?: (word: { id: string; text: string; language?: string | null; hasExistingImage?: boolean }) => Promise<boolean>
 }> = ({ initialWords = [], currentLibrary, onComplete, onCancel, onDeleteWord, allWords, cachedImageWordIds = new Set(), cachedImageDataUrls = {}, onGenerateImageForWord }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
   const [currentWords, setCurrentWords] = useState<EditableWord[]>(
     initialWords.map(w => createEditableWord({
       id: w.id,
@@ -4078,7 +4124,7 @@ const InputMode: React.FC<{
   const [isProcessing, setIsProcessing] = useState(false);
   const [validationStage, setValidationStage] = useState<InputValidationStage>('IDLE');
   const [isSaving, setIsSaving] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<{ en: string; zh: string } | null>(null);
   const [serviceErrorWord, setServiceErrorWord] = useState<string | null>(null);
 
   // Phrase validation states
@@ -4146,13 +4192,13 @@ const InputMode: React.FC<{
   }, [currentWords, cachedImageDataUrls]);
 
   const validationStageLabel: Record<InputValidationStage, string> = {
-    IDLE: 'VALIDATING...',
-    VALIDATING_SPELLING: 'VALIDATING SPELLING...',
-    VALIDATING_PHRASE: 'VALIDATING PHRASE STRUCTURE...',
-    CHECKING_COLLOCATION: 'CHECKING PHRASE NATURALNESS...',
-    GENERATING_CHINESE_MEANING: 'GENERATING CHINESE MEANING...',
-    GENERATING_PRONUNCIATION: 'GENERATING PRONUNCIATION...',
-    FINALIZING: 'FINALIZING WORD...',
+    IDLE: tr('VALIDATING…', '正在验证…'),
+    VALIDATING_SPELLING: tr('VALIDATING SPELLING…', '正在验证拼写…'),
+    VALIDATING_PHRASE: tr('VALIDATING PHRASE STRUCTURE…', '正在验证短语结构…'),
+    CHECKING_COLLOCATION: tr('CHECKING PHRASE NATURALNESS…', '正在检查短语搭配…'),
+    GENERATING_CHINESE_MEANING: tr('GETTING WORD MEANINGS…', '正在获取单词释义…'),
+    GENERATING_PRONUNCIATION: tr('GENERATING PRONUNCIATION…', '正在生成发音…'),
+    FINALIZING: tr('FINALIZING WORD…', '正在完成单词准备…'),
   };
 
   const validationStageStep: Partial<Record<InputValidationStage, number>> = {
@@ -4344,7 +4390,7 @@ const InputMode: React.FC<{
     if (!targetWord) {
       // Local Check: Check within current session's word list
       if (currentWords.some(w => w.text.toLowerCase() === trimmed.toLowerCase())) {
-          setErrorMsg(`"${trimmed}" is already in this session.`);
+          setErrorMsg({ en: `"${trimmed}" is already in this session.`, zh: `“${trimmed}”已在当前学习批次中。` });
           playBuzzer();
           return;
       }
@@ -4352,8 +4398,7 @@ const InputMode: React.FC<{
       // Global Check: Check if word exists anywhere in the user's collection
       const existingWord = allWords.find(w => w.text.toLowerCase() === trimmed.toLowerCase());
       if (existingWord) {
-          const tags = existingWord.tags?.join(', ') || 'Custom';
-          setErrorMsg(`"${trimmed}" already exists in your collection (${tags}).`);
+          setErrorMsg({ en: `"${trimmed}" already exists in your collection.`, zh: `“${trimmed}”已在你的单词库中。` });
           playBuzzer();
           return;
       }
@@ -4384,7 +4429,7 @@ const InputMode: React.FC<{
         // Handle phrase length errors
         if (validation.error === 'TOO_MANY_WORDS' || validation.error === 'TOO_FEW_WORDS') {
           playBuzzer();
-          setErrorMsg(validation.suggestion || 'Please enter 2-3 words only');
+          setErrorMsg({ en: 'Please enter a phrase with 2–3 words.', zh: '请输入由 2–3 个单词组成的短语。' });
           return;
         }
 
@@ -4392,7 +4437,7 @@ const InputMode: React.FC<{
           playBuzzer();
           // Show highlighted phrase if available
           const displayText = validation.highlightedPhrase || validation.suggestion || 'something else';
-          setErrorMsg(`Did you mean "${displayText}"?`);
+          setErrorMsg({ en: `Did you mean "${displayText}"?`, zh: `你想输入的是“${displayText}”吗？` });
           return;
         }
 
@@ -4503,7 +4548,7 @@ const InputMode: React.FC<{
             setInputStatus('wrong');
             playBuzzer();
             setInputValue(''); // Clear to force retype
-            setErrorMsg(`Type "${targetWord}" again!`);
+            setErrorMsg({ en: `Type "${targetWord}" again!`, zh: `请再次输入“${targetWord}”！` });
         }
     }
   };
@@ -4716,7 +4761,7 @@ const InputMode: React.FC<{
           setWordToDelete(null);
       } catch (error) {
           console.error("❌ confirmDelete failed:", error);
-          alert("Failed to delete word: " + (error as Error).message);
+          alert(tr('Could not delete this word. Please try again.', '删除单词失败，请重试。'));
           // 即使失败也关闭模态框，让用户可以重试
           setWordToDelete(null);
       }
@@ -4755,7 +4800,7 @@ const InputMode: React.FC<{
 
     const hasGeneratedImage = !!word.imageBase64 || !!word.hasImage || (!!word.id && cachedImageWordIds.has(word.id));
     if (hasGeneratedImage) {
-      const confirmed = window.confirm(`"${word.text}" 已有图片，是否重新生成并替换当前图片？`);
+      const confirmed = window.confirm(tr(`"${word.text}" already has a picture. Generate a replacement?`, `"${word.text}" 已有图片，是否重新生成并替换当前图片？`));
       if (!confirmed) return;
     }
 
@@ -4788,14 +4833,14 @@ const InputMode: React.FC<{
               ? { ...item, imageBase64: base64, hasImage: true }
               : item
           ));
-          alert(`已为 ${word.text} 生成图片（本地待保存）`);
+          alert(tr(`Picture generated for ${word.text}. Save the session to keep it.`, `已为 ${word.text} 生成图片（本地待保存）`));
         } else {
-          alert(`图片生成失败：${word.text}`);
+          alert(tr(`Could not generate a picture for ${word.text}.`, `图片生成失败：${word.text}`));
         }
       }
     } catch (error: any) {
       console.warn('[InputMode] generate image failed:', error);
-      alert(`图片生成异常：${word.text}`);
+      alert(tr(`Picture generation failed for ${word.text}.`, `图片生成异常：${word.text}`));
     } finally {
       setGeneratingWordTempIds(prev => {
         const next = new Set(prev);
@@ -4809,7 +4854,7 @@ const InputMode: React.FC<{
     setErrorMsg(null);
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Speech recognition not supported in this browser.");
+      alert(tr('Speech recognition is not supported in this browser.', '此浏览器不支持语音识别。'));
       return;
     }
     const recognition = new SpeechRecognition();
@@ -4845,7 +4890,7 @@ const InputMode: React.FC<{
       if (extracted) {
         setInputValue(extracted);
       } else {
-        alert("Could not extract word from image.");
+        alert(tr('Could not extract a word from the picture.', '未能从图片中识别出单词。'));
       }handleCancelClick
       setIsProcessing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -4924,7 +4969,7 @@ const InputMode: React.FC<{
         <div className="flex gap-3 mb-3 h-7 items-end">
             {familyQueue && (
               <div className="self-center flex items-center gap-2 mr-2 px-3 py-1 rounded-full bg-electric-blue/10 border border-electric-blue/30">
-                <span className="font-mono text-[10px] uppercase tracking-wider text-electric-blue">Family · {familyQueue.headword}</span>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-electric-blue">{tr('Family', '词族')} · {familyQueue.headword}</span>
                 <span className="font-mono text-xs text-white">{familyQueue.index + 1}/{familyQueue.forms.length}</span>
                 <div className="flex gap-1 ml-1">
                   {familyQueue.forms.map((f, i) => (
@@ -4955,7 +5000,7 @@ const InputMode: React.FC<{
             if (inputStatus !== 'idle') setInputStatus('idle');
           }} 
           onEnter={handleInputEnter}
-          placeholder={targetWord ? `TYPE "${targetWord}"` : "TYPE WORD..."}
+          placeholder={targetWord ? tr(`TYPE "${targetWord}"`, `输入“${targetWord}”`) : tr('TYPE WORD…', '输入单词…')}
           maxWidth="100%"
           disabled={isProcessing}
           status={inputStatus}
@@ -4973,8 +5018,8 @@ const InputMode: React.FC<{
                      <p className="font-mono text-[10px] uppercase text-text-dark mb-1"><HoverTranslationText text="Target" translation="目标单词" /></p>
                      <p className="font-serif text-xl text-white truncate">{targetWord}</p>
                      <div className="mt-3 border-t border-electric-blue/10 pt-3">
-                       <p className="font-mono text-[10px] uppercase text-electric-blue/80 mb-1">中文释义</p>
-                       <p className="text-sm text-white leading-relaxed break-words">{targetDefinitionCn || fallbackMeaning}</p>
+                       <p className="font-mono text-[10px] uppercase text-electric-blue/80 mb-1">{tr("Definition", "中文释义")}</p>
+                       <p className="text-sm text-white leading-relaxed break-words">{isZh ? targetDefinitionCn || fallbackMeaning : targetDefinitionEn && !/\p{Script=Han}/u.test(targetDefinitionEn) ? targetDefinitionEn : 'Listen to the word and repeat its spelling'}</p>
                      </div>
                        <p className="text-[10px] text-electric-blue mt-2"><HoverTranslationText text={`Type correctly ${repeatCount} times to add.`} translation={`连续正确输入 ${repeatCount} 次后即可添加。`} /></p>
                  </div>
@@ -4985,7 +5030,7 @@ const InputMode: React.FC<{
           <div className="absolute top-full text-center mt-4 flex justify-center animate-in slide-in-from-top-2 z-50">
             <div className="bg-red-600 border border-red-400 text-white px-6 py-3 rounded-xl flex items-center gap-3 shadow-[0_0_25px_rgba(220,38,38,0.4)]">
                <span className="material-symbols-outlined">report</span>
-               <span className="font-mono font-bold tracking-tight">{errorMsg}</span>
+               <span className="font-mono font-bold tracking-tight">{isZh ? errorMsg.zh : errorMsg.en}</span>
             </div>
           </div>
         )}
@@ -4998,7 +5043,7 @@ const InputMode: React.FC<{
                   <span className="font-headline text-xl uppercase tracking-widest"><HoverTranslationText text="Neural Link Offline" translation="神经连接离线" /></span>
                </div>
                <p className="font-mono text-sm text-text-light leading-relaxed">
-                  The AI validation service could not be reached. We cannot verify if <span className="text-electric-blue">"{serviceErrorWord}"</span> is correct.
+                  {tr('The validation service is unavailable. We could not check', '验证服务暂时不可用，无法确认')} <span className="text-electric-blue">"{serviceErrorWord}"</span>{tr('.', ' 是否正确。')}
                </p>
                <div className="flex gap-4 w-full">
                   <button 
@@ -5026,11 +5071,11 @@ const InputMode: React.FC<{
                   <span className="font-headline text-xl uppercase tracking-widest"><HoverTranslationText text="Uncommon Phrase" translation="非常见短语" /></span>
                </div>
                <p className="font-mono text-sm text-text-light leading-relaxed">
-                  <span className="text-electric-blue">"{collocationWarning.phrase}"</span> may not be a common English phrase.
+                  <span className="text-electric-blue">"{collocationWarning.phrase}"</span> {tr('may not be a common English phrase.', '可能不是常见的英文短语。')}
                </p>
                {collocationWarning.suggestion && (
                  <p className="font-mono text-xs text-text-dark">
-                    Did you mean: <span className="text-electric-blue">{collocationWarning.suggestion}</span>?
+                    {tr('Did you mean:', '你想输入的是：')} <span className="text-electric-blue">{collocationWarning.suggestion}</span>{tr('?', '？')}
                  </p>
                )}
                <div className="flex gap-4 w-full">
@@ -5096,14 +5141,14 @@ const InputMode: React.FC<{
       <div className="flex flex-wrap justify-center gap-6 mt-8">
         <button 
           onClick={handleVoiceInput}
-          title="语音输入"
+          title={tr("Voice input", "语音输入")}
           className="flex h-24 w-24 items-center justify-center bg-mid-charcoal rounded-full text-white hover:text-electric-blue border-2 border-transparent hover:border-electric-blue transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">mic</span>
         </button>
         <button 
           onClick={() => fileInputRef.current?.click()}
-          title="图片识别"
+          title={tr("Recognize words in a picture", "图片识别")}
           className="flex h-24 w-24 items-center justify-center bg-mid-charcoal rounded-full text-white hover:text-electric-purple border-2 border-transparent hover:border-electric-purple transition-all group"
         >
           <span className="material-symbols-outlined text-4xl group-active:scale-90 transition-transform">photo_camera</span>
@@ -5129,6 +5174,7 @@ const InputMode: React.FC<{
               <MeaningFlipCard
                 key={w.tempId}
                 meaning={w.definition_cn}
+                definitionEn={w.definition_en}
                 meaningOptions={w.meaning_options}
                 selectedMeaningKey={w.selected_meaning_key}
                 className="h-24"
@@ -5152,7 +5198,7 @@ const InputMode: React.FC<{
                         }}
                         disabled={isGenerating}
                         className={`absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center transition-colors ${isGenerating ? 'opacity-70 cursor-wait' : 'hover:bg-dark-charcoal/60'} ${hasGeneratedImage ? 'text-electric-green' : 'text-yellow-400'}`}
-                        title={isGenerating ? '生成中…' : hasGeneratedImage ? '点击查看大图' : '未生成，点击立即生成'}
+                        title={isGenerating ? tr('Generating…', '生成中…') : hasGeneratedImage ? tr('View picture', '点击查看大图') : tr('Generate picture', '未生成，点击立即生成')}
                       >
                         <span className={`material-symbols-outlined text-sm ${isGenerating ? 'animate-spin' : ''}`}>{isGenerating ? 'sync' : 'image'}</span>
                       </button>
@@ -5170,7 +5216,7 @@ const InputMode: React.FC<{
                         </button>
                         <div className="min-w-0 flex-1 text-left">
                           <span className="block truncate font-mono text-electric-blue">{w.text}</span>
-                          <span className="mt-1 block text-[10px] font-mono uppercase tracking-[0.2em] text-text-dark">点击翻面看中文</span>
+                          <span className="mt-1 block text-[10px] font-mono uppercase tracking-[0.2em] text-text-dark">{tr("Flip to see the meaning", "点击翻面看中文")}</span>
                         </div>
                     </div>
                     <button 
@@ -5179,7 +5225,7 @@ const InputMode: React.FC<{
                           initiateDelete(i);
                         }}
                         className="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-red-500 hover:text-white transition-colors"
-                        title="移除单词"
+                        title={tr("Remove word", "移除单词")}
                     >
                         <span className="material-symbols-outlined text-sm">close</span>
                     </button>
@@ -5207,12 +5253,12 @@ const InputMode: React.FC<{
           <div className="w-full max-w-2xl rounded-[28px] border border-amber-300/25 bg-[#121419]/95 p-6 shadow-[0_0_50px_rgba(251,191,36,0.12)]">
             <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-4">
               <div>
-                <p className="font-mono text-[11px] uppercase tracking-[0.35em] text-amber-300/80">Meaning Selector</p>
-                <h3 className="mt-2 font-headline text-2xl text-white">为 {pendingMeaningSelection.text} 选择本次最贴切的中文释义</h3>
-                <p className="mt-2 text-sm text-text-light">系统会把你勾选的义项写入卡片背面；悬浮到卡片释义时，还会重新展开全部常见释义。</p>
+                <p className="font-mono text-[11px] uppercase tracking-[0.35em] text-amber-300/80">{tr("Meaning Selector", "选择释义")}</p>
+                <h3 className="mt-2 font-headline text-2xl text-white">{tr(`Choose the best meaning for ${pendingMeaningSelection.text}`, `为 ${pendingMeaningSelection.text} 选择本次最贴切的释义`)}</h3>
+                <p className="mt-2 text-sm text-text-light">{tr("Your chosen meaning appears on the back of the card. Hover over it to explore other meanings.", "系统会把你勾选的义项写入卡片背面；悬浮到卡片释义时，还会重新展开全部常见释义。")}</p>
               </div>
               <div className="rounded-full border border-white/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.25em] text-electric-blue">
-                {pendingMeaningSelection.details.meaning_options.length} options
+                {pendingMeaningSelection.details.meaning_options.length} {tr('options', '个义项')}
               </div>
             </div>
 
@@ -5230,13 +5276,13 @@ const InputMode: React.FC<{
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-electric-blue/30 bg-electric-blue/10 px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-electric-blue">{option.partOfSpeech || '未标注词性'}</span>
+                        <span className="rounded-full border border-electric-blue/30 bg-electric-blue/10 px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-electric-blue">{option.partOfSpeech || tr('Part of speech unspecified', '未标注词性')}</span>
                         {option.sourceProvider && (
                           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-dark">{option.sourceProvider}</span>
                         )}
                       </div>
-                      <p className="mt-3 text-base font-semibold leading-relaxed text-white">{option.meaningZh}</p>
-                      {option.definitionEn && (
+                      <p className="mt-3 text-base font-semibold leading-relaxed text-white">{isZh ? option.meaningZh : option.definitionEn && !/\p{Script=Han}/u.test(option.definitionEn) ? option.definitionEn : tr(`Meaning ${pendingMeaningSelection.details.meaning_options.indexOf(option) + 1} · English definition unavailable`, '暂无英文释义')}</p>
+                      {isZh && option.definitionEn && !/\p{Script=Han}/u.test(option.definitionEn) && (
                         <p className="mt-2 text-sm leading-relaxed text-text-dark">{option.definitionEn}</p>
                       )}
                     </div>
@@ -5250,7 +5296,7 @@ const InputMode: React.FC<{
                 onClick={confirmMeaningSelection}
                 className="rounded-xl bg-amber-300 px-5 py-3 font-mono text-sm font-bold uppercase tracking-[0.2em] text-[#111318] transition-all hover:bg-amber-200"
               >
-                确认当前释义
+                {tr("Confirm meaning", "确认当前释义")}
               </button>
             </div>
           </div>
@@ -5278,8 +5324,8 @@ const InputMode: React.FC<{
             >
                 <h3 className="text-xl font-headline text-white mb-2"><HoverTranslationText text="REMOVE WORD?" translation="要移除这个单词吗？" /></h3>
                 <p className="text-text-dark mb-6 text-sm">
-                    Are you sure you want to remove <span className="text-electric-blue font-bold">"{wordToDelete.item.text}"</span>?
-                    {wordToDelete.item.id && " This will permanently delete it from your library."}
+                    {tr('Remove', '确定移除')} <span className="text-electric-blue font-bold">"{wordToDelete.item.text}"</span>{tr('?', '？')}
+                    {wordToDelete.item.id && tr(' This permanently deletes it from your library.', ' 这会将其从单词库中永久删除。')}
                 </p>
                 <div className="flex gap-4">
                     <button 
@@ -5321,11 +5367,11 @@ const InputMode: React.FC<{
                 </div>
                 
                 <p className="text-text-light mb-2 text-sm leading-relaxed">
-                    You have unsaved changes in this session. What would you like to do?
+                    {tr("You have unsaved changes in this session. What would you like to do?", "本批次有尚未保存的更改，请选择后续操作。")}
                 </p>
                 <p className="text-text-dark font-mono text-xs mb-8 p-4 bg-dark-charcoal rounded-xl border border-mid-charcoal">
-                    {currentWords.filter(w => !w.id).length > 0 && `${currentWords.filter(w => !w.id).length} new word(s) added. `}
-                    {(initialWords.length - currentWords.filter(w => w.id).length) > 0 && `${initialWords.length - currentWords.filter(w => w.id).length} word(s) removed.`}
+                    {currentWords.filter(w => !w.id).length > 0 && tr(`${currentWords.filter(w => !w.id).length} new word(s) added. `, `新增 ${currentWords.filter(w => !w.id).length} 个单词。`)}
+                    {(initialWords.length - currentWords.filter(w => w.id).length) > 0 && tr(`${initialWords.length - currentWords.filter(w => w.id).length} word(s) removed.`, `移除 ${initialWords.length - currentWords.filter(w => w.id).length} 个单词。`)}
                 </p>
                 
                 <div className="grid gap-3">
@@ -5353,7 +5399,7 @@ const InputMode: React.FC<{
                         onClick={() => setShowUnsavedWarning(false)}
                         className="w-full py-3 rounded-xl bg-mid-charcoal text-text-light hover:bg-white hover:text-charcoal transition-colors font-mono text-xs uppercase tracking-widest"
                     >
-                        CANCEL (KEEP EDITING)
+                        {tr("CANCEL (KEEP EDITING)", "取消（继续编辑）")}
                     </button>
                 </div>
             </div>
@@ -5372,6 +5418,8 @@ const TestMode: React.FC<{
   onComplete: (results: { id: string; correct: boolean }[]) => void;
   onCancel: () => void;
 }> = ({ allWords, initialSessionIds, initialWordIds, onComplete, onCancel }) => {
+  const { isZh } = useLanguage();
+  const tr = (en: string, zh: string) => isZh ? zh : en;
   const t = useT();
   const [queue, setQueue] = useState<WordEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -5473,7 +5521,7 @@ const TestMode: React.FC<{
       return (
           <div className="flex flex-col items-center justify-center min-h-[50vh] text-text-dark">
               <span className="material-symbols-outlined text-4xl mb-4 animate-spin">sync</span>
-              <p>Preparing neural pathways...</p>
+              <p>{tr("Preparing neural pathways...", "正在准备测验…")}</p>
           </div>
       );
   }
@@ -5485,7 +5533,7 @@ const TestMode: React.FC<{
       return (
           <div className="flex flex-col items-center justify-center min-h-[60vh] animate-in zoom-in duration-500">
               {isPerfect && <Confetti />}
-              <h2 className="font-headline text-6xl text-white mb-4">SESSION COMPLETE</h2>
+              <h2 className="font-headline text-6xl text-white mb-4">{tr("SESSION COMPLETE", "测验完成")}</h2>
               <div className="text-9xl font-mono text-electric-blue mb-8 drop-shadow-[0_0_15px_rgba(0,240,255,0.5)]">
                   {Math.round((correctCount / queue.length) * 100)}%
               </div>
@@ -5523,7 +5571,7 @@ const TestMode: React.FC<{
                      <img 
                         src={currentWord.image_url} 
                         className={`w-full h-full object-cover transition-all duration-700 ${feedback === 'WRONG' ? 'blur-0' : 'blur-lg group-hover:blur-md'}`}
-                        alt="Hint"
+                        alt={tr("Hint", "提示图片")}
                      />
                  ) : (
                      <div className="w-full h-full flex items-center justify-center opacity-20">
@@ -5544,26 +5592,26 @@ const TestMode: React.FC<{
              <div className="w-full relative min-h-[150px] flex items-center justify-center">
                  {feedback === 'WRONG' ? (
                      <div className="text-center animate-in fade-in slide-in-from-bottom-4 w-full">
-                         <p className="text-red-400 font-mono text-sm uppercase mb-2">Correction</p>
+                         <p className="text-red-400 font-mono text-sm uppercase mb-2">{tr("Correction", "正确答案")}</p>
                          <h3 className="text-4xl md:text-5xl font-serif text-white mb-6 tracking-wide">{currentWord.text}</h3>
                          <button 
                             onClick={() => handleNext(false)}
                             className="px-8 py-3 bg-mid-charcoal border border-mid-charcoal hover:border-text-light text-white rounded-xl transition-all"
                          >
-                             Got it
+                             {tr("Got it", "记住了")}
                          </button>
                      </div>
                  ) : feedback === 'CORRECT' ? (
                      <div className="text-center animate-in zoom-in duration-300">
                          <span className="material-symbols-outlined text-8xl text-electric-green mb-2">check_circle</span>
-                         <h3 className="text-2xl font-headline text-white">CORRECT</h3>
+                         <h3 className="text-2xl font-headline text-white">{tr("CORRECT", "答对了")}</h3>
                      </div>
                  ) : (
                      <LargeWordInput 
                         value={inputValue}
                         onChange={setInputValue}
                         onEnter={checkAnswer}
-                        placeholder="Type word..."
+                        placeholder={tr("Type word...", "输入单词…")}
                      />
                  )}
              </div>
@@ -5574,7 +5622,7 @@ const TestMode: React.FC<{
                     disabled={!inputValue.trim()}
                     className="px-12 py-4 bg-electric-blue text-charcoal font-headline text-2xl rounded-xl hover:bg-white transition-all transform active:scale-95 disabled:opacity-50 disabled:transform-none"
                  >
-                     CHECK
+                     {tr("CHECK", "检查答案")}
                  </button>
              )}
           </div>

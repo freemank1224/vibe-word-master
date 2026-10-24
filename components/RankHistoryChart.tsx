@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { RankHistoryEntry } from '../types';
+import { useLanguage } from '../contexts/LanguageContext';
 import { HoverTranslationText } from './HoverTranslationText';
 
 interface RankHistoryChartProps {
@@ -16,6 +17,7 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
   userId,
   days = 30
 }) => {
+  const { isZh } = useLanguage();
   const [history, setHistory] = useState<RankHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +68,7 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
         <div className="text-center">
           <span className="material-symbols-outlined text-4xl text-text-dark mb-2">show_chart</span>
           <p className="text-text-dark font-mono text-xs">
-            {error || <HoverTranslationText text="No history data available" translation="暂无历史数据" />}
+            {error ? <HoverTranslationText text="Failed to load history" translation="历史数据加载失败" /> : <HoverTranslationText text="No history data available" translation="暂无历史数据" />}
           </p>
         </div>
       </div>
@@ -187,10 +189,10 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
                 className="hover:r-6 transition-all cursor-pointer"
               >
                 <title>
-                  {new Date(point.entry.rank_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  {'\n'}Rank: #{point.entry.rank_position}
-                  {'\n'}Score: {Math.round(point.entry.total_score)}
-                  {'\n'}Percentile: {point.entry.percentile}%
+                  {new Date(point.entry.rank_date).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                  {'\n'}{isZh ? '排名：' : 'Rank:'} #{point.entry.rank_position}
+                  {'\n'}{isZh ? '得分：' : 'Score:'} {Math.round(point.entry.total_score)}
+                  {'\n'}{isZh ? '百分位：' : 'Percentile:'} {point.entry.percentile}%
                 </title>
               </circle>
             </g>
@@ -201,10 +203,10 @@ export const RankHistoryChart: React.FC<RankHistoryChartProps> = ({
         {sortedHistory.length > 0 && (
           <div className="flex justify-between px-2 mt-1">
             <span className="font-mono text-xs text-text-dark">
-              {new Date(sortedHistory[0].rank_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              {new Date(sortedHistory[0].rank_date).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
             </span>
             <span className="font-mono text-xs text-text-dark">
-              {new Date(sortedHistory[sortedHistory.length - 1].rank_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              {new Date(sortedHistory[sortedHistory.length - 1].rank_date).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
             </span>
           </div>
         )}

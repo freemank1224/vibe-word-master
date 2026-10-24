@@ -10,7 +10,7 @@ interface LandingPageProps {
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
   const t = useT();
-  const { setLanguage } = useLanguage();
+  const { isZh, toggleLanguage } = useLanguage();
   const [demoWord, setDemoWord] = useState('');
   const [demoStatus, setDemoStatus] = useState<'idle' | 'correct' | 'wrong'>('idle');
   const [showConfetti, setShowConfetti] = useState(false);
@@ -176,12 +176,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
                 <div className="relative bg-light-charcoal/80 backdrop-blur-xl border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl transform rotate-[-2deg] hover:rotate-0 transition-transform duration-500">
                     <div className="mb-6 flex justify-between items-center opacity-50">
                         <button
-                          onMouseEnter={() => setLanguage('zh')}
-                          onMouseLeave={() => setLanguage('en')}
-                          className="w-12 h-12 rounded-full bg-mid-charcoal hover:bg-electric-blue/30 hover:border hover:border-electric-blue/60 transition-all duration-300 font-headline text-xl text-electric-blue/0 hover:text-electric-blue flex items-center justify-center cursor-pointer select-none"
-                          title=""
+                          onClick={toggleLanguage}
+                          className="w-12 h-12 rounded-full bg-mid-charcoal hover:bg-electric-blue/30 hover:border hover:border-electric-blue/60 transition-all duration-300 font-headline text-xl text-electric-blue hover:text-white flex items-center justify-center cursor-pointer select-none"
+                          title={isZh ? '切换到英文' : 'Switch to Chinese'}
+                          aria-label={isZh ? '切换到英文' : 'Switch to Chinese'}
                         >
-                          中
+                          {isZh ? '中文' : 'EN'}
                         </button>
                         <div className="h-4 w-24 bg-mid-charcoal rounded animate-pulse" />
                     </div>
@@ -227,7 +227,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
         {/* Footer */}
         <div className="absolute bottom-6 w-full text-center text-white/20 font-mono text-xs">
-            © 2026 VOCAB MONSTER INC. ALL RIGHTS RESERVED.
+            {isZh ? '© 2026 词汇怪兽。保留所有权利。' : '© 2026 VOCAB MONSTER INC. ALL RIGHTS RESERVED.'}
         </div>
     </div>
   );

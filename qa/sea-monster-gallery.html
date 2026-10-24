@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Monster Surf · Inkfin action review</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#111122;color:#ededfa;font:14px/1.5 system-ui,sans-serif}
+    header{height:134px;padding:15px 26px}h1{margin:0;color:#00e6f6;font-size:24px}p{margin:4px 0 10px;color:#adb4cd}
+    nav{display:flex;gap:7px;align-items:center}button{padding:7px 12px;background:#292c45;border:1px solid #4b5271;color:#fff;border-radius:8px;cursor:pointer}button[aria-pressed=true]{border-color:#03def0;color:#03def0}label{margin-left:15px}
+    main{height:calc(100vh - 172px);position:relative;overflow:hidden}canvas{display:block;width:100%;height:100%}
+    .hud{position:absolute;top:16px;left:50%;transform:translateX(-50%);width:calc(100% - 36px);max-width:1280px;display:grid;grid-template-columns:220px 1fr 220px;gap:12px;pointer-events:none}
+    .hud div{height:184px;border:1px solid #626d87;background:#20233ded;border-radius:16px;padding:17px;color:#a9c5ce}.hud strong{display:block;color:#eaffff;font-size:20px;margin-top:5px}
+    footer{height:38px;padding:8px 26px;color:#aeb7ce;font-size:12px}#status{float:right;color:#24e28b}
+    @media(min-width:1900px){.hud{top:22px;max-width:1420px;grid-template-columns:240px 1fr 240px}}
+  </style>
+</head>
+<body>
+  <header><span id="status">Loading original art…</span><h1>INKFIN · ACTION REVIEW</h1><p>Production Canvas renderer · full desktop game footprint · navy / coral / cyan sea creature</p>
+    <nav><button data-shot="warning">Emerge</button><button data-shot="chasing">Paddle & follow</button><button data-shot="close">Approach</button><button data-shot="attacking">Third mistake · attack</button><button data-shot="retreating">Five escapes · retreat</button><button id="pause">Pause</button><label><input id="reduced" type="checkbox" /> Reduced motion</label></nav>
+  </header>
+  <main><canvas></canvas><div class="hud"><div>HUD clearance<strong>Speed & magnet</strong></div><div>Question & keyboard input stay above the scene<strong>Chinese meaning / dictation input</strong></div><div>HUD clearance<strong>Coins & hearts</strong></div></div></main>
+  <footer>Generated original character + six matching actions. The gallery runs the real renderer with controlled simulation clocks.</footer>
+  <script type="module">
+    import { startSurf } from '/features/monster-surf/game.ts';
+    import { createSurfRenderer } from '/features/monster-surf/renderer.ts';
+    import { INKFIN_ATLAS_URL } from '/features/monster-surf/seaMonsterArt.ts';
+    const query = new URL(location.href).searchParams;
+    let shot = query.get('pose') || 'warning'; let paused = false; let elapsed = 0; let previous = performance.now();
+    const reduced = document.querySelector('#reduced'); reduced.checked = query.has('reduced');
+    const load = async url => { const image = new Image(); image.src = url; await image.decode(); return image; };
+    const monster = new Date().getDay();
+    window.__SURF_SEA_QA = { ready: false };
+    try {
+      const [hero, environment, gulls, sea] = await Promise.all([
+        load(`/monster-surf/characters/M${monster}-surf.png`), load('/monster-surf/islands-native-v4.png'),
+        load('/monster-surf/gulls-atlas.png'), load(INKFIN_ATLAS_URL),
+      ]);
+      const sprites = []; sprites[monster] = hero;
+      const canvas = document.querySelector('canvas');
+      const renderer = createSurfRenderer(canvas, sprites, environment, gulls, query.has('fallback') ? undefined : sea);
+      const base = { ...startSurf(monster), x: 500, distance: 3200, correct: 10, items: [], obstacles: [] };
+      const setShot = next => {
+        shot = next; elapsed = 0;
+        document.querySelectorAll('[data-shot]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.shot === shot)));
+      };
+      document.querySelectorAll('[data-shot]').forEach(button => button.onclick = () => setShot(button.dataset.shot));
+      document.querySelector('#pause').onclick = event => { paused = !paused; event.currentTarget.textContent = paused ? 'Resume' : 'Pause'; };
+      setShot(shot);
+      const render = now => {
+        const delta = Math.min(50, now - previous); previous = now;
+        if (!paused) elapsed += delta;
+        const duration = shot === 'warning' ? 2200 : shot === 'attacking' || shot === 'retreating' ? 1800 : 4000;
+        const phaseMs = elapsed % (duration + 350);
+        const actorPhase = shot === 'close' ? 'chasing' : shot;
+        const attacking = actorPhase === 'attacking';
+        const chase = { ...base.chase, phase: actorPhase, phaseMs: Math.min(phaseMs, duration),
+          action: shot === 'close' ? 'close' : 'follow', actionMs: Math.min(phaseMs, 700),
+          mistakes: attacking ? 3 : shot === 'close' ? 2 : 0,
+          escapeStreak: shot === 'retreating' ? 5 : 0, gap: shot === 'close' ? 80 : 260 };
+        const state = { ...base, elapsedMs: elapsed + 5000, phaseMs: Math.min(phaseMs, duration),
+          phase: attacking ? 'sinking' : 'surfing', chase };
+        renderer.render(state, reduced.checked);
+        window.__SURF_SEA_QA = { ready: true, shot, elapsed, phaseMs, paused, reduced: reduced.checked,
+          bounds: { ...canvas.dataset } };
+        document.querySelector('#status').textContent = `${shot} · ${Math.round(phaseMs)} ms`;
+        requestAnimationFrame(render);
+      };
+      requestAnimationFrame(render);
+      window.addEventListener('pagehide', () => renderer.destroy(), { once: true });
+    } catch (error) { window.__SURF_SEA_QA = { ready: false, error: String(error) }; document.querySelector('#status').textContent = String(error); }
+  </script>
+</body>
+</html>

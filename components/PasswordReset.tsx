@@ -289,7 +289,7 @@ export const PasswordReset: React.FC<{ accessToken: string; onClose: () => void 
               onClick={onClose}
               className="text-xs font-mono text-text-dark hover:text-electric-blue underline uppercase"
             >
-              Cancel
+              <HoverTranslationText text="Cancel" translation="取消" />
             </button>
           </div>
         </form>

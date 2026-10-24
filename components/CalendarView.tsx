@@ -128,7 +128,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ stats }) => {
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 hidden group-hover:block z-[60] bg-dark-charcoal p-3 rounded-lg text-xs whitespace-nowrap border border-mid-charcoal shadow-2xl pointer-events-none">
                     <p className="font-bold text-white mb-1 flex items-center gap-2">
                         <HoverTranslationText text="Activity Log" translation="活动记录" />
-                        {isFrozen && <span className="text-[10px] opacity-60">🔒 FROZEN</span>}
+                        {isFrozen && <span className="text-[10px] opacity-60">🔒 <HoverTranslationText text="FROZEN" translation="已冻结" /></span>}
                     </p>
                     <div className="space-y-0.5">
                         <p className="text-text-dark flex justify-between gap-4">

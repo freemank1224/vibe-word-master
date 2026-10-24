@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useLanguage } from '../../contexts/LanguageContext';
 import confetti from 'canvas-confetti';
 import type { DailyLoginReward } from '../../services/coinService';
 import { CoinIcon } from './CoinIcon';
@@ -16,6 +17,7 @@ interface DailyLoginRewardModalProps {
  * to amber to match the coin theme.
  */
 export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ reward, onClose }) => {
+  const { isZh } = useLanguage();
   useEffect(() => {
     // Coin jingle
     playCoinReward();
@@ -36,7 +38,7 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
   const progress30 = reward.streak_30_bonus_today ? 30 : reward.streak_30_progress;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={isZh ? '每日奖励' : 'Daily Reward'}>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose}></div>
 
@@ -47,7 +49,7 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
 
         {/* Header */}
         <div className="mb-2 text-amber-400 font-headline uppercase tracking-widest text-sm">
-          Daily Reward
+          {isZh ? '每日奖励' : 'Daily Reward'}
         </div>
 
         {/* Big award */}
@@ -63,18 +65,18 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
         {/* Breakdown rows */}
         <div className="mb-6 space-y-1.5 text-sm font-mono">
           <div className="flex justify-between text-text-light/80">
-            <span>Daily login</span>
+            <span>{isZh ? '每日登录' : 'Daily login'}</span>
             <span className="text-amber-300">+1</span>
           </div>
           {reward.streak_7_bonus_today && (
             <div className="flex justify-between text-electric-green">
-              <span>7-day cycle bonus</span>
+              <span>{isZh ? '7 天周期奖励' : '7-day cycle bonus'}</span>
               <span>+7</span>
             </div>
           )}
           {reward.streak_30_bonus_today && (
             <div className="flex justify-between text-electric-blue">
-              <span>30-day cycle bonus</span>
+              <span>{isZh ? '30 天周期奖励' : '30-day cycle bonus'}</span>
               <span>+30</span>
             </div>
           )}
@@ -82,14 +84,14 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
 
         {/* Streak */}
         <div className="mb-4 font-mono text-electric-green text-sm">
-          🔥 Streak: {reward.current_streak} day{reward.current_streak === 1 ? '' : 's'}
+          🔥 {isZh ? `连续登录 ${reward.current_streak} 天` : `Streak: ${reward.current_streak} day${reward.current_streak === 1 ? '' : 's'}`}
         </div>
 
         {/* Progress bars */}
         <div className="mb-6 space-y-3">
           <div>
             <div className="flex justify-between text-xs font-mono text-text-light/60 mb-1">
-              <span>7-day cycle</span>
+              <span>{isZh ? '7 天周期' : '7-day cycle'}</span>
               <span>{progress7}/7</span>
             </div>
             <div className="h-2 rounded-full bg-black/40 overflow-hidden">
@@ -101,7 +103,7 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
           </div>
           <div>
             <div className="flex justify-between text-xs font-mono text-text-light/60 mb-1">
-              <span>30-day cycle</span>
+              <span>{isZh ? '30 天周期' : '30-day cycle'}</span>
               <span>{progress30}/30</span>
             </div>
             <div className="h-2 rounded-full bg-black/40 overflow-hidden">
@@ -117,7 +119,7 @@ export const DailyLoginRewardModal: React.FC<DailyLoginRewardModalProps> = ({ re
           onClick={onClose}
           className="w-full bg-amber-400 text-dark-charcoal font-bold py-3 px-8 rounded-xl hover:bg-amber-300 transition-colors uppercase tracking-wider shadow-lg hover:shadow-amber-400/50"
         >
-          Collect
+          {isZh ? '领取' : 'Collect'}
         </button>
       </div>
     </div>

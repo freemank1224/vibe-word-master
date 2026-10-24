@@ -22,8 +22,8 @@ export const translations = {
     // Sync conflict modal
     syncConflict: 'SYNC CONFLICT',
     syncConflictDesc: 'A conflict was detected between cloud and local versions. Please select the version to keep:',
-    cloudVersion: '云端版本',
-    localVersion: '本地版本',
+    cloudVersion: 'Cloud version',
+    localVersion: 'Local version',
 
     // Header & Footer
     cloudSynced: 'CLOUD SYNCED',
@@ -84,7 +84,7 @@ export const translations = {
     authInitiate: 'INITIATE ACCOUNT',
     authOrDivider: 'or',
     continueWithGoogle: 'CONTINUE WITH GOOGLE',
-    continueWithWatcha: 'CONTINUE WITH 观猹',
+    continueWithWatcha: 'CONTINUE WITH WATCHA',
     needAccount: 'Need an account? Sign Up',
     haveAccount: 'Already have an account? Login',
     msgAlreadyRegistered: 'This email is already registered. Please switch to "Login" mode to sign in. If you\'ve forgotten your password, use "Forgot Password" option below.',

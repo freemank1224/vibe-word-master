@@ -151,7 +151,7 @@ export const PasswordForgotRequest: React.FC<PasswordForgotRequestProps> = ({ on
               onClick={onBackToLogin}
               className="w-full py-4 bg-electric-blue text-charcoal font-headline text-xl rounded-xl hover:bg-white transition-colors"
             >
-              Back to Login
+              <HoverTranslationText text="Back to Login" translation="返回登录" />
             </button>
           </div>
         )}

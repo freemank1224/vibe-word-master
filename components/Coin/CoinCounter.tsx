@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useLanguage } from '../../contexts/LanguageContext';
 import { CoinIcon } from './CoinIcon';
 
 interface CoinCounterProps {
@@ -11,6 +12,7 @@ interface CoinCounterProps {
  * gets immediate visual feedback when they earn coins.
  */
 export const CoinCounter: React.FC<CoinCounterProps> = ({ balance }) => {
+  const { isZh } = useLanguage();
   const prevRef = useRef(balance);
   const [pulse, setPulse] = useState(false);
 
@@ -32,7 +34,7 @@ export const CoinCounter: React.FC<CoinCounterProps> = ({ balance }) => {
           ? 'border-amber-400/60 bg-amber-400/10 text-amber-300 scale-125 shadow-[0_0_20px_rgba(251,191,36,0.4)]'
           : 'border-mid-charcoal bg-black/30 text-amber-200/90'
       }`}
-      title="Coin balance"
+      title={isZh ? '金币余额' : 'Coin balance'}
     >
       <CoinIcon fontSize="18px" />
       <span className="tabular-nums">{balance < 0 ? '…' : balance}</span>

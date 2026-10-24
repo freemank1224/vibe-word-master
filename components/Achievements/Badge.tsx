@@ -1,6 +1,8 @@
 import React from 'react';
 import { Achievement, AchievementStatus } from '../../services/achievementService';
 import { ACHIEVEMENT_ICONS } from './AchievementIcons';
+import { useLanguage } from '../../contexts/LanguageContext';
+import { achievementLocale } from '../../utils/achievementLocale';
 
 interface BadgeProps {
   achievement: Achievement;
@@ -8,6 +10,8 @@ interface BadgeProps {
 }
 
 export const Badge: React.FC<BadgeProps> = ({ achievement, status }) => {
+  const { isZh } = useLanguage();
+  const copy = achievementLocale(achievement, isZh);
   const { unlocked, formattedProgress } = status;
   const isDedication = achievement.id === 'p_dedication';
   
@@ -72,9 +76,9 @@ export const Badge: React.FC<BadgeProps> = ({ achievement, status }) => {
       <div className="absolute bottom-full mb-3 w-48 bg-dark-charcoal border border-mid-charcoal rounded-xl p-3 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-20 shadow-xl pointer-events-none transform translate-y-2 group-hover:translate-y-0">
         <div className="text-center">
           <div className={`text-sm font-bold mb-1 ${unlocked ? unlockedAccentClass : 'text-gray-400'}`}>
-            {achievement.title}
+            {copy.title}
           </div>
-          <div className="text-xs text-text-light mb-3 leading-tight">{achievement.description}</div>
+          <div className="text-xs text-text-light mb-3 leading-tight">{copy.description}</div>
           
           {/* Progress Bar */}
           <div className="w-full bg-black/40 rounded-full h-1.5 mb-1 overflow-hidden">

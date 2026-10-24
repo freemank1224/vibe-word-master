@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
+import { leaderboardScoreLabel } from '../utils/leaderboardLocale';
 import {
   ChampionCategory,
   LeaderboardRow,
@@ -45,6 +47,7 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
   open,
   onClose,
 }) => {
+  const { isZh } = useLanguage();
   const [active, setActive] = useState<ChampionCategory>('daily_total');
   // Per-category cache so switching back is instant.
   const [cache, setCache] = useState<Record<string, LeaderboardRow[]>>({});
@@ -137,15 +140,12 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
               id="global-leaderboard-title"
               className="font-headline text-xl tracking-[0.16em] text-white"
             >
-              全球排行榜
-              <span className="ml-2 text-sm font-mono lowercase tracking-[0.2em] text-white/50">
-                Global Hall of Fame
-              </span>
+              {isZh ? '全球排行榜' : 'Global Hall of Fame'}
             </h2>
           </div>
           <button
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={isZh ? '关闭' : 'Close'}
             className="rounded-full p-2 text-white/60 transition-colors hover:bg-mid-charcoal hover:text-white"
           >
             <span className="material-symbols-outlined text-2xl">close</span>
@@ -174,8 +174,7 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
                 >
                   {cat.icon}
                 </span>
-                <span className="hidden sm:inline">{cat.labelZh}</span>
-                <span className="sm:hidden">{cat.labelEn}</span>
+                <span>{isZh ? cat.labelZh : cat.labelEn}</span>
                 {/* Underline */}
                 {isActive && (
                   <span className="absolute -bottom-2 left-2 right-2 h-0.5 rounded-full bg-electric-blue" />
@@ -193,7 +192,7 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
                 progress_activity
               </span>
               <span className="ml-3 text-sm font-mono uppercase tracking-[0.24em]">
-                加载中…
+                {isZh ? '加载中…' : 'Loading…'}
               </span>
             </div>
           )}
@@ -204,21 +203,21 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
                 cloud_off
               </span>
               <p className="text-sm font-mono text-red-300">
-                排行榜加载失败 / Failed to load
+                {isZh ? '排行榜加载失败' : 'Failed to load leaderboard'}
               </p>
               <button
                 type="button"
                 onClick={() => setRetryTick((t) => t + 1)}
                 className="rounded-full border border-red-400/40 bg-red-500/10 px-5 py-2 text-xs font-mono uppercase tracking-[0.18em] text-red-200 hover:bg-red-500/20"
               >
-                重试 Retry
+                {isZh ? '重试' : 'Retry'}
               </button>
             </div>
           )}
 
           {!activeLoading && !activeError && activeRows && activeRows.length === 0 && (
             <div className="flex items-center justify-center py-12 text-sm font-mono uppercase tracking-[0.2em] text-white/50">
-              暂无数据 · No data yet
+              {isZh ? '暂无数据' : 'No data yet'}
             </div>
           )}
 
@@ -266,10 +265,10 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
                       )}
                       <div className="min-w-0">
                         <div className="truncate font-headline text-base text-white">
-                          {row.displayName || row.emailMasked || 'Player'}
+                          {row.displayName || row.emailMasked || (isZh ? '玩家' : 'Player')}
                           {isMe && (
                             <span className="ml-2 rounded-full bg-electric-blue/20 px-2 py-0.5 align-middle text-[11px] font-mono uppercase tracking-[0.18em] text-electric-blue">
-                              You
+                              {isZh ? '你' : 'You'}
                             </span>
                           )}
                         </div>
@@ -282,7 +281,7 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
                     {/* Score */}
                     <div className="shrink-0 text-right">
                       <div className="font-mono text-sm font-semibold text-electric-green">
-                        {row.scoreLabel}
+                        {leaderboardScoreLabel(active, row.scoreValue, isZh)}
                       </div>
                       {row.rankPosition > 3 && (
                         <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/40">
@@ -303,7 +302,7 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
             activeRows.length > 0 &&
             !currentUserRow && (
               <div className="mt-4 rounded-xl border border-mid-charcoal bg-dark-charcoal/30 px-4 py-3 text-center text-xs font-mono text-white/40">
-                你还未参与此排行 · You haven&apos;t entered this ranking yet
+                {isZh ? '你还未参与此排行' : 'You have not entered this ranking yet'}
               </div>
             )}
         </div>

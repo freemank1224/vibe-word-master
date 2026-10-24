@@ -33,7 +33,7 @@ export const AccountPanelHeader: React.FC<AccountPanelHeaderProps> = ({
             {avatarUrl ? (
               <img
                 src={avatarUrl}
-                alt="avatar"
+                alt={isZh ? '头像' : 'Avatar'}
                 className="w-full h-full object-cover"
               />
             ) : (
@@ -84,7 +84,7 @@ export const AccountPanelHeader: React.FC<AccountPanelHeaderProps> = ({
           <ToggleSwitch
             checked={isZh}
             onChange={toggleLanguage}
-            ariaLabel="Toggle language"
+            ariaLabel={isZh ? '切换语言' : 'Toggle language'}
             sizeClassName="w-10 h-6"
             trackOnClassName="bg-electric-purple"
             thumbClassName="w-4 h-4 bg-white"

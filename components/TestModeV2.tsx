@@ -11,6 +11,8 @@ import { LargeWordInput } from './LargeWordInput';
 import { Confetti } from './Confetti';
 import { MeaningFlipCard } from './MeaningFlipCard';
 import { HoverTranslationText } from './HoverTranslationText';
+import { useLanguage } from '../contexts/LanguageContext';
+import { wordMeaningForLanguage } from '../utils/wordMeaningLocale';
 import { useT } from '../hooks/useT';
 import { forEachWithConcurrency, missingDictionaryFields, needsDictionaryEnrichment, preloadHintImage } from '../services/testPreparation';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
@@ -102,15 +104,15 @@ const calculateTimeEfficiencyRatio = (totalChars: number, totalWords: number, to
     return clamp((minimumSeconds - totalSeconds) / Math.max(minimumSeconds - idealSeconds, 1), 0, 1);
 };
 
-const getReviewReasonLabel = (reason: ReviewReason) => {
+const getReviewReasonLabel = (reason: ReviewReason, isZh: boolean) => {
     switch (reason) {
         case 'both':
-            return '已查看答案 + 提示试错过多';
+            return isZh ? '已查看答案 + 提示试错过多' : 'Answer revealed + too many hint attempts';
         case 'revealed':
-            return '已查看答案';
+            return isZh ? '已查看答案' : 'Answer revealed';
         case 'unmastered_hint':
         default:
-            return '提示试错过多';
+            return isZh ? '提示试错过多' : 'Too many hint attempts';
     }
 };
 
@@ -162,6 +164,9 @@ const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry
     return (
         <MeaningFlipCard
             meaning={word.definition_cn}
+            definitionEn={word.definition_en}
+            meaningOptions={word.meaning_options}
+            selectedMeaningKey={word.selected_meaning_key}
             className="min-h-[88px] w-full sm:w-[220px]"
             frontClassName="rounded-xl"
             backClassName={`rounded-xl border p-3 ${bgColor}`}
@@ -171,7 +176,7 @@ const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry
                     <div className="flex flex-col min-w-0">
                         <span className="font-bold text-sm tracking-wide text-white truncate">{word.text}</span>
                         <span className="text-[10px] font-mono opacity-80">
-                            {result.score.toFixed(1)} pts · {formatDurationCompact(result.timeSpentMs)} · {Math.round(result.averageCharsPerMinute / 5) || 0} WPM
+                            {result.score.toFixed(1)} <HoverTranslationText text="pts ·" translation="分 ·" /> {formatDurationCompact(result.timeSpentMs)} · {Math.round(result.averageCharsPerMinute / 5) || 0} <HoverTranslationText text="WPM" translation="词/分钟" />
                         </span>
                     </div>
                 </div>
@@ -191,6 +196,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   onUpdateWord
 }) => {
     const t = useT();
+    const { isZh } = useLanguage();
     const [phase, setPhase] = useState<TestPhase>('TESTING');
   const [coverage, setCoverage] = useState(100);
   const [tempCoverage, setTempCoverage] = useState(100);
@@ -242,7 +248,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   const [streak, setStreak] = useState(0);
   const [isStarted, setIsStarted] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
-  const [notification, setNotification] = useState<{message: string, type: 'info' | 'error' | 'success'} | null>(null);
+  const [notification, setNotification] = useState<{word: string, type: 'info' | 'error' | 'success'} | null>(null);
 
   // Loading States & Refs
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
@@ -716,7 +722,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         setHintLetterTrialCount((previousCount) => {
             if (previousCount < HINT_UNMASTERED_THRESHOLD && totalTrials >= HINT_UNMASTERED_THRESHOLD) {
                 setNotification({
-                    message: `"${targetWord}" 已因提示试错过多记入测后复盘`,
+                    word: targetWord,
                     type: 'info'
                 });
             }
@@ -1244,7 +1250,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
       return (
         <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] overflow-y-auto p-8 z-50 text-white animate-in fade-in duration-700">
-                {completionSaveError && <p role="alert" className="mb-4 text-red-300">结果尚未保存，请保留页面并点击完成重试。</p>}
+                {completionSaveError && <p role="alert" className="mb-4 text-red-300"><HoverTranslationText text="Results have not been saved. Keep this page open and retry completing the session." translation="结果尚未保存，请保留页面并点击完成重试。" /></p>}
           {isSyncing && <SyncOverlay showForceExit={showForceExit} onForceExit={onCancel} />}
           <Confetti showParticles={true} variant={accuracy >= 80 ? 'purple' : 'blue'} />
           <div className="mx-auto flex w-full max-w-5xl flex-col items-center py-8">
@@ -1257,7 +1263,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 {accuracy}%
               </div>
               <div className="mb-8 text-center">
-                  <p className="text-[11px] font-mono uppercase tracking-[0.3em] text-gray-500 mb-2">Session Score</p>
+                  <p className="text-[11px] font-mono uppercase tracking-[0.3em] text-gray-500 mb-2"><HoverTranslationText text="Session Score" translation="本次得分" /></p>
                   <div className="text-4xl font-black text-white">
                       {completionSummary.totalScore.toFixed(1)}
                       <span className="ml-2 text-lg font-mono text-gray-500">/ {maxPoints.toFixed(1)}</span>
@@ -1266,27 +1272,27 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
               <div className="grid w-full grid-cols-2 gap-4 md:grid-cols-3 mb-8">
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Correct Words</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Correct Words" translation="答对单词" /></p>
                       <p className="text-2xl font-black text-white">{correctCount} / {queue.length}</p>
                   </div>
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Raw Points</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Raw Points" translation="基础得分" /></p>
                       <p className="text-2xl font-black text-electric-blue">{totalPoints.toFixed(1)}</p>
                   </div>
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Time Bonus</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Time Bonus" translation="速度奖励" /></p>
                       <p className="text-2xl font-black text-cyan-300">{completionSummary.timeBonusPoints.toFixed(1)}</p>
                   </div>
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Total Time</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Total Time" translation="总用时" /></p>
                       <p className="text-2xl font-black text-white">{formatDurationCompact(completionSummary.totalTimeMs)}</p>
                   </div>
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Avg Word Time</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Avg Word Time" translation="平均每词用时" /></p>
                       <p className="text-2xl font-black text-white">{formatDurationCompact(completionSummary.averageWordTimeMs)}</p>
                   </div>
                   <div className="rounded-3xl border border-white/[0.04] bg-white/[0.03] p-5">
-                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2">Review Cleared</p>
+                      <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-gray-600 mb-2"><HoverTranslationText text="Review Cleared" translation="已复习词数" /></p>
                       <p className="text-2xl font-black text-white">{reviewQueue.length}</p>
                   </div>
               </div>
@@ -1302,7 +1308,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                   <div className="w-full mt-12 rounded-[2rem] border border-white/[0.04] bg-white/[0.02] p-6">
                       <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-5 flex items-center gap-2">
                           <span className="material-symbols-outlined text-sm">monitoring</span>
-                          Word Timing Stats
+                          <HoverTranslationText text="Word Timing Stats" translation="单词用时统计" />
                       </p>
                       <div className="flex flex-wrap gap-3">
                           {historyItems.map((result) => {
@@ -1330,20 +1336,20 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                       className="w-32 h-32 object-contain transition-transform duration-500 group-hover:scale-110"
                     />
                 </div>
-                <h2 className="text-4xl font-headline mb-4 tracking-tight uppercase">Ready to Vibe?</h2>
+                <h2 className="text-4xl font-headline mb-4 tracking-tight uppercase"><HoverTranslationText text="Ready to Vibe?" translation="准备开始了吗？" /></h2>
                 <p className="text-gray-400 mb-2 font-body leading-relaxed">
-                    You're about to test <span className="text-white font-bold">{isSelectionConfirmed ? queue.length : Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} words</span>. 
+                    <HoverTranslationText text="You're about to test" translation="即将测验" /> <span className="text-white font-bold">{isSelectionConfirmed ? queue.length : Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} <HoverTranslationText text="words" translation="个词" /></span>.
                 </p>
                 <p className="text-xs text-gray-500 mb-8 font-body">
-                    Listen carefully to the audio and spell the word correctly.
+                    <HoverTranslationText text="Listen carefully to the audio and spell the word correctly." translation="仔细听发音，正确拼写单词。" />
                 </p>
 
                 {/* Coverage Slider */}
                 <div className="mb-10 w-full max-w-xs mx-auto text-left">
                     <div className="flex justify-between items-end mb-3">
-                        <span className="text-[10px] font-mono text-gray-500 uppercase tracking-[0.2em]">Test Coverage</span>
+                        <span className="text-[10px] font-mono text-gray-500 uppercase tracking-[0.2em]"><HoverTranslationText text="Test Coverage" translation="测验范围" /></span>
                         <span className="text-lg font-headline text-blue-500 leading-none">
-                            {tempCoverage}% <span className="text-xs text-gray-500 font-mono ml-1">({Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} words)</span>
+                            {tempCoverage}% <span className="text-xs text-gray-500 font-mono ml-1">({Math.max(1, Math.round((availablePool.length * tempCoverage) / 100))} <HoverTranslationText text="words" translation="个词" />)</span>
                         </span>
                     </div>
                     <input 
@@ -1363,8 +1369,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         className="w-full h-1 bg-gray-800 rounded-full appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 transition-all transition-thumb mb-2"
                     />
                     <div className="flex justify-between text-[10px] font-mono text-gray-600">
-                        <span>LITE</span>
-                        <span>FULL COLLECTION</span>
+                        <span><HoverTranslationText text="LITE" translation="少量" /></span>
+                        <span><HoverTranslationText text="FULL COLLECTION" translation="全部词汇" /></span>
                     </div>
                 </div>
 
@@ -1379,14 +1385,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     <div className="flex justify-between text-xs font-mono text-gray-500">
                       <span>
                         {!isSelectionConfirmed
-                            ? 'IDLE'
+                            ? (isZh ? '等待准备' : 'IDLE')
                             : isOptimizing
-                                ? 'OPTIMIZING NEURAL PATHWAYS...'
+                                ? (isZh ? '正在优化选词…' : 'OPTIMIZING NEURAL PATHWAYS...')
                                 : isRetryingAudio
-                                    ? 'RETRYING AUDIO...'
+                                    ? (isZh ? '正在重试发音…' : 'RETRYING AUDIO...')
                                     : isResourcesLoaded
-                                        ? (missingResources.audio > 0 ? `AUDIO FAILED (${missingResources.audio})` : 'READY')
-                                        : 'LOADING RESOURCES...'}
+                                        ? (missingResources.audio > 0 ? (isZh ? `发音加载失败（${missingResources.audio}）` : `AUDIO FAILED (${missingResources.audio})`) : (isZh ? '准备就绪' : 'READY'))
+                                        : (isZh ? '正在加载资源…' : 'LOADING RESOURCES...')}
                       </span>
                       <span>
                         {!isSelectionConfirmed 
@@ -1402,7 +1408,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         <div className="mt-2 flex flex-col gap-1.5 text-[10px] font-mono">
                             <div>
                                 <div className="flex justify-between text-gray-400 mb-0.5">
-                                    <span className="text-blue-400">AUDIO</span>
+                                    <span className="text-blue-400"><HoverTranslationText text="AUDIO" translation="发音" /></span>
                                     <span>{resourceProgress.audioReady}/{resourceProgress.audioTotal}</span>
                                 </div>
                                 <div className="h-1 w-full bg-gray-800 rounded-full overflow-hidden">
@@ -1412,7 +1418,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             {resourceProgress.imagesTotal > 0 && (
                             <div>
                                 <div className="flex justify-between text-gray-400 mb-0.5">
-                                    <span className="text-green-400">IMAGES</span>
+                                    <span className="text-green-400"><HoverTranslationText text="IMAGES" translation="图片" /></span>
                                     <span>{resourceProgress.imagesReady}/{resourceProgress.imagesTotal}</span>
                                 </div>
                                 <div className="h-1 w-full bg-gray-800 rounded-full overflow-hidden">
@@ -1425,16 +1431,16 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
                     {isResourcesLoaded && !isOptimizing && missingResources.audio === 0
                         && resourceProgress.imagesReady + missingResources.images < resourceProgress.imagesTotal && (
-                        <p className="mt-2 text-[10px] text-gray-400">发音已就绪，可以开始；图片提示仍在后台加载。</p>
+                        <p className="mt-2 text-[10px] text-gray-400"><HoverTranslationText text="Audio is ready. You can start while image hints load in the background." translation="发音已就绪，可以开始；图片提示仍在后台加载。" /></p>
                     )}
 
                     {isResourcesLoaded && !isOptimizing && missingResources.images > 0 && (
                         <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-3 text-left animate-in fade-in slide-in-from-bottom-2">
                              <svg className="w-5 h-5 text-yellow-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                              <div>
-                                 <p className="text-xs text-yellow-200 font-bold mb-0.5">Warning: Missing Visuals</p>
+                                 <p className="text-xs text-yellow-200 font-bold mb-0.5"><HoverTranslationText text="Warning: Missing Visuals" translation="图片暂不可用" /></p>
                                  <p className="text-[10px] text-yellow-500/80 leading-relaxed">
-                                     {missingResources.images} images failed to load. You can continue, but hints will be limited to Audio/Definitions.
+                                     {missingResources.images} <HoverTranslationText text="images failed to load. You can continue, but hints will be limited to Audio/Definitions." translation="张图片未能加载。可以继续，提示将使用发音与释义。" />
                                  </p>
                              </div>
                         </div>
@@ -1445,9 +1451,9 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                              <div className="flex gap-3">
                                  <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                                  <div>
-                                     <p className="text-xs text-red-200 font-bold mb-0.5">Audio Not Ready</p>
+                                     <p className="text-xs text-red-200 font-bold mb-0.5"><HoverTranslationText text="Audio Not Ready" translation="发音尚未就绪" /></p>
                                      <p className="text-[10px] text-red-400/80 leading-relaxed">
-                                         {missingResources.audio} pronunciation(s) failed to preload. START is locked to avoid silent words mid-test. Retry or check your connection.
+                                         {missingResources.audio} <HoverTranslationText text="pronunciation(s) failed to preload. START is locked to avoid silent words mid-test. Retry or check your connection." translation="个发音未能加载，暂时无法开始。请重试或检查网络连接。" />
                                      </p>
                                  </div>
                              </div>
@@ -1455,7 +1461,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                  onClick={() => retryFailedAudio(1)}
                                  className="self-start px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 rounded-lg text-xs font-mono transition-colors"
                              >
-                                 ↻ RETRY AUDIO
+                                 <HoverTranslationText text="↻ RETRY AUDIO" translation="↻ 重试发音" />
                              </button>
                         </div>
                     )}
@@ -1488,20 +1494,20 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 : 'bg-gray-800 text-gray-500 cursor-not-allowed opacity-50'}`}
                     >
                         {!isSelectionConfirmed
-                            ? 'PREPARE NEURAL LINK'
+                            ? (isZh ? '准备测验' : 'PREPARE NEURAL LINK')
                             : isOptimizing
-                                ? 'ANALYZING BRAINWAVES...'
+                                ? (isZh ? '正在分析学习记录…' : 'ANALYZING BRAINWAVES...')
                                 : isRetryingAudio
-                                    ? 'RETRYING AUDIO...'
+                                    ? (isZh ? '正在重试发音…' : 'RETRYING AUDIO...')
                                     : isResourcesLoaded
-                                        ? (missingResources.audio > 0 ? 'AUDIO INCOMPLETE' : (missingResources.images > 0 ? 'START ANYWAY' : 'START SESSION'))
+                                        ? (missingResources.audio > 0 ? (isZh ? '发音尚未就绪' : 'AUDIO INCOMPLETE') : (missingResources.images > 0 ? (isZh ? '仍然开始' : 'START ANYWAY') : (isZh ? '开始测验' : 'START SESSION')))
                                         : 'SYNCING...'}
                     </button>
                     <button 
                         onClick={() => handleExit('CANCEL')}
                         className="w-full px-8 py-4 bg-transparent text-gray-500 rounded-2xl font-mono text-sm hover:text-white transition-colors"
                     >
-                        GO BACK
+                        <HoverTranslationText text="GO BACK" translation="返回" />
                     </button>
                 </div>
             </div>
@@ -1512,7 +1518,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     if (phase === 'REVIEW_SUMMARY' || phase === 'REVIEW_DRILL' || phase === 'REVIEW_CONFIRM' || phase === 'REVIEW_INSTANT_TEST') {
         if (!currentReviewWord || !currentReviewItem) return null;
 
-        const reviewReasonLabel = getReviewReasonLabel(currentReviewItem.reviewReason);
+        const reviewReasonLabel = getReviewReasonLabel(currentReviewItem.reviewReason, isZh);
 
         return (
             <div className="fixed top-16 inset-x-0 bottom-0 bg-[#0a0a0a] flex flex-col z-50 text-white overflow-hidden">
@@ -1531,12 +1537,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                         </button>
                         <div className="flex flex-col">
-                            <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1">Review Progress</span>
+                            <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1"><HoverTranslationText text="Review Progress" translation="复习进度" /></span>
                             <span className="text-sm font-bold font-mono text-red-300">{reviewIndex + 1} / {reviewQueue.length}</span>
                         </div>
                     </div>
                     <div className="flex flex-col items-end">
-                        <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1">Reason</span>
+                        <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1"><HoverTranslationText text="Reason" translation="复习原因" /></span>
                         <span className="font-mono text-xs text-red-200">{reviewReasonLabel}</span>
                     </div>
                 </div>
@@ -1546,10 +1552,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         <div className={`${phase === 'REVIEW_SUMMARY' ? 'w-full max-w-3xl' : 'w-fit max-w-[calc(100vw-2rem)]'} rounded-[2rem] border border-red-500/15 bg-gradient-to-b from-[#171012] to-[#0f0a0b] p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)] ring-1 ring-white/5`}>
                             <div className="flex flex-col items-center text-center gap-4 mb-8">
                                 <span className="inline-flex items-center rounded-full border border-red-500/25 bg-red-500/10 px-4 py-1 text-[10px] font-mono uppercase tracking-[0.3em] text-red-300">
-                                    {phase === 'REVIEW_SUMMARY' ? 'Review Summary' : phase === 'REVIEW_DRILL' ? 'Review Drill' : phase === 'REVIEW_CONFIRM' ? 'Mastery Check' : 'Instant Test'}
+                                    {phase === 'REVIEW_SUMMARY' ? (isZh ? '复盘概览' : 'Review Summary') : phase === 'REVIEW_DRILL' ? (isZh ? '复习练习' : 'Review Drill') : phase === 'REVIEW_CONFIRM' ? (isZh ? '掌握检查' : 'Mastery Check') : (isZh ? '即时测试' : 'Instant Test')}
                                 </span>
                                 <h2 className="text-4xl font-headline tracking-tight uppercase text-white">
-                                    {phase === 'REVIEW_SUMMARY' ? 'Post Test Review' : phase === 'REVIEW_DRILL' ? 'Retype The Word' : phase === 'REVIEW_CONFIRM' ? 'Do You Own It?' : 'One More Time'}
+                                    {phase === 'REVIEW_SUMMARY' ? (isZh ? '测后复盘' : 'Post Test Review') : phase === 'REVIEW_DRILL' ? (isZh ? '重新输入单词' : 'Retype The Word') : phase === 'REVIEW_CONFIRM' ? (isZh ? '是否已经掌握？' : 'Do You Own It?') : (isZh ? '再试一次' : 'One More Time')}
                                 </h2>
                                 <div className="text-sm text-gray-400 font-mono max-w-xl leading-relaxed text-center">
                                     {phase === 'REVIEW_SUMMARY' && (
@@ -1582,19 +1588,19 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             {phase === 'REVIEW_SUMMARY' && (
                                 <div className="flex flex-col items-center gap-6">
                                     <div className="w-full rounded-3xl border border-red-500/20 bg-red-500/[0.06] p-6 text-left shadow-[0_0_30px_rgba(127,29,29,0.15)]">
-                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-3">Need Review</p>
+                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-3"><HoverTranslationText text="Need Review" translation="需要复习" /></p>
                                         <ul className="space-y-3 text-sm text-gray-200">
                                             {reviewQueue.map((item, index) => {
                                                 const word = allWords.find(w => w.id === item.id);
                                                 if (!word) return null;
 
-                                                const reasonText = getReviewReasonLabel(item.reviewReason);
+                                                const reasonText = getReviewReasonLabel(item.reviewReason, isZh);
 
                                                 return (
                                                     <li key={item.id} className="flex items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
                                                         <div>
                                                             <div className="font-headline text-lg tracking-wide text-white">{index + 1}. {word.text}</div>
-                                                            <div className="text-xs text-gray-400">{word.definition_cn || '暂无中文释义'}</div>
+                                                            <div className="text-xs text-gray-400">{wordMeaningForLanguage(word, isZh)}</div>
                                                         </div>
                                                         <span className="rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.2em] text-red-200">{reasonText}</span>
                                                     </li>
@@ -1610,7 +1616,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                         }}
                                         className="px-10 py-4 rounded-2xl bg-red-600 text-white font-headline text-lg tracking-wide uppercase hover:bg-red-500 transition-all shadow-[0_12px_28px_rgba(185,28,28,0.35)] hover:scale-[1.02] active:scale-95"
                                     >
-                                        Begin Review
+                                        <HoverTranslationText text="Begin Review" translation="开始复习" />
                                     </button>
                                 </div>
                             )}
@@ -1619,7 +1625,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 <>
                                     <div className="mb-6 text-center">
                                         <p className="text-4xl font-headline tracking-[0.14em] uppercase text-white mb-3">{currentReviewWord.text}</p>
-                                        <p className="text-sm text-red-200/90 font-body">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                        <p className="text-sm text-red-200/90 font-body">{wordMeaningForLanguage(currentReviewWord, isZh)}</p>
                                     </div>
 
                                     <div className="flex justify-center gap-3 mb-4">
@@ -1639,7 +1645,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                         }}
                                         onEnter={handleReviewDrillSubmit}
                                         status={reviewFeedback}
-                                        placeholder="Retype word..."
+                                        placeholder={isZh ? '再次输入单词…' : 'Retype word…'}
                                         theme="review"
                                         fitToContent={true}
                                         maxWidth="calc(100vw - 10rem)"
@@ -1650,14 +1656,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                             onClick={() => playAudio(currentReviewWord)}
                                             className="px-6 py-3 rounded-2xl border border-red-500/20 bg-red-500/10 text-red-200 font-mono text-sm uppercase tracking-wider hover:bg-red-500/20 transition-all"
                                         >
-                                            Replay Audio
+                                            <HoverTranslationText text="Replay Audio" translation="重播发音" />
                                         </button>
                                         <button
                                             onClick={handleReviewDrillSubmit}
                                             disabled={!reviewInputValue.trim()}
                                             className="px-8 py-3 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all disabled:opacity-40 shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
                                         >
-                                            Confirm Input
+                                            <HoverTranslationText text="Confirm Input" translation="确认输入" />
                                         </button>
                                     </div>
                                 </>
@@ -1667,11 +1673,11 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 <div className="flex flex-col items-center gap-6">
                                     <div className="mb-2 text-center">
                                         <p className="text-4xl font-headline tracking-[0.14em] uppercase text-white mb-3">{currentReviewWord.text}</p>
-                                        <p className="text-sm text-red-200/90 font-body">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                        <p className="text-sm text-red-200/90 font-body">{wordMeaningForLanguage(currentReviewWord, isZh)}</p>
                                     </div>
 
                                     <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-6 py-4 text-center">
-                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-2">Drill Complete</p>
+                                        <p className="text-sm font-mono uppercase tracking-[0.25em] text-red-300 mb-2"><HoverTranslationText text="Drill Complete" translation="练习完成" /></p>
                                         <p className="text-lg text-white">
                                             <HoverTranslationText
                                                 text="Do you feel that you have mastered this word now?"
@@ -1688,7 +1694,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                             }}
                                             className="px-8 py-4 rounded-2xl border border-white/10 bg-white/5 text-gray-200 font-headline text-lg uppercase tracking-wide hover:bg-white/10 transition-all"
                                         >
-                                            Keep Drilling
+                                            <HoverTranslationText text="Keep Drilling" translation="继续练习" />
                                         </button>
                                         <button
                                             onClick={() => {
@@ -1697,7 +1703,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                             }}
                                             className="px-8 py-4 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
                                         >
-                                            Start Instant Test
+                                            <HoverTranslationText text="Start Instant Test" translation="开始即时测试" />
                                         </button>
                                     </div>
                                 </div>
@@ -1706,8 +1712,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                             {phase === 'REVIEW_INSTANT_TEST' && (
                                 <>
                                     <div className="mb-6 text-center">
-                                        <p className="text-[10px] font-mono uppercase tracking-[0.3em] text-red-300 mb-3">Meaning Cue</p>
-                                        <p className="text-2xl font-headline tracking-wide text-white">{currentReviewWord.definition_cn || '暂无中文释义'}</p>
+                                        <p className="text-[10px] font-mono uppercase tracking-[0.3em] text-red-300 mb-3"><HoverTranslationText text="Meaning Cue" translation="释义提示" /></p>
+                                        <p className="text-2xl font-headline tracking-wide text-white">{wordMeaningForLanguage(currentReviewWord, isZh)}</p>
                                     </div>
 
                                     <LargeWordInput
@@ -1718,7 +1724,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                         }}
                                         onEnter={handleReviewInstantCheck}
                                         status={reviewFeedback}
-                                        placeholder="Type from memory..."
+                                        placeholder={isZh ? '凭记忆输入单词…' : 'Type from memory…'}
                                         theme="review"
                                         fitToContent={true}
                                         maxWidth="calc(100vw - 10rem)"
@@ -1729,14 +1735,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                             onClick={() => playAudio(currentReviewWord)}
                                             className="px-6 py-3 rounded-2xl border border-red-500/20 bg-red-500/10 text-red-200 font-mono text-sm uppercase tracking-wider hover:bg-red-500/20 transition-all"
                                         >
-                                            Play Audio
+                                            <HoverTranslationText text="Play Audio" translation="播放发音" />
                                         </button>
                                         <button
                                             onClick={handleReviewInstantCheck}
                                             disabled={!reviewInputValue.trim()}
                                             className="px-8 py-3 rounded-2xl bg-red-600 text-white font-headline text-lg uppercase tracking-wide hover:bg-red-500 transition-all disabled:opacity-40 shadow-[0_12px_28px_rgba(185,28,28,0.35)]"
                                         >
-                                            Pass Instant Test
+                                            <HoverTranslationText text="Pass Instant Test" translation="提交答案" />
                                         </button>
                                     </div>
                                 </>
@@ -1744,7 +1750,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                         </div>
 
                         <div className="w-full max-w-3xl rounded-3xl border border-red-500/10 bg-[#120c0d] p-6 ring-1 ring-white/5">
-                            <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-4">Review Queue</p>
+                            <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-4"><HoverTranslationText text="Review Queue" translation="复习队列" /></p>
                             <div className="flex flex-wrap gap-3">
                                 {reviewQueue.map((item, index) => {
                                     const word = allWords.find(w => w.id === item.id);
@@ -1775,7 +1781,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   if (!currentWord) return null;
 
-    const currentChineseMeaning = currentWord.definition_cn?.trim() || '暂无中文释义';
+    const currentChineseMeaning = wordMeaningForLanguage(currentWord, isZh);
     const typingFlowMetrics = getTypingFlowMetrics(liveCharsPerMinute);
     const typingFlowLedColors = [
         '#ff3b30',
@@ -1800,7 +1806,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
             <span className="material-symbols-outlined text-lg">
                 {notification.type === 'error' ? 'warning' : 'info'}
             </span>
-            <span className="font-mono text-xs font-bold">{notification.message}</span>
+            <span className="font-mono text-xs font-bold">{isZh ? `“${notification.word}” 已因提示试错过多记入测后复盘` : `“${notification.word}” was added to your review after repeated hint attempts`}</span>
         </div>
       )}
       
@@ -1819,12 +1825,12 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
             <div className="flex flex-col">
-                <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1">Progress</span>
+                <span className="text-[10px] font-mono text-gray-600 uppercase tracking-widest leading-none mb-1"><HoverTranslationText text="Progress" translation="进度" /></span>
                 <span className="text-sm font-bold font-mono text-blue-500">{currentIndex + 1} / {queue.length}</span>
             </div>
         </div>
         <div className="absolute left-1/2 top-1/2 flex w-[460px] max-w-[48vw] -translate-x-1/2 -translate-y-1/2 items-center gap-4 px-4">
-            <span className="shrink-0 text-[10px] font-mono text-gray-600 uppercase tracking-[0.24em] leading-none">Typing Flow</span>
+            <span className="shrink-0 text-[10px] font-mono text-gray-600 uppercase tracking-[0.24em] leading-none"><HoverTranslationText text="Typing Flow" translation="输入节奏" /></span>
             <div className="flex flex-1 items-center gap-1.5 rounded-full bg-[#030303]/55 px-2.5 py-1.5 shadow-[inset_0_0_18px_rgba(255,255,255,0.03)]">
                 {typingFlowLedColors.map((color, index) => {
                     const isLit = index < typingFlowMetrics.litLedCount;
@@ -1847,18 +1853,18 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 })}
             </div>
             <div className="flex shrink-0 items-center gap-3 text-[11px] font-mono leading-none whitespace-nowrap">
-                <span className="text-emerald-300">{Math.round(liveCharsPerMinute / 5) || 0} WPM</span>
+                <span className="text-emerald-300">{Math.round(liveCharsPerMinute / 5) || 0} <HoverTranslationText text="WPM" translation="词/分钟" /></span>
                 <span className="text-gray-500">•</span>
-                <span className="text-white">Word {formatDurationCompact(currentWordElapsedMs)}</span>
+                <span className="text-white"><HoverTranslationText text="Word" translation="单词" /> {formatDurationCompact(currentWordElapsedMs)}</span>
             </div>
         </div>
         <div className="flex items-center gap-8">
             <div className="flex flex-col items-end">
-                <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1">Time Elapsed</span>
+                <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1"><HoverTranslationText text="Time Elapsed" translation="已用时间" /></span>
                 <span className="font-mono text-white">{elapsedTime}s</span>
             </div>
             <div className="flex flex-col items-end">
-                <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1">Streak</span>
+                <span className="text-[10px] text-gray-600 uppercase tracking-widest leading-none mb-1"><HoverTranslationText text="Streak" translation="连对次数" /></span>
                 <span className="font-mono text-orange-500 font-bold">{streak}</span>
             </div>
         </div>
@@ -1878,7 +1884,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-gray-700 bg-[#0d0d0d]">
                         <svg className="w-12 h-12 mb-2 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                        <span className="text-[10px] font-mono uppercase tracking-[0.2em]">Visual Hint Pending</span>
+                        <span className="text-[10px] font-mono uppercase tracking-[0.2em]"><HoverTranslationText text="Visual Hint Pending" translation="图片提示待加载" /></span>
                     </div>
                 )}
                 
@@ -1907,10 +1913,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <button 
                   onClick={() => playAudio(currentWord)}
                   className={`absolute top-6 right-6 p-4 bg-blue-500 text-black rounded-2xl hover:bg-blue-400 transition-all shadow-xl flex items-center gap-2 group/play ${isPlayingAudio ? 'animate-pulse scale-95' : ''}`}
-                  title="Replay Audio"
+                  title={isZh ? '重播发音' : 'Replay audio'}
                 >
                     <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
-                    <span className="font-headline text-xs tracking-widest hidden group-hover/play:inline">REPLAY</span>
+                    <span className="font-headline text-xs tracking-widest hidden group-hover/play:inline"><HoverTranslationText text="REPLAY" translation="重播" /></span>
                 </button>
             </div>
 
@@ -1950,7 +1956,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                           onClick={() => handleNext(0)}
                           className="px-12 py-4 bg-red-600 text-white rounded-[2rem] font-headline text-lg hover:bg-red-700 transition-all shadow-[0_10px_30px_rgba(220,38,38,0.3)] flex items-center gap-4 animate-in zoom-in duration-300 pointer-events-auto cursor-pointer"
                         >
-                            <span>I'LL LEARN IT</span>
+                            <span><HoverTranslationText text="I'LL LEARN IT" translation="加入复习" /></span>
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
                         </button>
                     ) : feedback !== 'CORRECT' ? (
@@ -1963,7 +1969,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                               <div className="w-14 h-14 rounded-full border border-white/10 flex items-center justify-center group-hover:border-blue-500/50 group-hover:bg-blue-500/5 transition-all">
                                   <svg className="w-6 h-6 text-gray-500 group-hover:text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                               </div>
-                              <span className="text-[10px] font-mono text-gray-600 group-hover:text-blue-500 tracking-widest uppercase">Add Hint</span>
+                              <span className="text-[10px] font-mono text-gray-600 group-hover:text-blue-500 tracking-widest uppercase"><HoverTranslationText text="Add Hint" translation="添加提示" /></span>
                           </button>
 
                           <div className="h-8 w-[1px] bg-white/5" />
@@ -1972,7 +1978,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                                             onClick={() => setShowChineseHint(prev => !prev)}
                               className="group flex flex-col items-center gap-2 transition-all"
                                                             aria-pressed={showChineseHint}
-                                                            title={showChineseHint ? '隐藏中文释义' : '显示中文释义'}
+                                                            title={isZh ? (showChineseHint ? '隐藏释义' : '显示释义') : (showChineseHint ? 'Hide definition' : 'Show definition')}
                           >
                                                                <div className={`flex h-14 items-center justify-center border border-white/10 px-4 transition-all ${showChineseHint ? 'min-w-[12rem] rounded-full border-emerald-500/50 bg-emerald-500/10' : 'w-14 rounded-full group-hover:border-green-500/50 group-hover:bg-green-500/5'}`}>
                                                                     {showChineseHint ? (
@@ -1981,7 +1987,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                                                         <svg className="w-6 h-6 text-gray-500 group-hover:text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 7h16M4 12h10M4 17h7" /></svg>
                                                                     )}
                               </div>
-                                                            <span className="text-[10px] font-mono text-gray-600 group-hover:text-green-500 tracking-widest uppercase">{showChineseHint ? 'Hide Chinese' : 'Show Chinese'}</span>
+                                                            <span className="text-[10px] font-mono text-gray-600 group-hover:text-green-500 tracking-widest uppercase">{isZh ? (showChineseHint ? '隐藏释义' : '显示释义') : (showChineseHint ? 'Hide definition' : 'Show definition')}</span>
                           </button>
 
                           <div className="h-8 w-[1px] bg-white/5" />
@@ -1993,14 +1999,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                               <div className="w-14 h-14 rounded-full border border-white/10 flex items-center justify-center group-hover:border-red-500/50 group-hover:bg-red-500/5 transition-all">
                                   <svg className="w-6 h-6 text-gray-500 group-hover:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               </div>
-                              <span className="text-[10px] font-mono text-gray-600 group-hover:text-red-500 tracking-widest uppercase">Reveal</span>
+                              <span className="text-[10px] font-mono text-gray-600 group-hover:text-red-500 tracking-widest uppercase"><HoverTranslationText text="Reveal" translation="揭示答案" /></span>
                           </button>
                       </>
                     ) : null}
                 </div>
 
                                 {!isRevealed && feedback !== 'CORRECT' && (
-                                    <p className="mt-5 text-[10px] font-mono uppercase tracking-[0.24em] text-gray-600">Press Enter to check answer</p>
+                                    <p className="mt-5 text-[10px] font-mono uppercase tracking-[0.24em] text-gray-600"><HoverTranslationText text="Press Enter to check answer" translation="按 Enter 检查答案" /></p>
                                 )}
             </div>
 
@@ -2009,7 +2015,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                 <div className="w-full max-w-4xl px-4 mt-12 pt-8 border-t border-white/5">
                      <p className="text-[10px] font-mono text-gray-600 uppercase tracking-widest mb-4 flex items-center gap-2">
                          <span className="material-symbols-outlined text-sm">history</span>
-                         Completed Words
+                         <HoverTranslationText text="Completed Words" translation="已完成单词" />
                      </p>
                     <div className="flex flex-wrap gap-3 justify-center md:justify-start">
                         {historyItems.map((result) => {

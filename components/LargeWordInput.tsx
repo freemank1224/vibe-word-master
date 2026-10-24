@@ -1,5 +1,7 @@
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
+import './LargeWordInput.css';
 
 interface LargeWordInputProps {
   value: string;
@@ -18,6 +20,18 @@ interface LargeWordInputProps {
   processingLabel?: string;
   processingStep?: number;
   processingTotalSteps?: number;
+  /** Compact layout for an embedded game panel; the standard test layout stays unchanged. */
+  variant?: 'default' | 'embedded';
+  inputRef?: React.Ref<HTMLInputElement>;
+  id?: string;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
+  ariaInvalid?: boolean;
+  autoFocus?: boolean;
+  /** When false, the parent owns focus (for games with pause and replay controls). */
+  manageFocus?: boolean;
+  onCompositionStart?: React.CompositionEventHandler<HTMLInputElement>;
+  onCompositionEnd?: React.CompositionEventHandler<HTMLInputElement>;
 }
 
 export const LargeWordInput: React.FC<LargeWordInputProps> = ({ 
@@ -34,25 +48,50 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   maxWidth = 'calc(100vw - 6rem)',
   fitToContent = false,
   showProcessingOverlay = false,
-  processingLabel = 'VALIDATING...',
+  processingLabel,
   processingStep,
-  processingTotalSteps
+  processingTotalSteps,
+  variant = 'default',
+  inputRef: externalInputRef,
+  id,
+  ariaLabel,
+  ariaDescribedBy,
+  ariaInvalid,
+  autoFocus = true,
+  manageFocus = true,
+  onCompositionStart,
+  onCompositionEnd
 }) => {
+  const { isZh } = useLanguage();
   const [inputWidth, setInputWidth] = useState('400px');
   const spanRef = useRef<HTMLSpanElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const composing = useRef(false);
+  const [selectionPosition, setSelectionPosition] = useState<number | null>(null);
+  const embedded = variant === 'embedded';
+  const assignInputRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node;
+    if (typeof externalInputRef === 'function') externalInputRef(node);
+    else if (externalInputRef) externalInputRef.current = node;
+  }, [externalInputRef]);
+  const targetLetters = targetWord.split('');
+  const enteredLetters = (embedded ? value.normalize('NFKC').trim() : value).split('');
+  const leadingWhitespace = embedded ? value.length - value.trimStart().length : 0;
+  const currentPosition = Math.max(0, Math.min(enteredLetters.length, (selectionPosition ?? value.length) - leadingWhitespace));
+  const positionCount = embedded ? Math.max(targetLetters.length, Math.min(enteredLetters.length, targetLetters.length + 4)) : targetLetters.length;
+
 
   const MIN_WIDTH = 450; // Visual impact minimum width
   const PADDING = 80;
 
   // Adaptive width calculation: only grows if word exceeds MIN_WIDTH
   useEffect(() => {
-    if (spanRef.current) {
+    if (!embedded && spanRef.current) {
       const measuredWidth = spanRef.current.offsetWidth;
       const calculated = measuredWidth + PADDING;
       setInputWidth(`${Math.max(MIN_WIDTH, calculated)}px`);
     }
-  }, [value, placeholder]);
+  }, [value, placeholder, embedded]);
 
   // Robust focus management: Always keep the input focused
   const keepFocus = () => {
@@ -62,8 +101,9 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
   };
 
   useEffect(() => {
-    // Initial focus
-    keepFocus();
+    if (!manageFocus) return;
+    // Standard test mode retains its existing focus behavior.
+    if (autoFocus) keepFocus();
 
     // Re-focus after interactions elsewhere
     const handleGlobalClick = (e: MouseEvent) => {
@@ -77,17 +117,17 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
 
     window.addEventListener('mousedown', handleGlobalClick);
     return () => window.removeEventListener('mousedown', handleGlobalClick);
-  }, [disabled]);
+  }, [disabled, manageFocus, autoFocus]);
 
   // Ensure focus is regained when current word changes or disabled state flips
   useEffect(() => {
-    if (!disabled) {
+    if (manageFocus && autoFocus && !disabled) {
       keepFocus();
     }
-  }, [disabled, value]);
+  }, [disabled, value, manageFocus, autoFocus]);
 
   return (
-    <div className={`relative flex justify-center items-center h-64 md:h-80 px-4 group transition-[width,max-width] duration-300 ease-out ${fitToContent ? 'w-fit max-w-full mx-auto' : 'w-full'}`}>
+    <div className={embedded ? 'lwi-embedded' : `relative flex justify-center items-center h-64 md:h-80 px-4 group transition-[width,max-width] duration-300 ease-out ${fitToContent ? 'w-fit max-w-full mx-auto' : 'w-full'}`} data-input-variant={variant} data-word-length={showWordBlocks ? targetLetters.length : undefined}>
       <style>{`
         @keyframes shake {
           0%, 100% { transform: translateX(0); }
@@ -119,21 +159,31 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
       {/* Hidden element to measure text width for adaptive resizing */}
       <span 
         ref={spanRef}
-        className="invisible absolute font-serif text-6xl md:text-9xl tracking-[0.04em] whitespace-pre pointer-events-none"
+        className={embedded ? 'lwi-measure' : "invisible absolute font-serif text-6xl md:text-9xl tracking-[0.04em] whitespace-pre pointer-events-none"}
         aria-hidden="true"
       >
         {value || placeholder || ''}
       </span>
 
-      <div className="relative max-w-full flex justify-center h-full items-center transition-[width,max-width] duration-300 ease-out">
-        <div className="relative w-fit max-w-full">
+      <div className={embedded ? 'lwi-frame' : "relative max-w-full flex justify-center h-full items-center transition-[width,max-width] duration-300 ease-out"}>
+        <div className={embedded ? 'lwi-field' : "relative w-fit max-w-full"}>
           <input
-            ref={inputRef}
+            ref={assignInputRef}
+            id={id}
+            aria-label={ariaLabel}
+            aria-describedby={ariaDescribedBy}
+            aria-invalid={ariaInvalid}
             type="text"
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              if (embedded) setSelectionPosition(e.target.selectionStart);
+              onChange(e.target.value);
+            }}
+            onSelect={embedded ? (e) => setSelectionPosition(e.currentTarget.selectionStart) : undefined}
+            onCompositionStart={(e) => { composing.current = true; onCompositionStart?.(e); }}
+            onCompositionEnd={(e) => { composing.current = false; onCompositionEnd?.(e); }}
             onKeyDown={(e) => {
-              if (disabled) {
+              if (disabled || composing.current || e.nativeEvent.isComposing || e.keyCode === 229) {
                 return;
               }
               if (e.key === 'Enter') {
@@ -144,8 +194,8 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
             placeholder={placeholder}
             readOnly={disabled}
             spellCheck="false"
-            style={{ width: inputWidth, maxWidth }}
-            className={`bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-[0.04em] transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
+            style={embedded ? undefined : { width: inputWidth, maxWidth }}
+            className={embedded ? `lwi-input font-serif lwi-status-${status}` : `bg-transparent border-b-4 outline-none py-8 text-center font-serif text-6xl md:text-9xl tracking-[0.04em] transition-[width,color,border-color,filter,transform] duration-300 ease-out placeholder:text-mid-charcoal/30 focus:ring-0 ${
               status === 'correct' 
                 ? 'status-correct scale-105' 
                 : status === 'wrong' 
@@ -156,7 +206,9 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
                   ? 'border-mid-charcoal/20 focus:border-electric-blue/30 text-white'
                   : 'border-mid-charcoal focus:border-electric-blue text-white'
             }`}
-            autoFocus
+            autoFocus={autoFocus}
+            autoComplete={embedded ? 'off' : undefined}
+            autoCapitalize={embedded ? 'none' : undefined}
           />
 
           {showProcessingOverlay && (
@@ -164,7 +216,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
               <div className="flex flex-col items-center gap-2 text-electric-blue animate-pulse">
                 <div className="flex items-center gap-3 font-headline text-lg md:text-2xl whitespace-nowrap">
                   <span className="material-symbols-outlined animate-spin">sync</span>
-                  <span>{processingLabel}</span>
+                  <span>{processingLabel || (isZh ? '正在验证…' : 'VALIDATING…')}</span>
                 </div>
                 {!!processingTotalSteps && !!processingStep && (
                   <div className="flex items-center gap-2">
@@ -196,37 +248,43 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
           </div>
         )}
 
-        {/* Modern Segmented Indicators */}
+        {/* The same positional hints serve the standard test and compact game layouts. */}
         {showWordBlocks && targetWord && (
-          <div 
-            className="absolute bottom-2 inset-x-0 flex justify-center items-center pointer-events-none"
+          <div
+            className={embedded ? 'lwi-blocks' : 'absolute bottom-2 inset-x-0 flex justify-center items-center pointer-events-none'}
             aria-hidden="true"
           >
-            <div 
-                className="flex gap-2 md:gap-4 px-4"
-                  style={{ width: inputWidth, maxWidth: maxWidth === 'calc(100vw - 6rem)' ? 'calc(100vw - 4rem)' : maxWidth }}
+            <div
+              className={embedded ? 'lwi-positions' : 'flex gap-2 md:gap-4 px-4'}
+              style={embedded
+                ? { maxWidth: `${Math.max(220, positionCount * 38)}px` }
+                : { width: inputWidth, maxWidth: maxWidth === 'calc(100vw - 6rem)' ? 'calc(100vw - 4rem)' : maxWidth }}
             >
-                {targetWord.split('').map((char, i) => {
-                    const isInputReady = value.length > i;
-                    const isCorrect = isInputReady && value[i]?.toLowerCase() === targetWord[i]?.toLowerCase();
-                    
-                    return (
-                        <div 
-                            key={i}
-                            className={`h-1.5 md:h-2 flex-1 rounded-full transition-all duration-300 ${
-                                status === 'correct'
-                                ? 'bg-electric-green shadow-[0_0_15px_rgba(46,230,124,0.6)]'
-                                : status === 'wrong'
-                                ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
-                                : !isInputReady
-                                    ? 'bg-white/10'
-                                    : isCorrect 
-                                        ? 'bg-electric-green shadow-[0_0_10px_rgba(46,230,124,0.4)]'
-                                        : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
-                            }`}
-                        />
-                    );
-                })}
+              {Array.from({ length: positionCount }, (_, i) => {
+                const isInputReady = enteredLetters.length > i;
+                const isCorrect = isInputReady && enteredLetters[i]?.toLowerCase() === targetLetters[i]?.toLowerCase();
+                const positionState = isInputReady ? (isCorrect ? 'correct' : 'wrong') : i === currentPosition && embedded ? 'current' : 'empty';
+                return (
+                  <div
+                    key={i}
+                    data-position={i + 1}
+                    data-state={positionState}
+                    data-current={embedded && i === currentPosition ? 'true' : undefined}
+                    data-extra={i >= targetLetters.length ? 'true' : undefined}
+                    className={embedded ? 'lwi-position' : `h-1.5 md:h-2 flex-1 rounded-full transition-all duration-300 ${
+                      status === 'correct'
+                        ? 'bg-electric-green shadow-[0_0_15px_rgba(46,230,124,0.6)]'
+                        : status === 'wrong'
+                          ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
+                          : !isInputReady
+                            ? 'bg-white/10'
+                            : isCorrect
+                              ? 'bg-electric-green shadow-[0_0_10px_rgba(46,230,124,0.4)]'
+                              : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
+                    }`}
+                  />
+                );
+              })}
             </div>
           </div>
         )}

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { importDictionaryWords, verifyAllLibraries, LibraryVerificationResult, DICTIONARY_CONFIG, fetchLocalWordList } from '../services/dataService';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { useLanguage } from '../contexts/LanguageContext';
 import { HoverTranslationText } from './HoverTranslationText';
 
 // Use centralized dictionary config
@@ -24,6 +25,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
     userId,
     onImportComplete
 }) => {
+    const { isZh } = useLanguage();
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const [downloadStatus, setDownloadStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
@@ -201,7 +203,11 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
     // Map installed tags to display names if possible
     const getDisplayName = (tag: string) => {
         const found = DICTIONARIES.find(d => d.tag === tag);
-        return found ? found.name : tag;
+        if (tag === 'Custom') return isZh ? '自定义词库' : 'Custom';
+        if (tag === 'All') return isZh ? '全部词库' : 'All Libraries';
+        if (!found) return tag;
+        const chineseName = found.name.match(/\(([^)]+)\)/)?.[1];
+        return isZh ? chineseName || found.name : found.name.replace(/\s*\([^)]*\)/g, '');
     };
 
     return (
@@ -220,7 +226,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                     className="w-full bg-dark-charcoal border border-mid-charcoal hover:border-electric-blue rounded-lg px-4 py-3 text-white text-left flex justify-between items-center transition-colors"
                 >
                     <span className="truncate pr-2 font-mono">
-                        {isAll ? <HoverTranslationText text="All Libraries" translation="全部词库" /> : Array.from(selectedLibraries).filter((lib: string) => lib === 'Custom' || isLibraryComplete(lib)).map(getDisplayName).join(', ') || 'Custom'}
+                        {isAll ? <HoverTranslationText text="All Libraries" translation="全部词库" /> : Array.from(selectedLibraries).filter((lib: string) => lib === 'Custom' || isLibraryComplete(lib)).map(getDisplayName).join(', ') || getDisplayName('Custom')}
                     </span>
                     <span className="material-symbols-outlined text-mid-grey">
                         {isOpen ? 'expand_less' : 'expand_more'}
@@ -264,7 +270,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                             </span>
                                             {isDictionary && result && (
                                                 <span className="text-xs text-mid-grey">
-                                                    {result.userWordCount.toLocaleString()}/{result.sourceWordCount.toLocaleString()} 词 ({result.completionRate}%)
+                                                    {result.userWordCount.toLocaleString()}/{result.sourceWordCount.toLocaleString()} {isZh ? '词' : 'words'} ({result.completionRate}%)
                                                 </span>
                                             )}
                                         </div>
@@ -296,11 +302,11 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                             >
                                                 <div className="flex flex-col ml-7">
                                                     <span className="font-mono text-yellow-400 group-hover:text-yellow-300 transition-colors">
-                                                        {dict.name}
+                                                        {getDisplayName(dict.tag)}
                                                     </span>
                                                     {result && (
                                                         <span className="text-xs text-mid-grey">
-                                                            仅 {result.userWordCount}/{result.sourceWordCount} 词 ({result.completionRate}%)
+                                                            {isZh ? '仅' : 'Only'} {result.userWordCount}/{result.sourceWordCount} {isZh ? '词' : 'words'} ({result.completionRate}%)
                                                         </span>
                                                     )}
                                                 </div>
@@ -309,7 +315,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                                     onClick={(e) => handleImport(e, dict)}
                                                     disabled={isLoading}
                                                     className="ml-2 p-1 rounded hover:bg-yellow-500/20 text-yellow-400 hover:text-yellow-300 transition-colors group/btn"
-                                                    title={isLoading ? "下载中..." : "重新下载以补全词库"}
+                                                    title={isZh ? (isLoading ? '下载中…' : '重新下载以补全词库') : (isLoading ? 'Downloading…' : 'Download again to complete the library')}
                                                 >
                                                     <span className={`material-symbols-outlined text-lg ${isLoading ? 'animate-spin' : ''}`}>
                                                         {isLoading ? 'refresh' : 'sync'}
@@ -338,7 +344,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                                 <div className="flex items-center">
                                                     <div className="w-4 h-4 rounded border border-mid-grey bg-transparent opacity-50 mr-3"></div>
                                                     <span className="font-mono text-mid-grey group-hover:text-white transition-colors">
-                                                        {dict.name}
+                                                        {getDisplayName(dict.tag)}
                                                     </span>
                                                 </div>
                                                 
@@ -346,7 +352,7 @@ export const LibrarySelector: React.FC<LibrarySelectorProps> = ({
                                                     onClick={(e) => handleImport(e, dict)}
                                                     disabled={isLoading}
                                                     className="ml-2 p-1 rounded hover:bg-electric-blue/20 text-mid-grey hover:text-electric-blue transition-colors group/btn"
-                                                    title={isLoading ? "下载中..." : "下载词库"}
+                                                    title={isZh ? (isLoading ? '下载中…' : '下载词库') : (isLoading ? 'Downloading…' : 'Download library')}
                                                 >
                                                     <span className={`material-symbols-outlined text-lg ${isLoading ? 'animate-spin' : ''}`}>
                                                         {isLoading ? 'refresh' : 'download'}

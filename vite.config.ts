@@ -36,6 +36,12 @@ export default defineConfig(({ mode }) => {
       plugins: [react()],
       build: {
         manifest: true,
+        rollupOptions: {
+          input: {
+            main: path.resolve(__dirname, 'index.html'),
+            monsterRun: path.resolve(__dirname, 'monster-run.html'),
+          },
+        },
       },
       define: {
         // Server-side environment variables (for Node.js scripts)
