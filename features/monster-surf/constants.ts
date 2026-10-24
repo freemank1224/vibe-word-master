@@ -10,9 +10,13 @@ export const SURF_RIDER_COLLISION_RY = 24 * SURF_RIDER_SCALE;
 export const SURF_FIRST_CHECKPOINT = 420;
 export const SURF_CHECKPOINT_GAP = 640;
 export const SURF_MAX_HITS = 3;
-/** Every completed word compounds the actual pickup radius by another 50%. */
-export const surfMagnetMultiplier = (correct: number) => Math.pow(1.5, Math.max(0, correct));
-export const surfMagnetRadius = (correct: number) => SURF_BASE_MAGNET * surfMagnetMultiplier(correct);
+/** Earned magnet bonus compounds by50%; guard against numeric overflow in long runs. */
+export const surfMagnetMultiplier = (correct: number) => Math.min(1e100, Math.pow(1.5, Math.max(0, correct)));
+// Beyond the complete generated sea, a larger physical radius cannot collect
+// anything extra. Keep physics finite even after thousands of Endless answers.
+export const SURF_MAX_MAGNET_RADIUS = SURF_WORLD_WIDTH * 8;
+export const surfMagnetRadius = (correct: number) => Math.min(SURF_MAX_MAGNET_RADIUS, SURF_BASE_MAGNET * surfMagnetMultiplier(correct));
+export const SURF_MAX_VISIBLE_GULLS = 32;
 /** Earned pace is permanent for this run; an error only breaks the combo. */
 export const surfSpeedMultiplier = (correct: number) => 1 + Math.min(1.5, Math.max(0, correct) * 0.08);
 

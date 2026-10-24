@@ -1,0 +1,38 @@
+.ms-launch-options{margin:12px 0;padding:11px 13px 10px;background:#12182c;border:1px solid #426177;border-radius:10px;color:#c7d7e7}
+.ms-launch-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:24px}
+.ms-launch-heading label{font-size:11px;font-weight:600;color:#dce9f3}
+.ms-launch-value{display:flex;align-items:baseline;gap:7px;white-space:nowrap;color:#84edf5}
+.ms-launch-value strong{font:700 22px/1 "Space Mono",monospace;font-variant-numeric:tabular-nums}
+.ms-launch-value span{font-size:10px}
+.ms-launch-options.is-endless .ms-launch-value{color:#72f3a9}
+.ms-launch-options.is-endless .ms-launch-value strong{font-size:27px;line-height:.8}
+.ms-launch-slider{display:block;width:100%;height:20px;margin:9px 0 0;padding:0;appearance:none;-webkit-appearance:none;cursor:pointer;border:0;background:transparent;color:#00e6f6}
+.ms-launch-slider::-webkit-slider-runnable-track{height:5px;border-radius:4px;background:linear-gradient(to right,#00e6f6 0%,#00e6f6 var(--launch-fill),#3a455e var(--launch-fill),#3a455e 100%)}
+.ms-launch-slider::-moz-range-track{height:5px;border-radius:4px;background:#3a455e}
+.ms-launch-slider::-moz-range-progress{height:5px;border-radius:4px;background:#00e6f6}
+.ms-launch-slider::-webkit-slider-thumb{height:17px;width:17px;margin-top:-6px;appearance:none;-webkit-appearance:none;border-radius:50%;border:3px solid #d1fbff;background:#00a9be;box-shadow:0 0 0 3px #00e6f61c}
+.ms-launch-slider::-moz-range-thumb{height:11px;width:11px;border-radius:50%;border:3px solid #d1fbff;background:#00a9be;box-shadow:0 0 0 3px #00e6f61c}
+.ms-launch-slider:focus-visible{outline:2px solid #00e6f6;outline-offset:3px;border-radius:5px}
+.ms-launch-slider:disabled{cursor:default;opacity:.55}
+.ms-launch-options.is-endless .ms-launch-slider::-webkit-slider-runnable-track{background:#2ee67c}
+.ms-launch-options.is-endless .ms-launch-slider::-moz-range-progress{background:#2ee67c}
+.ms-launch-options.is-endless .ms-launch-slider::-webkit-slider-thumb{background:#17b866;border-color:#d2ffe4;box-shadow:0 0 0 3px #2ee67c1c}
+.ms-launch-options.is-endless .ms-launch-slider::-moz-range-thumb{background:#17b866;border-color:#d2ffe4;box-shadow:0 0 0 3px #2ee67c1c}
+.ms-launch-ticks{position:relative;height:16px;margin:0 8px;color:#a0aec5;font:9px/1.4 "Space Mono",monospace}
+.ms-launch-ticks span{position:absolute;transform:translateX(-50%)}
+.ms-launch-ticks .is-last-count{transform:translateX(-100%)}
+.ms-launch-ticks .is-endless-tick{color:#8af2b6;font-size:13px;line-height:1;transform:translateX(-10%)}
+.ms-launch-note{font-size:10px;line-height:1.5;color:#acbdd1;margin:4px 0 0}
+.ms-launch-preload{margin-top:9px;padding-top:8px;border-top:1px solid #40536b70;color:#b6e7ee}
+.ms-launch-preload-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:10px;line-height:1.5}
+.ms-launch-preload-heading strong{flex-shrink:0;font:10px "Space Mono",monospace;font-variant-numeric:tabular-nums}
+.ms-launch-progress{height:4px;border-radius:4px;overflow:hidden;background:#303c53;margin-top:6px}
+.ms-launch-progress>span{display:block;height:100%;border-radius:inherit;background:#00e6f6;transition:width .16s ease-out}
+.ms-launch-preload.is-ready{color:#84f2ad}.ms-launch-preload.is-ready .ms-launch-progress>span{background:#2ee67c}
+.ms-launch-preload.is-error{color:#ffb1be}.ms-launch-preload.is-error .ms-launch-progress>span{background:#ff849d}
+.ms-launch-loading-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:7px}
+.ms-launch-loading-actions button{padding:4px 8px;border:1px solid #5e8095;border-radius:5px;background:#273c52;color:#c8f7ff;font-size:10px;line-height:1.4}
+.ms-launch-loading-actions button:hover{background:#36546c;border-color:#73dfe9}
+.ms-launch-loading-actions .ms-launch-cancel{background:transparent;color:#aebbd0;border-color:#48546c}
+@media(max-height:800px){.ms-launch-options{margin:9px 0;padding:9px 11px 8px}.ms-launch-slider{margin-top:6px}.ms-launch-value strong{font-size:20px}.ms-launch-note{font-size:9px}.ms-launch-preload{margin-top:7px;padding-top:6px}}
+@media(prefers-reduced-motion:reduce){.ms-launch-progress>span{transition:none}}

@@ -1,10 +1,10 @@
-import { SURF_HERO_Y, SURF_WORLD_WIDTH, SURF_RIDER_SCALE, surfMagnetRadius } from './constants';
-import { createSeaMonsterRenderer, seaChaseCameraOffset, seaNavigationCameraOffset } from './seaMonsterRenderer';
-import { INKFIN_CROPS } from './seaMonsterArt';
-import { SURF_CHARACTER_CROPS } from './surfCharacterArt';
-import { chooseSurfPose, smoothSurfHeading, SURF_POSE_INDEX, type SurfPose } from './surfPose';
-import { SURF_GULL_CROPS } from './art';
-import { SURF_ISLAND_ART, SURF_ISLAND_SOURCE_TO_WORLD } from './islandArt';
+import { SURF_HERO_Y, SURF_WORLD_WIDTH, SURF_RIDER_SCALE, SURF_MAX_VISIBLE_GULLS, surfMagnetRadius } from './constants.ts';
+import { createSeaMonsterRenderer, seaChaseCameraOffset, seaNavigationCameraOffset } from './seaMonsterRenderer.ts';
+import { INKFIN_CROPS } from './seaMonsterArt.ts';
+import { SURF_CHARACTER_CROPS } from './surfCharacterArt.ts';
+import { chooseSurfPose, smoothSurfHeading, SURF_POSE_INDEX, type SurfPose } from './surfPose.ts';
+import { SURF_GULL_CROPS } from './art.ts';
+import { SURF_ISLAND_ART, SURF_ISLAND_SOURCE_TO_WORLD } from './islandArt.ts';
 import type { SurfObstacle, SurfRenderer, SurfState } from './types';
 
 const TAU = Math.PI * 2;
@@ -15,7 +15,7 @@ const GULL_BODY_ANCHORS = [0.74, 0.57, 0.45, 0.70];
 const clamp = (n: number, min = 0, max = 1) => Math.max(min, Math.min(max, n));
 const random = (n: number) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
 type WakePoint = { x: number; distance: number; time: number };
-type CoinBurst = { group: number; count: number; bornAt: number; updatedAt: number };
+type CrystalBurst = { group: number; count: number; bornAt: number; updatedAt: number };
 
 /** Original Canvas 2D ocean art. This module never changes game state or awards pickups. */
 export function createSurfRenderer(
@@ -42,11 +42,12 @@ export function createSurfRenderer(
   let readyStarted = performance.now();
   let wasReady = true;
   let gullArrivals: number[] = [];
+  let previousGullCount = 0;
   let smoothedHeading = 0;
   let selectedPose: SurfPose = 'straight';
   let previousMonster = -1;
-  let previousCoins = 0;
-  let coinBursts: CoinBurst[] = [];
+  let previousCrystals = 0;
+  let crystalBursts: CrystalBurst[] = [];
   let navigationCameraOffset = 0;
 
   function ellipse(x: number, y: number, rx: number, ry: number, fill: string, rotation = 0) {
@@ -154,25 +155,45 @@ export function createSurfRenderer(
     ctx.restore();
   }
 
-  function coin(x: number, y: number, size: number, shine: number, alpha = 1) {
+  /** Sea Crystals are run pickups; the legacy state.coins counter is not wallet currency. */
+  function crystal(x: number, y: number, size: number, shine: number, alpha = 1) {
     ctx.save(); ctx.globalAlpha *= alpha;
-    ellipse(x + unit, y + size * 0.72, size * 0.73, size * 0.24, '#298CA12A');
-    const face = 0.74 + Math.abs(Math.cos(shine)) * 0.26;
-    ellipse(x + 1.5 * unit, y, size * face, size, '#C78C27');
-    ellipse(x - unit, y - unit, size * face, size, '#FFE489');
-    ellipse(x - unit, y - unit, size * 0.70 * face, size * 0.72, '#F9BF44');
-    polygon([x - unit, y - size * 0.53, x + size * 0.23 * face, y - unit, x - unit, y + size * 0.37, x - size * 0.36 * face, y - unit], '#FFF2B1');
-    ellipse(x - size * 0.42, y - size * 0.53, size * 0.16, size * 0.12, '#FFFFFFC7');
+    ellipse(x + unit, y + size * 0.85, size * 0.7, size * 0.22, '#276C972E');
+    // A faceted silhouette stays legible against the sea without resembling a gold coin.
+    const face = 0.94 + Math.cos(shine) * 0.06;
+    const left = x - size * 0.79 * face;
+    const right = x + size * 0.79 * face;
+    const crownY = y - size * 0.35;
+    const topY = y - size * 0.94;
+    const bottomY = y + size;
+    polygon([left, crownY, x - size * 0.38 * face, topY, x + size * 0.38 * face, topY,
+      right, crownY, x, bottomY], '#815CE9', '#3A4C91', Math.max(1, size * 0.13));
+    polygon([left, crownY, x - size * 0.38 * face, topY, x, crownY], '#B8FFFF');
+    polygon([x - size * 0.38 * face, topY, x + size * 0.38 * face, topY, x, crownY], '#F2FFFE');
+    polygon([x + size * 0.38 * face, topY, right, crownY, x, crownY], '#52EAF0');
+    polygon([left, crownY, x, crownY, x, bottomY], '#44BBDD');
+    polygon([x, crownY, right, crownY, x, bottomY], '#8172EC');
+    line([left, crownY, right, crownY], '#C2FEFFB3', Math.max(0.7, size * 0.07));
+    // Sparse, short glints keep large matrices readable instead of blinking as one mass.
+    const shimmer = Math.max(0, Math.sin(shine)) ** 12;
+    if (shimmer > 0.2) {
+      const starX = right - size * 0.12;
+      const starY = topY + size * 0.12;
+      const length = size * (0.15 + shimmer * 0.24);
+      ctx.globalAlpha *= shimmer;
+      line([starX - length, starY, starX + length, starY], '#FFFFFF', Math.max(0.7, size * 0.09));
+      line([starX, starY - length, starX, starY + length], '#FFFFFF', Math.max(0.7, size * 0.09));
+    }
     ctx.restore();
   }
 
-  function updateCoinBursts(state: SurfState, reset: boolean) {
-    if (reset || state.coins < previousCoins) {
-      coinBursts = []; previousCoins = state.coins; return;
+  function updateCrystalBursts(state: SurfState, reset: boolean) {
+    if (reset || state.coins < previousCrystals) {
+      crystalBursts = []; previousCrystals = state.coins; return;
     }
-    coinBursts = coinBursts.filter(burst => state.elapsedMs - burst.updatedAt < 850);
-    const gained = state.coins - previousCoins;
-    previousCoins = state.coins;
+    crystalBursts = crystalBursts.filter(burst => state.elapsedMs - burst.updatedAt < 850);
+    const gained = state.coins - previousCrystals;
+    previousCrystals = state.coins;
     if (gained < 1) return;
     const groups = new Map<number, number>();
     for (const item of state.items) {
@@ -182,14 +203,14 @@ export function createSurfRenderer(
     }
     if (groups.size === 0) groups.set(-1, gained);
     for (const [group, count] of groups) {
-      const recent = coinBursts.find(burst => burst.group === group && state.elapsedMs - burst.updatedAt < 260 && state.elapsedMs - burst.bornAt < 1500);
+      const recent = crystalBursts.find(burst => burst.group === group && state.elapsedMs - burst.updatedAt < 260 && state.elapsedMs - burst.bornAt < 1500);
       if (recent) { recent.count += count; recent.updatedAt = state.elapsedMs; }
-      else coinBursts.push({ group, count, bornAt: state.elapsedMs, updatedAt: state.elapsedMs });
+      else crystalBursts.push({ group, count, bornAt: state.elapsedMs, updatedAt: state.elapsedMs });
     }
-    coinBursts = coinBursts.slice(-3);
+    crystalBursts = crystalBursts.slice(-3);
   }
 
-  function coins(state: SurfState, reduced: boolean) {
+  function crystals(state: SurfState, reduced: boolean) {
     const hx = state.x * unit;
     const artUnit = Math.min(1.1, Math.max(0.85, unit));
     let flights = 0;
@@ -228,17 +249,17 @@ export function createSurfRenderer(
             const previous = position(Math.max(0, t - 0.09));
             const trailLength = Math.hypot(x - previous.x, y - previous.y) || 1;
             const limit = Math.min(1, 22 * artUnit / trailLength);
-            line([x - (x - previous.x) * limit, y - (y - previous.y) * limit, x, y], `rgba(255,249,182,${alpha * 0.7})`, 2.4 * artUnit);
+            line([x - (x - previous.x) * limit, y - (y - previous.y) * limit, x, y], `rgba(201,255,255,${alpha * 0.78})`, 2.4 * artUnit);
             if (item.id % 3 === 0) {
               const sparkle = (1 - t) * 3 * artUnit;
-              line([x - sparkle, y, x + sparkle, y], '#FFFEEDC9', artUnit);
-              line([x, y - sparkle, x, y + sparkle], '#FFFEEDC9', artUnit);
+              line([x - sparkle, y, x + sparkle, y], '#E9FFFFD9', artUnit);
+              line([x, y - sparkle, x, y + sparkle], '#E9FFFFD9', artUnit);
             }
           }
         }
       }
       if (y < -25 || y > height + 25 || x < -25 || x > width + 25) continue;
-      coin(x, y, radius, reduced ? 0 : sceneTime * 2.6 + (item.group ?? item.id) * 0.45 + item.id * 0.13, alpha);
+      crystal(x, y, radius, reduced ? 0 : sceneTime * 2.6 + (item.group ?? item.id) * 0.45 + item.id * 0.13, alpha);
     }
   }
 
@@ -247,7 +268,7 @@ export function createSurfRenderer(
     if (phase === 'ready' || phase === 'sinking' || phase === 'over') return;
     const artUnit = Math.min(1.1, Math.max(0.85, unit));
     const riderUnit = riderPaintUnit();
-    const visible = coinBursts.slice(-2).reverse();
+    const visible = crystalBursts.slice(-2).reverse();
     visible.forEach((burst, index) => {
       const age = state.elapsedMs - burst.updatedAt;
       const life = clamp(age / 850);
@@ -256,12 +277,12 @@ export function createSurfRenderer(
       if (!reduced && impact >= 0 && impact < 1 && index === 0) {
         ctx.save(); ctx.globalAlpha = (1 - impact) * 0.55;
         ctx.beginPath(); ctx.ellipse(state.x * unit, heroY + 2 * riderUnit, (15 + impact * 23) * riderUnit, (8 + impact * 12) * riderUnit, 0, 0, TAU);
-        ctx.strokeStyle = '#FFF2A6'; ctx.lineWidth = 2 * riderUnit; ctx.stroke();
+        ctx.strokeStyle = '#B6FBFF'; ctx.lineWidth = 2 * riderUnit; ctx.stroke();
         for (let i = 0; i < Math.min(6, burst.count); i += 1) {
           const angle = i / 6 * TAU;
           const distance = (19 + impact * 22) * riderUnit;
           ellipse(state.x * unit + Math.cos(angle) * distance, heroY + Math.sin(angle) * distance * 0.42,
-            1.8 * riderUnit, 1.8 * riderUnit, '#FFF8CE');
+            1.8 * riderUnit, 1.8 * riderUnit, '#CFFBFF');
         }
         ctx.restore();
       }
@@ -276,11 +297,10 @@ export function createSurfRenderer(
       const scale = reduced ? 1 : 1 + Math.max(0, 1 - age / 130) * 0.08;
       ctx.translate(pillLeft + pillWidth / 2, y); ctx.scale(scale, scale);
       ctx.beginPath(); ctx.roundRect(-pillWidth / 2, -12 * artUnit, pillWidth, 24 * artUnit, 10 * artUnit);
-      ctx.fillStyle = '#18233CEB'; ctx.fill(); ctx.strokeStyle = '#FFE69399'; ctx.lineWidth = artUnit; ctx.stroke();
+      ctx.fillStyle = '#18233CEB'; ctx.fill(); ctx.strokeStyle = '#8EEEF3AA'; ctx.lineWidth = artUnit; ctx.stroke();
       const iconX = -pillWidth / 2 + 11 * artUnit;
-      ellipse(iconX, 0, 4.5 * artUnit, 5.5 * artUnit, '#FFD35C');
-      line([iconX, -2.8 * artUnit, iconX, 2.8 * artUnit], '#FFF8CB', 1.3 * artUnit);
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#FFE68C';
+      crystal(iconX, 0, 5.7 * artUnit, 0);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#C7FDFF';
       ctx.fillText(label, -pillWidth / 2 + 22 * artUnit, artUnit);
       ctx.restore();
     });
@@ -325,7 +345,7 @@ export function createSurfRenderer(
     const riderUnit = riderPaintUnit();
     const cx = state.x * unit;
     const cy = heroY - 118 * riderUnit;
-    for (let i = 0; i < state.correct; i += 1) {
+    for (let i = 0; i < gullArrivals.length; i += 1) {
       const ring = Math.floor(i / 7);
       // A fixed angular seed prevents the existing flock from snapping when a new gull joins.
       const angle = i * TAU * 0.381966 + ring * 0.7 + (reduced ? 0 : sceneTime * (1.5 - Math.min(ring, 5) * 0.12));
@@ -487,10 +507,20 @@ export function createSurfRenderer(
       wake.push({ x: state.x, distance: state.distance, time: state.elapsedMs }); lastWake = state.elapsedMs;
     }
     wake = wake.filter(point => state.elapsedMs - point.time < 1250);
-    updateCoinBursts(state, resetMotion);
+    updateCrystalBursts(state, resetMotion);
     previousTime = state.elapsedMs; previousDistance = state.distance;
-    if (gullArrivals.length > state.correct) gullArrivals = gullArrivals.slice(0, state.correct);
-    while (gullArrivals.length < state.correct) gullArrivals.push(state.elapsedMs);
+    const visibleGulls = Math.min(SURF_MAX_VISIBLE_GULLS, state.correct);
+    if (resetMotion || state.correct < previousGullCount) gullArrivals = [];
+    if (gullArrivals.length > visibleGulls) gullArrivals.length = visibleGulls;
+    while (gullArrivals.length < visibleGulls) gullArrivals.push(state.elapsedMs);
+    // Every new correct answer still brings a fresh bird into view; older
+    // companions leave the visible flock so long runs keep a bounded draw cost.
+    if (state.correct > SURF_MAX_VISIBLE_GULLS && state.correct > previousGullCount) {
+      gullArrivals[(state.correct - 1) % SURF_MAX_VISIBLE_GULLS] = state.elapsedMs;
+    }
+    previousGullCount = state.correct;
+    setCanvasData('gullVisibleCount', String(visibleGulls));
+    setCanvasData('gullEarnedCount', String(state.correct));
     const visualState = ready ? { ...state, distance: 400, x: 750 } : state;
     const preparedSeaFrame = seaMonster.prepare(visualState, { width, height, heroX: visualState.x * unit, heroY }, reducedMotion);
     if (visualState.chase.phase !== 'dormant') {
@@ -503,7 +533,7 @@ export function createSurfRenderer(
       y: preparedSeaFrame.y + navigationCameraOffset, top: preparedSeaFrame.top + navigationCameraOffset } : null;
     setCanvasData('seaMonsterCameraOffset', navigationCameraOffset.toFixed(3));
     water(visualState, reducedMotion); underwaterPlants(visualState, reducedMotion);
-    wakeTrail(visualState, reducedMotion); coins(visualState, reducedMotion);
+    wakeTrail(visualState, reducedMotion); crystals(visualState, reducedMotion);
     setCanvasData('gullMaxWingspan', (36 * riderPaintUnit()).toFixed(2));
     setCanvasData('gullOrbitY', (heroY - 118 * riderPaintUnit()).toFixed(2));
     setCanvasData('seaMonsterVisible', String(Boolean(seaFrame && seaFrame.opacity > 0.02)));
@@ -547,5 +577,5 @@ export function createSurfRenderer(
       ctx.fillStyle = `rgba(251,82,88,${opacity})`; ctx.fillRect(0, 0, width, height);
     }
   }
-  return { render, destroy() { disposed = true; wake = []; gullArrivals = []; coinBursts = []; seaMonster.reset(); } };
+  return { render, destroy() { disposed = true; wake = []; gullArrivals = []; crystalBursts = []; seaMonster.reset(); } };
 }

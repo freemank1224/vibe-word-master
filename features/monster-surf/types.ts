@@ -1,7 +1,13 @@
 export type SurfActivePhase = 'surfing' | 'checkpoint' | 'hurt' | 'cleared' | 'sinking';
 export type SurfPhase = 'ready' | SurfActivePhase | 'paused' | 'over';
 export type SurfFeedback = 'ready' | 'sail' | 'listen' | 'empty' | 'wrong' | 'collision' | 'correct' | 'over';
-export interface SurfWord { answer: string; meaningZh: string; meaningEn: string; }
+export interface SurfWord {
+  answer: string; meaningZh: string; meaningEn: string;
+  /** Real account vocabulary ID; absent only in the explicitly labelled demo. */
+  wordId?: string;
+  audioUrl?: string | null;
+  reviewCategory?: 'due_relearning' | 'due_review' | 'new' | 'upcoming';
+}
 export type SurfCoinFormation = 'ribbon' | 'matrix' | 'diamond' | 'arc' | 'fan';
 export interface SurfCoin {
   id: number; x: number; y: number; collectedAt: number | null;
@@ -26,6 +32,11 @@ export interface SurfChase {
 }
 export interface SurfState {
   phase: SurfPhase; resumePhase: SurfActivePhase | null; phaseMs: number; elapsedMs: number;
+  /** Active answer time; absent in legacy snapshots whose timing is unknown. */
+  wordElapsedMs?: number;
+  /** A frozen, unique round queue. Completed words never loop back into rewards. */
+  deck: readonly SurfWord[];
+  endReason: 'completed' | 'injuries' | 'sea-monster' | null;
   monster: number; x: number; vx: number; distance: number; speed: number;
   checkpoint: number; nextCheckpoint: number; input: string; hits: number;
   correct: number; streak: number; bestStreak: number; coins: number; score: number;

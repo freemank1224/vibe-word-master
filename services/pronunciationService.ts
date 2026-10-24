@@ -7,6 +7,7 @@
  * 3) no WebSpeech fallback by default (to avoid low-quality synthetic voice)
  */
 
+import { buildPronunciationCandidates } from './pronunciationSources';
 import { audioCacheManager } from './audioCache';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 
@@ -53,6 +54,18 @@ const getSupabaseUrl = (): string | null => {
     if (cached) return cached;
   }
   return null;
+};
+
+/** Shared recording lookup for lessons and cancellable game players. */
+export const getRecordedPronunciationUrls = (word: string, directUrl?: string | null, lang = 'en'): string[] => {
+  let cachedUrl: string | null = null;
+  try { cachedUrl = audioCacheManager.get(word, lang); } catch { /* Optional persistent cache. */ }
+  return buildPronunciationCandidates({ word, lang, directUrl, cachedUrl,
+    supabaseUrl: getSupabaseUrl(), uniquenessMode: WORD_LEARNING_CONFIG.pronunciation.uniquenessMode });
+};
+
+export const rememberRecordedPronunciation = (word: string, url: string, lang = 'en'): void => {
+  audioCacheManager.set(word, lang, stripTransientQueryParams(url), 'Project pronunciation recording');
 };
 
 const supabaseProxySource: PronunciationSource = {
@@ -363,11 +376,7 @@ export const preloadWordAudio = async (
   //      isn't ready yet. Always tried last so a stale direct/cache URL can't
   //      cause a preload failure the edge function could have recovered.
   const persistentUrl = audioCacheManager.get(word, lang);
-  const edgeUrl = await supabaseProxySource.getAudioUrl(word, lang);
-  const candidates: string[] = [];
-  if (directUrl) candidates.push(directUrl);
-  if (persistentUrl && persistentUrl !== directUrl) candidates.push(persistentUrl);
-  if (edgeUrl && !candidates.includes(edgeUrl)) candidates.push(edgeUrl);
+  const candidates = getRecordedPronunciationUrls(word, directUrl, lang);
   if (candidates.length === 0) return false;
 
   for (let i = 0; i < candidates.length; i++) {

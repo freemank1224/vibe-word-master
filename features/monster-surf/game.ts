@@ -23,7 +23,7 @@ const INVULNERABLE_MS = 1_800;
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 const validMonster = (id: number) => Number.isInteger(id) && id >= 0 && id <= 6 ? id : 1;
-const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase();
+const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase().replace(/[’‘]/g, "'").replace(/[‐‑]/g, '-');
 const isChaseActive = (chase: SurfChase) => chase.phase === 'warning' || chase.phase === 'chasing';
 const surfingSpeed = (state: Pick<SurfState, 'correct' | 'chase'>) => SURF_BASE_SPEED * surfSpeedMultiplier(state.correct)
   * (state.chase.boostMs > 0 ? SURF_CHASE_BOOST_MULTIPLIER : 1);
@@ -34,9 +34,25 @@ function emit(state: SurfState, kind: SurfEvent['kind'], count?: number): SurfSt
   return { ...state, eventId, event: { id: eventId, kind, ...(count === undefined ? {} : { count }) } };
 }
 
-export function createSurfState(monster = 1): SurfState {
+function roundDeck(words: readonly SurfWord[]): readonly SurfWord[] {
+  const answers = new Set<string>();
+  const ids = new Set<string>();
+  const deck: SurfWord[] = [];
+  for (const word of words) {
+    const answer = normalize(word.answer);
+    if (!/^[a-z]+(?:[-'][a-z]+)*$/.test(answer) || answers.has(answer) || word.wordId && ids.has(word.wordId)) continue;
+    answers.add(answer);
+    if (word.wordId) ids.add(word.wordId);
+    deck.push(Object.freeze({ ...word, answer }));
+  }
+  if (!deck.length) throw new Error('A surf round requires at least one playable word.');
+  return Object.freeze(deck);
+}
+
+export function createSurfState(monster = 1, words: readonly SurfWord[] = SURF_WORDS): SurfState {
   return maintainSurfCourse({
-    phase: 'ready', resumePhase: null, phaseMs: 0, elapsedMs: 0,
+    phase: 'ready', resumePhase: null, phaseMs: 0, elapsedMs: 0, wordElapsedMs: 0,
+    deck: roundDeck(words), endReason: null,
     monster: validMonster(monster), x: SURF_WORLD_WIDTH / 2, vx: 0,
     distance: 0, speed: SURF_BASE_SPEED, checkpoint: 0, nextCheckpoint: SURF_FIRST_CHECKPOINT,
     input: '', hits: 0, correct: 0, streak: 0, bestStreak: 0, coins: 0, score: 0,
@@ -47,8 +63,8 @@ export function createSurfState(monster = 1): SurfState {
   });
 }
 
-export function startSurf(monster = 1): SurfState {
-  return { ...createSurfState(monster), phase: 'surfing', feedback: 'listen' };
+export function startSurf(monster = 1, words: readonly SurfWord[] = SURF_WORDS): SurfState {
+  return { ...createSurfState(monster, words), phase: 'surfing', feedback: 'listen' };
 }
 
 export function selectSurfMonster(state: SurfState, id: number): SurfState {
@@ -57,11 +73,15 @@ export function selectSurfMonster(state: SurfState, id: number): SurfState {
 }
 
 export function currentSurfWord(state: SurfState): SurfWord {
-  return SURF_WORDS[state.checkpoint % SURF_WORDS.length];
+  // Preserve the final clue on the result screen without wrapping to word one.
+  return state.deck[Math.min(state.checkpoint, state.deck.length - 1)];
 }
 
 export function setSurfInput(state: SurfState, input: string): SurfState {
   if (state.phase !== 'surfing') return state;
+  // Match the settlement log limit, including pasted text. A long wrong answer
+  // must not make an otherwise valid paid ride impossible to settle.
+  input = input.slice(0, 128);
   const prefix = normalize(input);
   return { ...state, input, feedback: 'listen', navigation: !prefix ? 'waiting'
     : currentSurfWord(state).answer.startsWith(prefix) ? 'guided' : 'locked' };
@@ -73,6 +93,7 @@ function injure(state: SurfState, collision?: SurfObstacle): SurfState {
   return emit({
     ...state, phase: hits >= SURF_MAX_HITS ? 'sinking' : 'hurt', phaseMs: 0,
     hits, streak: 0, invulnerableMs: INVULNERABLE_MS,
+    endReason: hits >= SURF_MAX_HITS ? 'injuries' : null,
     vx: collision ? away * 200 : state.vx * 0.35,
     feedback: collision ? 'collision' : 'wrong',
     obstacles: collision ? state.obstacles.map(obstacle => obstacle.id === collision.id ? { ...obstacle, hit: true } : obstacle) : state.obstacles,
@@ -88,6 +109,7 @@ function chaseMistake(state: SurfState): SurfState {
     targetGap: attacking ? 20 : Math.max(70, state.chase.targetGap - 90),
     boostMs: 0, action: 'close', actionMs: 0 };
   const next: SurfState = { ...state, phase: attacking ? 'sinking' : 'hurt', phaseMs: 0,
+    endReason: attacking ? 'sea-monster' : null,
     chase, streak: 0, invulnerableMs: INVULNERABLE_MS, feedback: 'wrong', vx: state.vx * 0.35 };
   return emit({ ...next, speed: surfingSpeed(next) }, attacking ? 'sea-attack' : 'sea-approach');
 }
@@ -226,7 +248,9 @@ function collectCoins(previous: SurfState, state: SurfState): SurfState {
 function settleFeedback(state: SurfState): SurfState {
   if (state.phase === 'hurt' && state.phaseMs >= FEEDBACK_MS) return { ...state, phase: 'surfing', phaseMs: 0 };
   if (state.phase === 'cleared' && state.phaseMs >= FEEDBACK_MS) {
-    return { ...state, phase: 'surfing', phaseMs: 0, checkpoint: state.checkpoint + 1,
+    if (state.checkpoint + 1 >= state.deck.length) return emit({ ...state, phase: 'over', phaseMs: 0,
+      endReason: 'completed', feedback: 'over', navigation: 'waiting' }, 'over');
+    return { ...state, phase: 'surfing', phaseMs: 0, wordElapsedMs: 0, checkpoint: state.checkpoint + 1,
       input: '', navigation: 'waiting', feedback: 'listen' };
   }
   if (state.phase === 'sinking' && state.phaseMs >= sinkDuration(state)) return emit({ ...state, phase: 'over', phaseMs: sinkDuration(state), feedback: 'over' }, 'over');
@@ -268,6 +292,7 @@ export function tickSurf(state: SurfState, deltaMs: number, _controls?: SurfCont
       next.chase.boostMs > 0 ? next.chase.boostMs : Infinity);
     const previous = next;
     next = { ...next, phaseMs: next.phaseMs + step, elapsedMs: next.elapsedMs + step,
+      wordElapsedMs: next.wordElapsedMs === undefined ? undefined : next.wordElapsedMs + (next.phase === 'surfing' ? step : 0),
       invulnerableMs: Math.max(0, next.invulnerableMs - step) };
     if (next.phase !== 'sinking') {
       const pace = next.phase === 'hurt' ? 0.25 : 1;

@@ -2,7 +2,7 @@ import subprocess, json, time, math, os
 from pathlib import Path
 B=str(Path.home()/'.claude/skills/gstack/browse/dist/browse')
 VERSION=os.environ.get('SURF_QA_VERSION','v6')
-BASE=os.environ.get('SURF_QA_URL',f'http://127.0.0.1:5332/monster-run.html?game=surf-{VERSION}')
+BASE=os.environ.get('SURF_QA_URL',f'http://127.0.0.1:5332/monster-run.html?game=surf-{VERSION}&practice=1')
 trace=[]
 def browse(*args):
  r=subprocess.run([B,*args],capture_output=True,text=True,check=True)
@@ -11,7 +11,7 @@ def js(code):return browse('js',code)
 def state():return json.loads(js('JSON.stringify({...document.querySelector(".ms-app").dataset,focus:document.activeElement.id})'))
 def record(name):
  s=state();trace.append({'check':name,**s});print(name,s,flush=True);return s
-def until(test,timeout=10):
+def until(test,timeout=90):
  end=time.monotonic()+timeout
  while time.monotonic()<end:
   s=state()
@@ -30,7 +30,9 @@ def fit():
   assert abs(panels[0]['width']-panels[2]['width'])<1,panels
  trace.append({'check':'three-panels-aligned','panels':panels})
  trace.append({'check':'desktop-fit-top-input-pointer',**r})
-def fill(text):browse('fill','#ms-answer',text)
+def fill(text):
+ until(lambda s:s.get('audioReady')=='true',35)
+ browse('fill','#ms-answer',text)
 def positions():
  return json.loads(js('JSON.stringify([...document.querySelectorAll(".lwi-position")].map(e=>({...e.dataset})))'))
 def check_positions(expected):
@@ -135,7 +137,9 @@ submit('wrong');s=record('wrong-answer-second-injury');assert s['hits']=='2'
 browse('press','Enter');assert state()['hits']=='2'
 phase('surfing');submit('wrong');s=record('third-injury-sinking');assert s['hits']=='3' and s['phase']=='sinking'
 time.sleep(.18);shot('sinking-en-1440');phase('over');shot('over-en-1440')
-browse('click','.ms-result .ms-primary');s=record('restart-reset');assert s['hits']=='0' and s['correct']=='0' and s['magnet']=='1.0000'
+browse('click','.ms-result .ms-primary');phase('ready')
+browse('click','.ms-start-card .ms-primary');until(lambda s:s['phase']=='surfing' and s.get('audioReady')=='true')
+s=record('restart-reset');assert s['hits']=='0' and s['correct']=='0' and s['magnet']=='1.0000'
 browse('press','Escape')
 Path(f'/tmp/monster-surf-{VERSION}-browser-regression.json').write_text(json.dumps({'ok':True,'trace':trace,'audio':audio},ensure_ascii=False,indent=2))
 print(f'ALL {VERSION.upper()} BROWSER CHECKS PASSED',flush=True)

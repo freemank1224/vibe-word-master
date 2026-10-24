@@ -161,7 +161,7 @@ test('chase sounds duck under spoken dictation without cancelling it', async t =
   Object.assign(window, { Audio: FakeAudio });
   audio.play('sea-warning');
   const peakWithoutSpeech = Math.max(...context.gains[0].gain.values);
-  await audio.speak('ocean');
+  await audio.speak('ocean', false, 'https://example.supabase.co/storage/v1/object/public/audio/ocean.mp3');
   audio.play('sea-warning');
   const peakWithSpeech = Math.max(...context.gains[3].gain.values);
   assert.ok(peakWithSpeech < peakWithoutSpeech * 0.5);

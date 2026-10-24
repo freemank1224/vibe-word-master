@@ -33,7 +33,7 @@ test('seven original monsters can be selected and starting resets the session', 
   assert.equal(moving.speed, SURF_BASE_SPEED);
 });
 
-test('practice words are unique, bilingual and cycle only by completed word count', () => {
+test('practice words are unique, bilingual and never wrap back to completed words', () => {
   assert.ok(SURF_WORDS.length >= 20 && SURF_WORDS.length <= 30);
   assert.equal(new Set(SURF_WORDS.map(word => word.answer)).size, SURF_WORDS.length);
   for (const word of SURF_WORDS) {
@@ -42,7 +42,61 @@ test('practice words are unique, bilingual and cycle only by completed word coun
     assert.doesNotMatch(word.meaningEn, /\p{Script=Han}/u);
   }
   assert.equal(currentSurfWord(createSurfState()).answer, 'ocean');
-  assert.equal(currentSurfWord({ ...createSurfState(), checkpoint: SURF_WORDS.length }).answer, 'ocean');
+  assert.equal(currentSurfWord({ ...createSurfState(), checkpoint: SURF_WORDS.length }).answer, SURF_WORDS.at(-1)!.answer);
+});
+
+test('account rounds use their own frozen deck and finish once without duplicate rewards', () => {
+  const deck = [
+    { wordId: 'word-a', answer: 'APPLE', meaningZh: '苹果', meaningEn: 'A fruit.' },
+    { wordId: 'word-b', answer: 'pear', meaningZh: '梨', meaningEn: 'Another fruit.' },
+  ];
+  let state = startSurf(3, deck);
+  assert.equal(currentSurfWord(state).wordId, 'word-a');
+  assert.equal(currentSurfWord(state).answer, 'apple');
+  deck[0].answer = 'changed';
+  assert.equal(currentSurfWord(state).answer, 'apple', 'external deck mutation cannot change a paid round');
+  assert.ok(Object.isFrozen(state.deck) && Object.isFrozen(state.deck[0]));
+  state = clearWord(state);
+  assert.equal(state.phase, 'surfing');
+  assert.equal(currentSurfWord(state).wordId, 'word-b');
+  state = answer(state);
+  assert.equal(state.correct, 2);
+  assert.equal(state.phase, 'cleared');
+  state = tickSurf(state, 649);
+  assert.equal(state.phase, 'cleared');
+  state = tickSurf(state, 1);
+  assert.equal(state.phase, 'over');
+  assert.equal(state.endReason, 'completed');
+  assert.equal(state.event?.kind, 'over');
+  assert.equal(currentSurfWord(state).answer, 'pear');
+  assert.equal(submitSurf(setSurfInput(state, 'pear')), state);
+  assert.equal(tickSurf(state, 10_000), state);
+  assert.equal(state.correct, 2);
+});
+
+test('duplicate IDs and normalized answers never become extra rewarded questions', () => {
+  const state = startSurf(1, [
+    { wordId: 'one', answer: 'pear', meaningZh: '梨', meaningEn: '' },
+    { wordId: 'two', answer: ' ＰＥＡＲ ', meaningZh: '梨', meaningEn: '' },
+    { wordId: 'one', answer: 'apple', meaningZh: '苹果', meaningEn: '' },
+  ]);
+  assert.equal(state.deck.length, 1);
+  assert.equal(clearWord(state).endReason, 'completed');
+  assert.throws(() => startSurf(1, []), /at least one playable word/);
+});
+
+test('word decks support matching typographic apostrophes and hyphens consistently', () => {
+  const words = [
+    { wordId: 'one', answer: 'don’t', meaningZh: '不要', meaningEn: '' },
+    { wordId: 'two', answer: 'well‐being', meaningZh: '安康', meaningEn: '' },
+  ];
+  let state = startSurf(1, words);
+  assert.equal(setSurfInput(state, 'don’').navigation, 'guided');
+  state = tickSurf(submitSurf(setSurfInput(state, "DON'T")), 650);
+  assert.equal(currentSurfWord(state).answer, 'well-being');
+  state = tickSurf(submitSurf(setSurfInput(state, 'well‑being')), 650);
+  assert.equal(state.endReason, 'completed');
+  assert.equal(state.correct, 2);
 });
 
 test('dictation is available immediately and the sea keeps moving with five safe opening seconds', () => {
@@ -331,7 +385,7 @@ test('success sails through feedback and then advances to the next word', () => 
   assert.equal(currentSurfWord(state).answer, 'sun');
 });
 
-test('each correct word compounds the actual pickup radius by 50% without a gameplay cap', () => {
+test('each correct word compounds the pickup radius by50% until it covers the complete active sea', () => {
   let state = startSurf();
   for (let correct = 1; correct <= 12; correct++) {
     const previousRadius = surfMagnetRadius(state.correct);
@@ -505,4 +559,35 @@ test('invalid deltas are ignored and updates preserve immutable prior states', (
   assert.equal(state.coins, 0);
   assert.ok(next.distance > 0);
   assert.ok(next.items.every(coin => Number.isFinite(coin.x) && Number.isFinite(coin.y)));
+});
+
+test('pasted answers stay within the paid settlement log limit', () => {
+  const state = setSurfInput(startSurf(1), 'x'.repeat(2000));
+  assert.equal(state.input.length, 128);
+  assert.equal(state.navigation, 'locked');
+  const missed = submitSurf(state);
+  assert.equal(missed.hits, 1);
+  assert.equal(missed.correct, 0);
+});
+
+test('answer timing excludes pauses and feedback, preserves corrections, and resets for the next word', () => {
+  let state = tickSurf(startSurf(), 400);
+  assert.equal(state.wordElapsedMs, 400);
+  state = resumeSurf(tickSurf(pauseSurf(state), 5000));
+  assert.equal(state.wordElapsedMs, 400);
+  state = tickSurf(submitSurf(setSurfInput(state, 'wrong')), 650);
+  assert.equal(state.phase, 'surfing');
+  assert.equal(state.wordElapsedMs, 400);
+  state = tickSurf(state, 200);
+  state = tickSurf(answer(state), 650);
+  assert.equal(state.checkpoint, 1);
+  assert.equal(state.wordElapsedMs, 0);
+  assert.equal(tickSurf(state, 300).wordElapsedMs, 300);
+});
+
+test('legacy snapshots never invent a partial best time for the resumed word', () => {
+  const { wordElapsedMs: _unknown, ...legacy } = startSurf();
+  const state = tickSurf(legacy, 500);
+  assert.equal(state.wordElapsedMs, undefined);
+  assert.equal(tickSurf(answer(state), 650).wordElapsedMs, 0);
 });

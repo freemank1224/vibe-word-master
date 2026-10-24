@@ -1,4 +1,4 @@
-"""Reproduce the local prototype dictation clips with the macOS Samantha voice."""
+"""Historical prototype generator. Surf now uses project recordings; do not use for production audio."""
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re

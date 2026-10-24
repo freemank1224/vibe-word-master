@@ -4,6 +4,7 @@ import { WordEntry } from '../types';
 import { getWordStrikeCandidateWords, WORD_STRIKE_MIN_WORDS } from '../services/wordStrike';
 import { toWordOrbitQuestion } from '../services/wordOrbit';
 import { getPuzzleCandidateWords } from '../services/puzzleGame';
+import { toSurfReviewWord } from '../features/monster-surf/reviewVocabulary';
 
 interface GameModePickerModalProps {
   visibleWords: WordEntry[];
@@ -14,7 +15,7 @@ interface GameModePickerModalProps {
 }
 
 interface GameEntry {
-  key: 'strike' | 'puzzle' | 'orbit';
+  key: 'strike' | 'puzzle' | 'orbit' | 'surf';
   optionLabel: string;
   titleEn: string;
   titleZh: string;
@@ -48,6 +49,7 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
   onClose,
 }) => {
   const strikeReadyCount = useMemo(() => getWordStrikeCandidateWords(visibleWords).length, [visibleWords]);
+  const surfReadyCount = useMemo(() => new Set(visibleWords.map(toSurfReviewWord).filter(Boolean).map(word => word!.answer)).size, [visibleWords]);
   const orbitReadyCount = useMemo(() => new Set(visibleWords.map(toWordOrbitQuestion).filter(Boolean).map(question => question!.answer)).size, [visibleWords]);
   const puzzleReadyCount = useMemo(
     () => getPuzzleCandidateWords(visibleWords).length,
@@ -56,7 +58,17 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
 
   const entries: GameEntry[] = [
     {
-      key: 'orbit', optionLabel: 'Recommended', titleEn: 'WORD ORBIT', titleZh: '星词漫游',
+      key: 'surf', optionLabel: 'Recommended', titleEn: 'MONSTER SURF', titleZh: '怪兽冲浪',
+      descEn: 'Ride with today’s monster and review due words. Entry: 1 coin. Collect Sea Crystals and exchange up to 1 coin per correct word.',
+      descZh: '和今日怪兽乘风逐浪，优先复习到期词。入场 1 金币，收集海晶兑换奖励，每答对一词最多兑换 1 金币。',
+      icon: 'sports_esports',
+      accent: { text: 'text-electric-blue group-hover:text-charcoal', hoverBg: 'hover:bg-electric-blue hover:text-charcoal', border: '' },
+      ready: surfReadyCount > 0,
+      readyLabel: { en: 'Add an English word with a Chinese meaning first', zh: '请先添加带中文释义的英文单词' },
+      onSelect: () => { window.location.assign('/monster-run.html'); },
+    },
+    {
+      key: 'orbit', optionLabel: 'Practice', titleEn: 'WORD ORBIT', titleZh: '星词漫游',
       descEn: `Run across a small planet. Fill a word to vault, slide or jet across obstacles. ${orbitReadyCount} words ready.`,
       descZh: `第三人称星球跑酷：填对越障，答错摔跤后继续。可用词 ${orbitReadyCount} 个，练习进度自动保存。`,
       icon: 'rocket_launch',
@@ -101,8 +113,8 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
         </h3>
         <p className="text-text-dark font-body mb-8">
           <HoverTranslationText
-            text="Practice due words through play. New game rules save learning progress as practice."
-            translation="用游戏复习到期单词。新玩法先以练习局保存学习进度。"
+            text="Review due words through play. Check entry costs and rewards before starting."
+            translation="用游戏复习到期单词。开始前可查看各模式的入场花费与奖励规则。"
           />
         </p>
 
@@ -122,7 +134,7 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
                 entry.ready ? entry.accent.text : 'text-text-dark'
               }`}>
                 <span className="material-symbols-outlined text-[18px]">{entry.icon}</span>
-                <HoverTranslationText text={entry.optionLabel} translation={entry.optionLabel === 'Recommended' ? '推荐' : entry.optionLabel === 'Game 1' ? '旧版' : '九宫格'} />
+                <HoverTranslationText text={entry.optionLabel} translation={entry.optionLabel === 'Recommended' ? '推荐' : entry.optionLabel === 'Practice' ? '练习' : entry.optionLabel === 'Game 1' ? '旧版' : '九宫格'} />
               </span>
               <span className="text-xl font-headline group-hover:text-charcoal">
                 <HoverTranslationText text={entry.titleEn} translation={entry.titleZh} />

@@ -7,7 +7,7 @@ from pathlib import Path
 
 B = str(Path.home() / '.claude/skills/gstack/browse/dist/browse')
 VERSION = os.environ.get('SURF_QA_VERSION', 'v6')
-BASE = os.environ.get('SURF_QA_URL', f'http://127.0.0.1:5332/monster-run.html?game=surf-{VERSION}')
+BASE = os.environ.get('SURF_QA_URL', f'http://127.0.0.1:5332/monster-run.html?game=surf-{VERSION}&practice=1')
 WORDS = ['ocean', 'sun', 'wave', 'beach', 'blue', 'shell', 'island', 'wind', 'fish', 'boat',
          'coral', 'star', 'water', 'cloud', 'turtle', 'rain', 'anchor', 'moon']
 trace = []
@@ -48,7 +48,14 @@ def shot(name):
 
 
 def ready_input():
-    return until(lambda s: s['phase'] == 'surfing')
+    return until(lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true', 90)
+
+
+def select_full_demo():
+    js('''(()=>{const el=document.querySelector('[data-testid="surf-word-count"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,24);
+      el.dispatchEvent(new Event('input',{bubbles:true}));return el.value;})()''')
+    assert js('document.querySelector("[data-testid=surf-word-count]").value') == '24'
 
 
 def guided():
@@ -69,8 +76,10 @@ def start():
     until(lambda s: s['assets'] == 'ready')
     if js('document.querySelector(".ms-site-actions button").textContent') == 'EN':
         browse('click', '.ms-site-actions button')
+    select_full_demo()
     browse('click', '.ms-start-card .ms-primary')
-    until(lambda s: s['focus'] == 'ms-answer' and s['phase'] == 'surfing')
+    until(lambda s: s['focus'] == 'ms-answer' and s['phase'] == 'surfing' and s.get('audioReady') == 'true', 90)
+    assert state()['deckSize'] == '24'
 
 
 def reach_ten():
@@ -211,6 +220,10 @@ until(lambda s: s['phase'] == 'over')
 record('third-error-attack-game-over')
 shot('game-over-en-1366')
 browse('click', '.ms-result .ms-primary')
+until(lambda s: s['phase'] == 'ready')
+select_full_demo()
+browse('click', '.ms-start-card .ms-primary')
+ready_input()
 s = record('restart-clears-chase')
 assert s['chasePhase'] == 'dormant' and s['chaseMistakes'] == '0' and s['chaseStreak'] == '0'
 assert s['hits'] == '0' and s['correct'] == '0'
