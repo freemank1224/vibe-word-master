@@ -43,7 +43,7 @@ class FeatureLoadBoundary extends Component<BoundaryProps, { failed: boolean }> 
   }
 }
 
-/** Each feature owns its loading boundary so a slow chunk never hides the app shell. */
+/** Load feature chunks silently while the surrounding app stays visible. */
 export function createLazyFeature<P extends object>(
   load: () => Promise<{ default: React.ComponentType<P> }>,
   label: string,
@@ -59,14 +59,7 @@ export function createLazyFeature<P extends object>(
       // user-requested reload reliably clears that registry; never auto-reload
       // because an unrelated feature may have unsaved input.
       <FeatureLoadBoundary label={label} isZh={isZh} overlay={overlay} onClose={onClose} onRetry={() => window.location.reload()}>
-        <Suspense fallback={
-          <div className={containerClass(overlay)} role="status" aria-live="polite">
-            <div className={panelClass}>
-              <p>{isZh ? `正在准备${label}…` : 'Loading…'}</p>
-              {onClose && <button type="button" className="mt-4 rounded-lg bg-mid-charcoal px-4 py-2" onClick={onClose}>{isZh ? '返回' : 'Back'}</button>}
-            </div>
-          </div>
-        }>
+        <Suspense fallback={null}>
           <Feature {...props} />
         </Suspense>
       </FeatureLoadBoundary>

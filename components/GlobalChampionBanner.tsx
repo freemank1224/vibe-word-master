@@ -4,7 +4,11 @@ import { leaderboardCategoryLabel, leaderboardScoreLabel } from '../utils/leader
 import {
   ChampionInfo,
   fetchGlobalChampions,
+  fetchGlobalLeaderboard,
+  withCoinChampion,
+  type LeaderboardRow,
 } from '../services/globalLeaderboard';
+import { subscribeToWalletChanges } from '../services/walletUpdates';
 
 interface GlobalChampionBannerProps {
   onOpen: () => void;
@@ -39,6 +43,24 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
   // Initial fetch (uses 5-min cache).
   useEffect(() => {
     let disposed = false;
+    let coinRows: LeaderboardRow[] | null = null;
+    let refreshingCoins = false;
+    let coinsChangedAgain = false;
+    const refreshCoins = async () => {
+      if (refreshingCoins) { coinsChangedAgain = true; return; }
+      refreshingCoins = true;
+      try {
+        const rows = await fetchGlobalLeaderboard('coins', 10);
+        if (disposed) return;
+        coinRows = rows;
+        setChampions(current => withCoinChampion(current, rows));
+      } catch { /* Keep the last confirmed wealth score on temporary failure. */ }
+      finally {
+        refreshingCoins = false;
+        if (coinsChangedAgain && !disposed) { coinsChangedAgain = false; void refreshCoins(); }
+      }
+    };
+    const unsubscribe = subscribeToWalletChanges(() => { void refreshCoins(); });
     fetchGlobalChampions()
       .then((rows) => {
         if (disposed) return;
@@ -46,7 +68,7 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
         const valid = rows.filter(
           (c) => c.championUserId && c.championName,
         );
-        setChampions(valid);
+        setChampions(coinRows ? withCoinChampion(valid, coinRows) : valid);
         setIndex(0);
         setLoaded(true);
       })
@@ -57,6 +79,7 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
       });
     return () => {
       disposed = true;
+      unsubscribe();
     };
   }, []);
 
@@ -76,7 +99,7 @@ const GlobalChampionBanner: React.FC<GlobalChampionBannerProps> = ({ onOpen }) =
     return <div className="min-w-0 flex-1" aria-hidden />;
   }
 
-  const current = champions[index];
+  const current = champions[index % champions.length];
   const accent = CATEGORY_ACCENT[current.category] ?? 'text-electric-blue';
   const categoryLabel = leaderboardCategoryLabel(current.category, isZh);
   const scoreLabel = leaderboardScoreLabel(current.category, current.scoreValue, isZh);

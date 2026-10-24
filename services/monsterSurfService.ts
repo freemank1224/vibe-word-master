@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabaseClient.ts';
 import { DEFAULT_SURF_RUN_MODE, isSurfRunMode, type SurfRunMode } from '../features/monster-surf/runMode.ts';
+import { notifyWalletChanged } from './walletUpdates.ts';
 
 export const MONSTER_SURF_ENTRY_FEE = 1;
 export const MONSTER_SURF_CRYSTALS_PER_COIN = 10;
@@ -103,7 +104,7 @@ function parseRun(value: unknown): MonsterSurfRun {
 }
 
 /** Injectable transport tests retry/error contracts without a mock database. */
-export function createMonsterSurfService(transport: MonsterSurfRpcTransport) {
+export function createMonsterSurfService(transport: MonsterSurfRpcTransport, walletChanged = notifyWalletChanged) {
   const call = async (name: string, args?: Record<string, unknown>) => {
     let reply: Awaited<ReturnType<MonsterSurfRpcTransport['rpc']>>;
     try { reply = await transport.rpc(name, args); }
@@ -127,7 +128,9 @@ export function createMonsterSurfService(transport: MonsterSurfRpcTransport) {
     async startMonsterSurfRun(runId: string, wordIds: string[], mode: SurfRunMode = DEFAULT_SURF_RUN_MODE): Promise<MonsterSurfStartResult> {
       if (!isSurfRunMode(mode)) throw new MonsterSurfServiceError('invalid_mode');
       const body = await call('start_monster_surf_run_v2', { p_run_id: runId, p_word_ids: wordIds, p_mode: mode });
-      return { run: parseRun(body.run), balance: integer(body.balance), charged: boolean(body.charged), recovered: boolean(body.recovered) };
+      const result = { run: parseRun(body.run), balance: integer(body.balance), charged: boolean(body.charged), recovered: boolean(body.recovered) };
+      walletChanged();
+      return result;
     },
     /** Persist this exact payload until success. A repeated call cannot pay twice. */
     async settleMonsterSurfRun(runId: string, crystals: number, attempts: MonsterSurfAttempt[]): Promise<MonsterSurfSettlement> {
@@ -137,7 +140,9 @@ export function createMonsterSurfService(transport: MonsterSurfRpcTransport) {
       });
       const run = parseRun(body.run);
       if (run.status !== 'settled' || run.id !== runId) throw new MonsterSurfServiceError('unexpected_response');
-      return { run, balance: integer(body.balance), alreadySettled: boolean(body.already_settled) };
+      const result = { run, balance: integer(body.balance), alreadySettled: boolean(body.already_settled) };
+      walletChanged();
+      return result;
     },
   };
 }

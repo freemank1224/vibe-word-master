@@ -1,4 +1,5 @@
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient.ts';
+import { getWalletRefreshRevision } from './walletUpdates.ts';
 
 // ------------------------------------------------------------------
 // Types
@@ -44,6 +45,8 @@ interface ChampionsCache {
 
 let championsCache: ChampionsCache | null = null;
 let championsInFlight: Promise<ChampionInfo[]> | null = null;
+let coinRowsVersion = 0;
+let latestCoinRows: LeaderboardRow[] = [];
 
 const normalizeChampion = (row: any): ChampionInfo => ({
   category: row.category as ChampionCategory,
@@ -79,6 +82,7 @@ export const fetchGlobalChampions = async (
   }
 
   championsInFlight = (async () => {
+    const coinsAtRequestStart = coinRowsVersion;
     const { data, error } = await supabase.rpc('get_global_champions');
     if (error) {
       console.error(
@@ -89,7 +93,8 @@ export const fetchGlobalChampions = async (
       championsInFlight = null;
       throw error;
     }
-    const champions = (Array.isArray(data) ? data : []).map(normalizeChampion);
+    const initial = (Array.isArray(data) ? data : []).map(normalizeChampion);
+    const champions = coinsAtRequestStart === coinRowsVersion ? initial : withCoinChampion(initial, latestCoinRows);
     championsCache = { data: champions, fetchedAt: Date.now() };
     championsInFlight = null;
     return champions;
@@ -112,6 +117,21 @@ const normalizeRow = (row: any): LeaderboardRow => ({
   isCurrentUser: Boolean(row.is_current_user),
 });
 
+const leaderboardRequests = new Map<string, Promise<LeaderboardRow[]>>();
+
+/** Replace only the wealth slide; learning and game scores stay untouched. */
+export function withCoinChampion(champions: ChampionInfo[], rows: LeaderboardRow[]): ChampionInfo[] {
+  const leader = rows.find(row => row.rankPosition === 1);
+  const previous = champions.find(champion => champion.category === 'coins');
+  const next: ChampionInfo | null = leader ? {
+    category: 'coins', categoryLabel: previous?.categoryLabel ?? 'Coins', categoryIcon: previous?.categoryIcon ?? 'monetization_on',
+    championUserId: leader.userId, championName: leader.displayName || leader.emailMasked,
+    championAvatar: leader.avatarUrl, scoreValue: leader.scoreValue, scoreLabel: leader.scoreLabel,
+  } : null;
+  if (!next) return champions.filter(champion => champion.category !== 'coins');
+  return previous ? champions.map(champion => champion.category === 'coins' ? next : champion) : [...champions, next];
+}
+
 /**
  * Fetch the ranked leaderboard for a single category. Always hits the
  * network (the modal is opened on user intent → fresh data expected).
@@ -122,20 +142,32 @@ export const fetchGlobalLeaderboard = async (
   category: ChampionCategory,
   limit = 10,
 ): Promise<LeaderboardRow[]> => {
-  const { data, error } = await supabase.rpc('get_global_leaderboard', {
-    p_category: category,
-    p_limit: limit,
-  });
-
-  if (error) {
-    console.error(
-      `[fetchGlobalLeaderboard] RPC failed for ${category}:`,
-      error.message,
-    );
-    throw error;
-  }
-
-  return (Array.isArray(data) ? data : []).map(normalizeRow);
+  const { data: { session } } = await supabase.auth.getSession();
+  // The response includes is_current_user; never share an in-flight response across accounts.
+  const revision = category === 'coins' ? getWalletRefreshRevision() : 0;
+  const key = `${session?.user.id ?? 'anonymous'}:${category}:${limit}:${revision}`;
+  const pending = leaderboardRequests.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const { data, error } = await supabase.rpc('get_global_leaderboard', {
+      p_category: category,
+      p_limit: limit,
+    });
+    if (error) {
+      console.error(`[fetchGlobalLeaderboard] RPC failed for ${category}:`, error.message);
+      throw error;
+    }
+    const rows = (Array.isArray(data) ? data : []).map(normalizeRow);
+    if (category === 'coins' && revision === getWalletRefreshRevision()) {
+      coinRowsVersion++;
+      latestCoinRows = rows;
+      if (championsCache) championsCache = { ...championsCache, data: withCoinChampion(championsCache.data, rows) };
+    }
+    return rows;
+  })();
+  leaderboardRequests.set(key, request);
+  try { return await request; }
+  finally { if (leaderboardRequests.get(key) === request) leaderboardRequests.delete(key); }
 };
 
 // ------------------------------------------------------------------

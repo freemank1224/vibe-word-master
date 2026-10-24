@@ -38,6 +38,7 @@ import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordId
 import { AchievementsPanel } from './components/Achievements/AchievementsPanel';
 import { calculateAchievements, ACHIEVEMENTS, Achievement } from './services/achievementService';
 import { CoinCounter } from './components/Coin/CoinCounter';
+import { subscribeToWalletChanges } from './services/walletUpdates';
 import {
   claimDailyLoginReward,
   awardPuzzleCoins,
@@ -476,9 +477,11 @@ const App: React.FC = () => {
     const identityRevision = authIdentityRevisionRef.current;
     const seq = ++balanceReqSeqRef.current;
     const bal = await getCoinBalance();
-    if (authUserIdRef.current === userId && authIdentityRevisionRef.current === identityRevision
+    if (bal !== null && authUserIdRef.current === userId && authIdentityRevisionRef.current === identityRevision
       && seq === balanceReqSeqRef.current) setCoinBalance(bal);
   }, []);
+
+  useEffect(() => subscribeToWalletChanges(() => { void refreshCoinBalance(); }), [refreshCoinBalance]);
   
   // Filtered Data for View (Soft Delete Logic)
   const visibleSessions = useMemo(() => sessions.filter(s => !s.deleted), [sessions]);

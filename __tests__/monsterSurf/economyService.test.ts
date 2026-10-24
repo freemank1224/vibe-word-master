@@ -135,3 +135,24 @@ test('inconsistent settlement is rejected instead of claiming coins were credite
       error instanceof MonsterSurfServiceError && error.code === 'unexpected_response');
   }
 });
+
+test('confirmed Surf charges, settlements and recovered receipts invalidate other wallet views', async () => {
+  let changes = 0;
+  const changed = () => { changes++; };
+  const start = createMonsterSurfService(transport({ run: activeRun, balance: 27, charged: true, recovered: false }), changed);
+  await start.startMonsterSurfRun(runId, [wordId]);
+  assert.equal(changes, 1);
+  for (const alreadySettled of [false, true]) {
+    const settle = createMonsterSurfService(transport({ run: settledRun, balance: 28, already_settled: alreadySettled }), changed);
+    await settle.settleMonsterSurfRun(runId, 430, [{ wordId, answer: 'ocean' }]);
+  }
+  assert.equal(changes, 3);
+  const read = createMonsterSurfService(transport({ balance: 28, active_run: null }), changed);
+  await read.getMonsterSurfAccount();
+  assert.equal(changes, 3, 'wallet reads do not trigger a refresh loop');
+  const rejected = createMonsterSurfService(transport({ error: 'insufficient_balance' }), changed);
+  await assert.rejects(rejected.startMonsterSurfRun(runId, [wordId]));
+  const malformed = createMonsterSurfService(transport({ run: settledRun, balance: '28', already_settled: false }), changed);
+  await assert.rejects(malformed.settleMonsterSurfRun(runId, 430, []));
+  assert.equal(changes, 3, 'failed and unvalidated responses do not announce a completed payment');
+});

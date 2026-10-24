@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient.ts';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface DailyLoginReward {
@@ -183,19 +183,19 @@ export const awardAllAchievementsBonus = async (): Promise<number> => {
 
 /**
  * Lightweight read of just the current balance. Used by the header counter
- * and post-transaction refreshes.
+ * and post-transaction refreshes. Null means unavailable, never a zero balance.
  */
-export const getCoinBalance = async (): Promise<number> => {
+export const getCoinBalance = async (): Promise<number | null> => {
   try {
     const { data, error } = await supabase.rpc('get_wallet_state', { p_transaction_limit: 1 });
     if (error) {
       console.error('[coinService] getCoinBalance error:', error.message);
-      return 0;
+      return null;
     }
-    return data?.balance ?? 0;
+    return Number.isSafeInteger(data?.balance) && data.balance >= 0 ? data.balance : null;
   } catch (e) {
     console.error('[coinService] getCoinBalance exception:', e);
-    return 0;
+    return null;
   }
 };
 

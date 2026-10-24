@@ -6,6 +6,7 @@ import {
   LeaderboardRow,
   fetchGlobalLeaderboard,
 } from '../services/globalLeaderboard';
+import { subscribeToWalletChanges } from '../services/walletUpdates';
 
 interface GlobalLeaderboardModalProps {
   open: boolean;
@@ -57,6 +58,19 @@ const GlobalLeaderboardModal: React.FC<GlobalLeaderboardModalProps> = ({
 
   // Latest-fetch tracker: prevents stale writes if user switches tabs mid-fetch.
   const fetchTokenRef = useRef(0);
+
+  useEffect(() => subscribeToWalletChanges(() => {
+    // An unopened wealth tab stays lazy; other leaderboard categories retain their cache.
+    setCache(current => {
+      if (!current.coins) return current;
+      const { coins: _coins, ...rest } = current;
+      return rest;
+    });
+    if (open && active === 'coins') {
+      fetchTokenRef.current++;
+      setRetryTick(value => value + 1);
+    }
+  }), [open, active]);
 
   // Esc-to-close + body scroll lock.
   useEffect(() => {

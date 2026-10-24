@@ -66,3 +66,19 @@
 .ms-review-result .ms-review-ride-summary .ms-result-stats{margin:0 0 12px;padding:8px 0 13px;gap:12px}
 .ms-review-result .ms-review-sync>p{font-size:10px;line-height:1.65;margin:6px 0}
 .ms-review-result .ms-review-ride-summary .ms-result-cause{font-size:10px;line-height:1.65;margin:10px 0 0}
+
+/* Keep the confirmed wallet receipt visible above both scrolling review panes. */
+.ms-review-result .ms-settlement-banner{flex-shrink:0;margin:0 0 16px}
+.ms-review-result .ms-settlement-banner.ms-settlement{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(150px,1fr) minmax(140px,.8fr);align-items:center;gap:24px;padding:15px 20px;background:linear-gradient(110deg,#28342e,#172736);border-color:#b6ad5e66}
+.ms-settlement-banner .ms-settlement-award{display:flex;flex-direction:row;align-items:center;gap:15px;color:#ffe28a}
+.ms-settlement-award>svg{flex-shrink:0;filter:drop-shadow(0 0 9px #ffd95a44)}
+.ms-settlement-award>div{display:flex;flex-direction:column;gap:4px}
+.ms-settlement-banner .ms-settlement-award span{color:#f3e2ae;font-size:10px;line-height:1.4}
+.ms-settlement-banner .ms-settlement-award strong{font:700 35px "Space Mono",monospace;line-height:1.2;color:#ffe28a}
+.ms-settlement-award small{font:10px Lexend,"Noto Sans SC",sans-serif;margin-left:10px;color:#d9d4b1}
+.ms-settlement-banner .ms-settlement-breakdown{gap:9px;border-left:1px solid #74775166;padding-left:24px}
+.ms-settlement-breakdown>div{display:flex;justify-content:space-between;align-items:center;gap:16px}
+.ms-settlement-breakdown span{font-size:10px}.ms-settlement-breakdown b{font:700 14px "Space Mono",monospace;color:#dce7e3}.ms-settlement-breakdown>div:last-child b{color:#84f2ad}
+.ms-settlement-banner .ms-settlement-balance{border-left:1px solid #74775166;padding-left:24px;gap:6px}
+.ms-settlement-banner .ms-settlement-balance strong{font-size:27px;color:#fff}.ms-settlement-banner .ms-settlement-balance span{font-size:10px}
+@media(max-height:800px){.ms-review-result .ms-settlement-banner{margin-bottom:12px}.ms-review-result .ms-settlement-banner.ms-settlement{padding:10px 16px;gap:20px}.ms-settlement-banner .ms-settlement-award strong{font-size:29px}.ms-settlement-banner .ms-settlement-balance strong{font-size:23px}}
