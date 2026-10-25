@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { createLazyFeature } from './components/LazyFeature';
-import { fetchUserData, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, updateWordMetadata, healDoubleEncodedImageUrls } from './services/dataService';
+import { fetchUserData, fetchUserLearningProgress, invalidateUserDataReads, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, updateWordMetadata, healDoubleEncodedImageUrls } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync, hasUnattributedLegacySyncs } from './services/offlineSyncQueue';
 import {
@@ -470,6 +470,7 @@ const App: React.FC = () => {
   // authoritative new_balance returned by claimDailyLoginReward.
   const balanceReqSeqRef = useRef(0);
   const authIdentityRevisionRef = useRef(0);
+  const loadedDataIdentityRef = useRef<{ userId: string; revision: number } | null>(null);
 
   const refreshCoinBalance = useCallback(async () => {
     const userId = authUserIdRef.current;
@@ -503,7 +504,13 @@ const App: React.FC = () => {
       busy = true;
       try {
         await syncPendingLearningProgress(userId);
-        const { words: cloudWords } = await fetchUserData(userId);
+        // Initial loading owns the full library read. Until it succeeds, only
+        // upload pending answers; never launch a second library/media pipeline.
+        if (cancelled || authUserIdRef.current !== userId
+          || loadedDataIdentityRef.current?.userId !== userId
+          || loadedDataIdentityRef.current?.revision !== authIdentityRevisionRef.current
+          || document.visibilityState !== 'visible') return;
+        const cloudWords = await fetchUserLearningProgress(userId);
         if (cancelled || authUserIdRef.current !== userId) return;
         const byId = new Map(cloudWords.map(word => [word.id, word]));
         const next = overlayLearningProgress(userId, latestWordsRef.current.map(word => {
@@ -519,10 +526,18 @@ const App: React.FC = () => {
       finally { busy = false; }
     };
     void sync();
-    window.addEventListener('online', sync);
-    window.addEventListener('focus', sync);
-    const timer = window.setInterval(sync, 60000);
-    return () => { cancelled = true; window.removeEventListener('online', sync); window.removeEventListener('focus', sync); window.clearInterval(timer); };
+    const syncVisible = () => { if (document.visibilityState === 'visible') void sync(); };
+    window.addEventListener('online', syncVisible);
+    window.addEventListener('focus', syncVisible);
+    document.addEventListener('visibilitychange', syncVisible);
+    const timer = window.setInterval(syncVisible, 60000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', syncVisible);
+      window.removeEventListener('focus', syncVisible);
+      document.removeEventListener('visibilitychange', syncVisible);
+      window.clearInterval(timer);
+    };
   }, [session?.user?.id]);
 
   // Auth Listener
@@ -540,6 +555,7 @@ const App: React.FC = () => {
       if (!alive) return;
       const nextUserId = nextSession?.user?.id || null;
       if (authUserIdRef.current !== nextUserId) {
+        invalidateUserDataReads();
         authUserIdRef.current = nextUserId;
         refreshRequestRef.current++;
         authIdentityRevisionRef.current++;
@@ -627,7 +643,6 @@ const App: React.FC = () => {
   // the session object too, but must not restart requests or interrupt a test.
   const dataUserId = session?.user?.id ?? null;
   const dataIdentityRevision = authIdentityRevisionRef.current;
-  const loadedDataIdentityRef = useRef<{ userId: string; revision: number } | null>(null);
   const refreshData = useCallback(() => {
     const userId = dataUserId;
     const identityRevision = dataIdentityRevision;
@@ -1815,7 +1830,7 @@ const App: React.FC = () => {
             <span className="material-symbols-outlined text-5xl text-red-500 mb-4">signal_wifi_off</span>
             <p className="text-white font-headline text-2xl mb-4">{dataError}</p>
             <button 
-                onClick={() => window.location.reload()}
+                onClick={refreshData}
                 className="px-6 py-2 bg-mid-charcoal text-electric-blue rounded-lg hover:bg-electric-blue hover:text-charcoal transition-colors"
             >
                 {t.retryConnection}

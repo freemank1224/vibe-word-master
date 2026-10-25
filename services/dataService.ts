@@ -21,6 +21,8 @@ import { overlayLearningProgress } from './learningRecordStore';
 import { parseTestStatsReceipt, validateTestStatsEvent } from './testStatsEvents';
 import { adaptiveWordSelector } from './adaptiveWordSelector';
 import { updateReviewState, getReviewSchedule, type ReviewState } from './reviewScheduler';
+import { readForCurrentIdentity, mapWordLearningProgress, type UserReadContext } from './userDataReads.ts';
+export { fetchUserLearningProgress, invalidateUserDataReads } from './userDataReads.ts';
 
 let wordsMeaningFieldsSupported: boolean | null = null;
 
@@ -182,8 +184,10 @@ const normalizeWord = (text: string): string =>
 const ASSET_QUERY_CHUNK = 200;
 
 const fetchReadyAssetMap = async (
-  entries: { text: string; language?: string | null }[]
+  entries: { text: string; language?: string | null }[],
+  assertCurrent: () => void = () => {},
 ): Promise<Map<string, { id: string; public_url: string }>> => {
+  assertCurrent();
   const result = new Map<string, { id: string; public_url: string }>();
   if (!entries || entries.length === 0) return result;
 
@@ -204,6 +208,7 @@ const fetchReadyAssetMap = async (
 
   const langList = Array.from(languages);
   for (let i = 0; i < normalizeds.length; i += ASSET_QUERY_CHUNK) {
+    assertCurrent();
     const chunk = normalizeds.slice(i, i + ASSET_QUERY_CHUNK);
     // PostgREST 的 .in() 是按列的 OR；跨列组合在客户端按完整 key 精确匹配，结果正确。
     const { data: assets } = await supabase
@@ -212,6 +217,7 @@ const fetchReadyAssetMap = async (
       .eq('status', 'ready')
       .in('normalized_word', chunk)
       .in('language', langList);
+    assertCurrent();
     for (const a of assets || []) {
       result.set(`${a.normalized_word}::${a.language}`, { id: a.id, public_url: a.public_url });
     }
@@ -282,11 +288,13 @@ const linkAndGenerateImages = (inserted: { id: string; text: string; language?: 
  * 无论词从哪个入口进入（save / modify / 字典批量导入 / 历史数据），开卡即可被捞回。
  * 这是唯一能兜住所有入口的环节，因此优先级最高。
  */
-const backfillMissingImageAssets = async (rows: any[]): Promise<void> => {
+const backfillMissingImageAssets = async (rows: any[], assertCurrent: () => void = () => {}): Promise<void> => {
+  assertCurrent();
   const missing = (rows || []).filter(r => r && !r.image_asset_id && !r.deleted);
   if (missing.length === 0) return;
 
-  const assetMap = await fetchReadyAssetMap(missing.map(r => ({ text: r.text, language: r.language })));
+  const assetMap = await fetchReadyAssetMap(missing.map(r => ({ text: r.text, language: r.language })), assertCurrent);
+  assertCurrent();
   if (assetMap.size === 0) return;
 
   const assetToWordIds = new Map<string, string[]>();
@@ -302,10 +310,12 @@ const backfillMissingImageAssets = async (rows: any[]): Promise<void> => {
   }
 
   for (const [assetId, wordIds] of assetToWordIds) {
+    assertCurrent();
     const { error } = await supabase
       .from('words')
       .update({ image_asset_id: assetId })
       .in('id', wordIds);
+    assertCurrent();
     if (error) {
       console.warn(`[backfillMissingImageAssets] update failed for asset ${assetId}: ${error.message}`);
     }
@@ -408,7 +418,8 @@ export const healDoubleEncodedImageUrls = async (): Promise<number> => {
 };
 
 
-export const fetchUserData = async (userId: string) => {
+const loadUserData = async (userId: string, { assertCurrent }: UserReadContext) => {
+  assertCurrent();
   // Fetch Sessions (Filtered: Not deleted)
   const { data: sessionsData, error: sessionsError } = await supabase
     .from('sessions')
@@ -416,6 +427,7 @@ export const fetchUserData = async (userId: string) => {
     .eq('user_id', userId)
     .or('deleted.eq.false,deleted.is.null') // Ensure we only get active sessions
     .order('created_at', { ascending: false });
+  assertCurrent();
     
   if (sessionsError) {
       console.error("Supabase Error fetching sessions:", sessionsError.message);
@@ -429,6 +441,7 @@ export const fetchUserData = async (userId: string) => {
   let hasMore = true;
   
   while (hasMore) {
+    assertCurrent();
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
     
@@ -438,6 +451,7 @@ export const fetchUserData = async (userId: string) => {
       .eq('user_id', userId)
       .or('deleted.eq.false,deleted.is.null')
       .range(from, to);
+    assertCurrent();
 
     if (wordsError) {
       console.error("Supabase Error fetching words:", wordsError.message);
@@ -456,7 +470,8 @@ export const fetchUserData = async (userId: string) => {
   console.log(`[fetchUserData] Loaded ${wordsData.length} words for user`);
 
   // 读时兜底：把已有共享图但 image_asset_id 仍为 null 的词懒回链（覆盖所有加词入口与历史数据）
-  await backfillMissingImageAssets(wordsData);
+  await backfillMissingImageAssets(wordsData, assertCurrent);
+  assertCurrent();
 
   // Map DB structure to App Interface
   // Note: We calculate wordCount and timestamp dynamically based on the actual words fetched
@@ -494,18 +509,13 @@ export const fetchUserData = async (userId: string) => {
   }).filter(s => s.wordCount > 0); // Remove sessions that have no active words (Zombies)
 
   const words: WordEntry[] = (wordsData || []).map((w: any) => ({
-    id: w.id,
+    ...mapWordLearningProgress(w),
     text: w.text,
     timestamp: new Date(w.created_at).getTime(),
     sessionId: w.session_id,
-    correct: w.correct,
-    tested: w.tested,
     image_path: w.image_path,
     image_url: getImageUrl(w.image_path), // Will be updated below if asset exists
     image_asset_id: w.image_asset_id || null,
-    error_count: w.error_count || 0,
-    best_time_ms: w.best_time_ms || null,
-    last_tested: w.last_tested ? new Date(w.last_tested).getTime() : null,
     phonetic: w.phonetic || null,
     audio_url: w.audio_url || null,
     language: w.language || 'en',
@@ -516,9 +526,6 @@ export const fetchUserData = async (userId: string) => {
     selected_meaning_key: w.selected_meaning_key || null,
     deleted: w.deleted || false,
     tags: w.tags || ['Custom'],
-    consecutive_correct: w.consecutive_correct || 0,
-    review_state: w.review_state || null,
-    learning_revision: w.learning_revision || 0
   }));
 
   // Batch-resolve image URLs from shared image_assets
@@ -529,6 +536,7 @@ export const fetchUserData = async (userId: string) => {
       .select('id, public_url')
       .in('id', assetIds)
       .eq('status', 'ready');
+    assertCurrent();
 
     if (assets && assets.length > 0) {
       const assetUrlMap = new Map<string, string>(assets.map((a: { id: string; public_url: string }) => [a.id, a.public_url]));
@@ -545,6 +553,10 @@ export const fetchUserData = async (userId: string) => {
 
   return { sessions, words: overlayLearningProgress(userId, words) };
 };
+
+// Callers also refresh immediately after writes. Never share an older full
+// library snapshot with a save/delete/sync completion that requires a new read.
+export const fetchUserData = (userId: string) => readForCurrentIdentity(context => loadUserData(userId, context));
 
 export const saveSessionData = async (
   userId: string, 
