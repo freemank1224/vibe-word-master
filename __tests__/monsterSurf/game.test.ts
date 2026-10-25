@@ -99,86 +99,176 @@ test('word decks support matching typographic apostrophes and hyphens consistent
   assert.equal(state.correct, 2);
 });
 
-test('dictation is available immediately and the sea keeps moving with five safe opening seconds', () => {
-  const initial = setSurfInput(startSurf(), 'oce');
+test('dictation is available immediately and empty input holds its heading through the safe opening', () => {
+  const initial = startSurf();
   const next = tickSurf(initial, 5_000);
   assert.equal(next.phase, 'surfing');
-  assert.equal(next.input, 'oce');
+  assert.equal(next.input, '');
   assert.equal(next.hits, 0);
   assert.ok(Math.abs(next.distance - SURF_BASE_SPEED * 5) < 1e-7);
   assert.equal(next.checkpoint, 0);
-  assert.notEqual(next.x, initial.x);
-  assert.ok(next.coins > 0);
+  assert.equal(next.x, initial.x);
+  assert.equal(next.vx, initial.vx);
+  assert.equal(next.targetX, initial.targetX);
 });
 
-test('correct prefixes enable guidance, wrong letters lock it, and editing repairs navigation', () => {
+test('a newly entered correct prefix chooses its heading during the input event', () => {
   const initial = startSurf();
   assert.equal(initial.navigation, 'waiting');
   for (const value of ['o', 'OC', 'ｏｃｅ', ' ocean ']) {
-    assert.equal(setSurfInput(initial, value).navigation, 'guided');
+    const corrected = setSurfInput(initial, value);
+    assert.equal(corrected.navigation, 'guided');
+    assert.notEqual(corrected.targetX, initial.targetX);
+    assert.notEqual(corrected.vx, initial.vx);
+    assert.equal(Math.sign(corrected.vx), Math.sign(corrected.targetX - corrected.x));
+    assert.equal(corrected.x, initial.x, 'typing sets a heading without teleporting the surfer');
   }
   for (const value of ['x', 'ocx', 'oceans', 'oce an']) {
-    assert.equal(setSurfInput(initial, value).navigation, 'locked');
+    const wrong = setSurfInput(initial, value);
+    assert.equal(wrong.navigation, 'locked');
+    assert.equal(wrong.targetX, initial.targetX);
+    assert.equal(wrong.vx, initial.vx);
   }
-  const wrongLetter = setSurfInput(initial, 'ocx');
-  assert.equal(setSurfInput(wrongLetter, 'oc').navigation, 'guided');
-  assert.equal(setSurfInput(wrongLetter, '').navigation, 'waiting');
 });
 
-test('wrong prefixes hold the current heading instead of secretly avoiding hazards', () => {
-  const moving = tickSurf(setSurfInput(startSurf(), 'o'), 1_000);
-  assert.ok(moving.vx < 0);
-  const locked = setSurfInput(moving, 'ox');
-  const drifted = tickSurf(locked, 600);
-  assert.equal(drifted.vx, locked.vx);
-  assert.ok(Math.abs(drifted.x - locked.x - locked.vx * 0.6) < 1e-7);
-  assert.equal(drifted.targetX, locked.targetX);
-  assert.ok(drifted.distance > locked.distance);
-  const repaired = tickSurf(setSurfInput(drifted, 'oce'), 600);
-  assert.notEqual(repaired.vx, drifted.vx);
+test('one correct letter never enables continuous guidance while the player stops typing', () => {
+  const typed = setSurfInput(startSurf(), 'o');
+  assert.notEqual(typed.vx, 0);
+  const drifted = tickSurf(typed, 400);
+  assert.equal(drifted.hits, 0);
+  assert.equal(drifted.vx, typed.vx);
+  assert.equal(drifted.targetX, typed.targetX);
+  assert.ok(Math.abs(drifted.x - typed.x - typed.vx * 0.4) < 1e-7);
+  const typedAgain = setSurfInput(drifted, 'oc');
+  assert.notEqual(typedAgain.vx, drifted.vx, 'another correct letter can correct the course again');
+  const idleAgain = tickSurf(typedAgain, 300);
+  assert.equal(idleAgain.vx, typedAgain.vx);
+  assert.equal(idleAgain.targetX, typedAgain.targetX);
+  assert.ok(Math.abs(idleAgain.x - typedAgain.x - typedAgain.vx * 0.3) < 1e-7);
 });
 
-test('manual arrow or pointer controls cannot divert the automatic route', () => {
+test('empty, incorrect, repeated, deleted and format-only input cannot choose a new heading', () => {
+  const typed = tickSurf(setSurfInput(startSurf(), 'oce'), 300);
+  for (const value of ['', 'ocx', 'oceans', 'oce', 'oc', ' OCE ', 'ｏｃｅ']) {
+    const edited = setSurfInput(typed, value);
+    assert.equal(edited.vx, typed.vx, `input ${JSON.stringify(value)} must preserve the heading`);
+    assert.equal(edited.targetX, typed.targetX);
+    const drifted = tickSurf(edited, 200);
+    assert.equal(drifted.hits, 0);
+    assert.equal(drifted.vx, typed.vx);
+    assert.equal(drifted.targetX, typed.targetX);
+    assert.ok(Math.abs(drifted.x - edited.x - edited.vx * 0.2) < 1e-7);
+  }
+});
+
+test('removing a wrong suffix holds the heading, then a newly typed correct letter repairs it', () => {
+  const typed = tickSurf(setSurfInput(startSurf(), 'o'), 400);
+  const wrongLetter = setSurfInput(typed, 'ocx');
+  const deleted = setSurfInput(wrongLetter, 'oc');
+  assert.equal(deleted.vx, typed.vx);
+  assert.equal(deleted.targetX, typed.targetX);
+  const repaired = setSurfInput(deleted, 'oce');
+  assert.equal(repaired.navigation, 'guided');
+  assert.notEqual(repaired.vx, deleted.vx);
+  const replaced = setSurfInput(wrongLetter, 'oce');
+  assert.equal(replaced.navigation, 'guided');
+  assert.equal(replaced.vx, repaired.vx, 'replacing a wrong letter with the right letter is a new input action');
+});
+
+test('deleting a wrong character in the middle also cannot restart guidance', () => {
+  const typed = tickSurf(setSurfInput(startSurf(), 'o'), 400);
+  const wrong = setSurfInput(typed, 'ocxean');
+  const deleted = setSurfInput(wrong, 'ocean');
+  assert.equal(deleted.vx, wrong.vx);
+  assert.equal(deleted.targetX, wrong.targetX);
+  const drifted = tickSurf(deleted, 300);
+  assert.equal(drifted.vx, wrong.vx);
+  assert.equal(drifted.targetX, wrong.targetX);
+});
+
+test('a restored guided snapshot and pause/resume cannot silently restart route planning', () => {
+  const restored: SurfState = { ...startSurf(), input: 'o', navigation: 'guided', vx: 37, targetX: 880 };
+  for (const initial of [restored, resumeSurf(pauseSurf(restored))]) {
+    const next = tickSurf(initial, 500);
+    assert.equal(next.vx, initial.vx);
+    assert.equal(next.targetX, initial.targetX);
+    assert.ok(Math.abs(next.x - initial.x - initial.vx * 0.5) < 1e-7);
+  }
+});
+
+test('correct-answer feedback and the following empty question keep the last chosen heading', () => {
+  const accepted = answer(startSurf());
+  const next = tickSurf(accepted, 800);
+  assert.equal(next.phase, 'surfing');
+  assert.equal(next.input, '');
+  assert.equal(next.checkpoint, 1);
+  assert.equal(next.vx, accepted.vx);
+  assert.equal(next.targetX, accepted.targetX);
+  assert.ok(Math.abs(next.x - accepted.x - accepted.vx * 0.8) < 1e-7);
+});
+
+test('manual arrow or pointer controls cannot change a heading selected by typing', () => {
   const initial = setSurfInput(startSurf(), 'o');
   const automatic = tickSurf(initial, 3_000);
   assert.deepEqual(tickSurf(initial, 3_000, { steer: -1, targetX: 900 }), automatic);
   assert.deepEqual(tickSurf(initial, 3_000, { steer: NaN, targetX: Infinity }), automatic);
 });
 
-test('guidance bends toward coins and avoids the first solid island while a locked course hits it', () => {
-  const first = courseObstacle(0);
-  const crossingMs = (first.y - first.ry - SURF_RIDER_COLLISION_RY) / SURF_BASE_SPEED * 1000 + 200;
-  const guided = tickSurf(setSurfInput(startSurf(), 'o'), crossingMs);
-  const locked = tickSurf(setSurfInput(startSurf(), 'x'), crossingMs);
-  assert.equal(guided.hits, 0);
-  assert.ok(guided.coins > locked.coins);
-  assert.equal(locked.hits, 1);
-  assert.equal(locked.obstacles.find(obstacle => obstacle.id === 0)?.hit, true);
-  assert.ok(locked.distance < guided.distance, 'a collision physically slows forward travel');
-  assert.equal(locked.feedback, 'collision');
-});
-
-test('autopilot safely navigates diverse islands at both starting and maximum earned speed', () => {
+test('a correct letter selects a clear side of an island, but idle and incorrect input do not', () => {
+  const island = courseObstacle(0);
   for (const correct of [0, 3, 8, 20]) {
-    let state = setSurfInput({ ...startSurf(), correct, speed: SURF_BASE_SPEED * surfSpeedMultiplier(correct) }, 'o');
-    let minX = state.x;
-    let maxX = state.x;
-    for (let index = 0; index < 120; index++) {
-      state = tickSurf(state, 1_000);
-      minX = Math.min(minX, state.x);
-      maxX = Math.max(maxX, state.x);
-      assert.equal(state.hits, 0, `correct ${correct}, second ${index}`);
+    const speed = SURF_BASE_SPEED * surfSpeedMultiplier(correct);
+    // Give each earned speed the same 1.2-second reaction window. A fixed
+    // 100-unit window is already unavoidable at the fastest surfing speed.
+    const initial = maintainSurfCourse({ ...startSurf(), correct, speed, x: island.x,
+      distance: island.y - island.ry - SURF_RIDER_COLLISION_RY - speed * 1.2 });
+    const guided = setSurfInput(initial, 'o');
+    assert.ok(Math.abs(guided.targetX - island.x) > island.rx + SURF_RIDER_COLLISION_RX);
+    assert.notEqual(guided.vx, 0);
+    const avoided = tickSurf(guided, 1_600);
+    assert.equal(avoided.hits, 0, `correct input avoids the island at speed ${speed}`);
+    assert.equal(avoided.vx, guided.vx, 'the chosen safe heading is held without another input');
+    for (const input of ['', 'x']) {
+      const idle = setSurfInput(initial, input);
+      assert.equal(idle.vx, 0);
+      assert.equal(idle.targetX, initial.targetX);
+      const collided = tickSurf(idle, 1_600);
+      assert.equal(collided.hits, 1);
+      assert.equal(collided.obstacles.find(obstacle => obstacle.id === island.id)?.hit, true);
+      assert.equal(collided.feedback, 'collision');
     }
-    assert.ok(maxX - minX > 200, 'course must curve through several different passages');
-    assert.ok(state.coins > 60);
-    assert.equal(state.phase, 'surfing');
   }
   const obstacles = Array.from({ length: 8 }, (_, id) => courseObstacle(id));
   assert.deepEqual(obstacles.map(obstacle => obstacle.variant), [3, 4, 5, 6, 7, 3, 5, 4]);
   assert.ok(new Set(obstacles.map(obstacle => obstacle.rx * obstacle.ry)).size >= 3);
 });
 
-test('shore islands appear immediately, remain collidable, and cannot hide a central navigation hazard', () => {
+test('actively typing successive correct letters can navigate several islands and collect crystals', () => {
+  for (const cadence of [150, 250, 400]) {
+    let state = startSurf();
+    let minX = state.x;
+    let maxX = state.x;
+    for (let word = 0; word < 12; word++) {
+      const text = currentSurfWord(state).answer;
+      for (let length = 1; length <= text.length; length++) {
+        state = setSurfInput(state, text.slice(0, length));
+        state = tickSurf(state, cadence);
+        minX = Math.min(minX, state.x);
+        maxX = Math.max(maxX, state.x);
+        assert.equal(state.hits, 0, `typing every ${cadence} ms, word ${word}, letter ${length}`);
+      }
+      state = tickSurf(submitSurf(state), 650);
+      assert.equal(state.phase, 'surfing');
+      assert.equal(state.correct, word + 1);
+      assert.equal(state.hits, 0);
+    }
+    assert.ok(state.distance > courseObstacle(3).y);
+    assert.ok(maxX - minX > 200, 'new correct input selects different passages as the route develops');
+    assert.ok(state.coins > 60);
+  }
+});
+
+test('shore islands appear immediately and retain their real collision geometry', () => {
   const initial = startSurf();
   const shore = courseMarginObstacle(0);
   const shoreArt = SURF_ISLAND_ART[shore.variant];
@@ -191,9 +281,6 @@ test('shore islands appear immediately, remain collidable, and cannot hide a cen
   const hit = tickSurf({ ...initial, x: shore.x, distance: shore.y - shore.ry - SURF_RIDER_COLLISION_RY - 4 }, 50);
   assert.equal(hit.hits, 1);
   assert.equal(hit.obstacles.find(obstacle => obstacle.id === shore.id)?.hit, true);
-  const guided = tickSurf(setSurfInput(initial, 'o'), 10_000);
-  assert.equal(guided.hits, 0);
-  assert.ok(guided.distance > courseObstacle(0).y);
 });
 
 test('each art variant has one native collision size everywhere, with small islands reserved for shores', () => {
@@ -299,31 +386,35 @@ test('every coin formation stays clear of both island footprints and the board c
   }
 });
 
-test('autopilot follows the formation spine instead of twitching toward its remaining columns', () => {
-  const initial = setSurfInput(startSurf(), 'o');
+test('a correct letter targets the formation spine instead of its remaining columns', () => {
+  const initial = startSurf();
   const opening = initial.items.filter(coin => coin.group === 0 && coin.formation === 'matrix');
   const spine = opening[0].guideX!;
   const onlyLeft = { ...initial, items: initial.items.map(coin => ({ ...coin,
     collectedAt: coin.group === 0 && coin.formation === 'matrix' && coin.x < spine ? null : 0 })) };
   const onlyRight = { ...initial, items: initial.items.map(coin => ({ ...coin,
     collectedAt: coin.group === 0 && coin.formation === 'matrix' && coin.x > spine ? null : 0 })) };
-  const left = tickSurf(onlyLeft, 10);
-  const right = tickSurf(onlyRight, 10);
+  const left = setSurfInput(onlyLeft, 'o');
+  const right = setSurfInput(onlyRight, 'o');
   assert.equal(left.targetX, spine);
   assert.equal(right.targetX, spine);
   assert.equal(left.x, right.x);
   assert.equal(left.vx, right.vx);
+  const consumed = { ...left, items: left.items.map(coin => ({ ...coin, collectedAt: 0 })) };
+  const idle = tickSurf(consumed, 200);
+  assert.equal(idle.targetX, left.targetX, 'a pickup does not itself trigger another route search');
+  assert.equal(idle.vx, left.vx);
 });
 
-test('a shifted formation cannot pull the surfer across an island hidden by a marginal shore threat', () => {
+test('a new correct letter prioritizes a central island over a marginal shore threat', () => {
+  const island = courseObstacle(200);
   for (const correct of [0, 3]) {
-    const initial = setSurfInput(maintainSurfCourse({ ...startSurf(), correct,
+    const initial = maintainSurfCourse({ ...startSurf(), correct,
       speed: SURF_BASE_SPEED * surfSpeedMultiplier(correct), distance: 134900,
-      x: 657, vx: -3, targetX: 655.8 }), 'o');
-    const navigated = tickSurf(initial, 2500);
-    assert.equal(navigated.hits, 0);
-    assert.equal(navigated.phase, 'surfing');
-    assert.ok(navigated.distance > courseObstacle(200).y + courseObstacle(200).ry);
+      x: 657, vx: -3, targetX: 655.8 });
+    const navigated = setSurfInput(initial, 'o');
+    assert.ok(Math.abs(navigated.targetX - island.x) > island.rx + SURF_RIDER_COLLISION_RX);
+    assert.equal(Math.sign(navigated.vx), Math.sign(navigated.targetX - initial.x));
   }
 });
 
@@ -528,7 +619,10 @@ test('equivalent small and large simulation updates yield identical routes and f
 });
 
 test('the active sea remains bounded even after enormous magnet upgrades, without resurrecting coins', () => {
-  let state = setSurfInput({ ...startSurf(), correct: 100, speed: SURF_BASE_SPEED * surfSpeedMultiplier(100) }, 'o');
+  // This checks course streaming and pickups, independently of obstacle damage.
+  // A long run must no longer use one retained correct prefix as permanent autopilot.
+  let state = { ...startSurf(), correct: 100, speed: SURF_BASE_SPEED * surfSpeedMultiplier(100),
+    invulnerableMs: 1_000_000 };
   const retired = new Set<number>();
   let previousIds = new Set(state.items.map(coin => coin.id));
   for (let index = 0; index < 80; index++) {
@@ -541,6 +635,8 @@ test('the active sea remains bounded even after enormous magnet upgrades, withou
     for (const id of previousIds) if (!ids.has(id)) retired.add(id);
     previousIds = ids;
     assert.equal(state.hits, 0);
+    assert.equal(state.x, 500);
+    assert.equal(state.vx, 0);
   }
   assert.ok(retired.size > 100);
   assert.ok(Number.isFinite(surfMagnetRadius(100)));

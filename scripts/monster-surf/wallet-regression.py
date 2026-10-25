@@ -47,6 +47,17 @@ def ride():
     return json.loads(js(f'JSON.stringify(JSON.parse(localStorage.getItem({key})))'))
 
 
+def type_current_word():
+    s = until(state, lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
+    word = ride()['snapshot']['deck'][int(s['checkpoint'])]['answer']
+    browse('click', '#ms-answer')
+    browse('press', 'ControlOrMeta+A')
+    browse('press', 'Backspace')
+    for letter in word:
+        browse('type', letter)
+        time.sleep(.4)
+
+
 home = json.loads(browse('newtab', BASE + '/', '--json'))['tabId']
 browse('viewport', '1366x768')
 js('localStorage.setItem("sb-mkdxdlsjisqazermmfoe-auth-token",' + json.dumps(json.dumps(SESSION)) + ');localStorage.setItem("vibe_language","en");"QA auth installed"')
@@ -65,15 +76,15 @@ browse('click', '.ms-start-card .ms-primary')
 until(state, lambda s: s.get('phase') == 'surfing' and s.get('audioReady') == 'true')
 started = state()
 assert int(started['walletBalance']) == initial - 1, (initial, started)
-browse('fill', '#ms-answer', ride()['snapshot']['deck'][0]['answer'][:1])
-until(state, lambda s: int(s['crystals']) >= 30, 45)
+# Each correct keystroke sets one heading; a stationary prefix no longer farms
+# crystals. Keep typing throughout the journey using the actual input control.
 for i in range(3):
-    s = until(state, lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
-    word = ride()['snapshot']['deck'][int(s['checkpoint'])]['answer']
-    browse('fill', '#ms-answer', word)
+    type_current_word()
     browse('press', 'Enter')
     until(state, lambda s: int(s['correct']) == i + 1)
 until(state, lambda s: s['phase'] == 'surfing')
+type_current_word()  # Listen/type the fourth clue without submitting it.
+assert int(state()['crystals']) >= 30, state()
 browse('press', 'Escape')
 browse('click', '.ms-modal .ms-secondary')
 final = until(state, lambda s: s['phase'] == 'over' and s['settlement'] == 'settled')

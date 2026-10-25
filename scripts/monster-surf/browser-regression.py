@@ -102,16 +102,16 @@ browse('click','.ms-options button:first-child');browse('click','.ms-listen');ti
 assert json.loads(js('JSON.stringify(window.__surfAudioEvidence)'))[-1]['playing']
 browse('press','Escape');p=record('paused');assert p['phase']=='paused';time.sleep(.3);assert state()['distance']==p['distance']
 browse('press','Enter');phase('surfing');assert state()['focus']=='ms-answer'
-until(lambda s:float(s['distance'])>1150,12)
-s=record('first-island-avoided');assert s['hits']=='0' and float(s['x'])<400 and int(s['coins'])>3,s
-fit();shot('guided-en-1366')
-# Wrong prefix locks the existing direction and target; fixing it re-enables guidance.
+fit();shot('course-set-en-1366')
+# Wrong prefixes and deletion keep the last heading; a new correct character
+# makes a single course decision. Dedicated idle checks live in typing-guidance.
 fill('ox');a=record('wrong-letter-heading-held');time.sleep(.35);b=state()
 assert b['navigation']=='locked' and a['targetX']==b['targetX'],(a,b)
-fill('o');assert state()['navigation']=='guided'
+fill('o');assert state()['navigation']=='waiting'
+fill('oc');assert state()['navigation']=='guided'
 # Empty submit is safe; clicking sea recovers the keyboard focus.
 submit('  ');assert state()['hits']=='0'
-js('document.querySelector("canvas").dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,cancelable:true}))');time.sleep(.1);assert state()['focus']=='ms-answer'
+browse('click','canvas');time.sleep(.1);assert state()['focus']=='ms-answer'
 for index,word in enumerate(['ocean','sun','wave']):
  phase('surfing');submit(word,mouse=index==1);s=record('word-'+word)
  assert int(s['correct'])==index+1 and abs(float(s['magnet'])-1.5**(index+1))<.0001,s

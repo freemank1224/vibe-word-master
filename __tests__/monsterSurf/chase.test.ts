@@ -256,7 +256,8 @@ test('small and large frames produce the same chase clocks, smooth gap and speed
 test('following alone never attacks or consumes another mistake, even after two errors', () => {
   let state = warningInput();
   for (let mistakes = 0; mistakes < 2; mistakes++) state = tickSurf(wrong(state), 650);
-  state = setSurfInput(state, currentSurfWord(state).answer.slice(0, 1));
+  // Isolate following/attack clocks from ordinary island collision injuries.
+  state = { ...state, invulnerableMs: 1_000_000 };
   for (let second = 0; second < 120; second++) state = tickSurf(state, 1_000);
   assert.equal(state.phase, 'surfing');
   assert.equal(state.chase.phase, 'chasing');
@@ -267,28 +268,24 @@ test('following alone never attacks or consumes another mistake, even after two 
   assert.ok(Math.abs(state.chase.gap - state.chase.targetGap) < 1e-7);
 });
 
-test('correct navigation remains safe and bounded under the maximum chase surge and a huge magnet', () => {
-  // Hold the worst-case surge beyond its normal duration to exercise many island
-  // combinations, including after the magnet has collected every visible coin.
-  let state = startSurf();
-  state = setSurfInput({ ...state, correct: 23,
+test('chase surge and a huge magnet cannot grant idle players automatic obstacle avoidance', () => {
+  const island = courseObstacle(0);
+  const initial = startSurf();
+  const restored = maintainSurfCourse({ ...initial, correct: 23,
+    x: island.x, vx: 0, input: 'o', navigation: 'guided',
+    distance: island.y - island.ry - SURF_RIDER_COLLISION_RY - 100,
     speed: SURF_BASE_SPEED * surfSpeedMultiplier(23) * SURF_CHASE_BOOST_MULTIPLIER,
-    chase: { ...state.chase, phase: 'chasing', mistakes: 2, boostMs: 1_000_000 } }, 'o');
-  let minX = state.x;
-  let maxX = state.x;
-  for (let second = 0; second < 240; second++) {
-    state = tickSurf(state, 1_000);
-    minX = Math.min(minX, state.x);
-    maxX = Math.max(maxX, state.x);
-    assert.equal(state.hits, 0, `unavoidable island damage at second ${second}`);
-    assert.equal(state.chase.mistakes, 2);
-    assert.equal(state.phase, 'surfing');
-    assert.ok(state.items.length <= 210);
-    assert.ok(state.obstacles.length <= 28);
-    assert.ok(Number.isFinite(state.x) && Number.isFinite(state.distance));
-  }
-  assert.ok(maxX - minX > 200, 'the surfer still changes course after distant coins are collected');
-  assert.ok(state.coins > 100);
+    chase: { ...initial.chase, phase: 'chasing', mistakes: 2, boostMs: 1_000_000 } });
+  const idle = tickSurf(restored, 100);
+  assert.equal(idle.vx, restored.vx);
+  assert.equal(idle.x, restored.x);
+  assert.equal(idle.targetX, restored.targetX);
+  const collided = tickSurf(idle, 500);
+  assert.equal(collided.hits, 1);
+  assert.equal(collided.feedback, 'collision');
+  assert.equal(collided.chase.phase, 'chasing');
+  assert.equal(collided.chase.mistakes, 2, 'island damage does not manufacture a chase mistake');
+  assert.equal(collided.obstacles.find(obstacle => obstacle.id === island.id)?.hit, true);
 });
 
 test('correcting mistakes can still complete all five escapes without erasing the danger count', () => {
@@ -302,7 +299,8 @@ test('correcting mistakes can still complete all five escapes without erasing th
     state = tickSurf(state, 650);
   }
   assert.equal(state.chase.phase, 'retreating');
-  state = tickSurf(setSurfInput(state, currentSurfWord(state).answer.slice(0, 1)), SURF_CHASE_RETREAT_MS);
+  // Isolate retreat timing from island damage while the player is not typing.
+  state = tickSurf({ ...state, invulnerableMs: SURF_CHASE_RETREAT_MS + 1 }, SURF_CHASE_RETREAT_MS);
   assert.equal(state.chase.phase, 'escaped');
   assert.equal(state.phase, 'surfing');
   const afterEscape = wrong(state);

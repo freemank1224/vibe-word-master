@@ -18,7 +18,6 @@ const MAX_TICK_MS = 10_000;
 const SIMULATION_STEP_MS = 10;
 const EDGE = 65;
 const MAX_STEER_SPEED = 270;
-const STEER_RESPONSE = 4.5;
 const INVULNERABLE_MS = 1_800;
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -83,8 +82,23 @@ export function setSurfInput(state: SurfState, input: string): SurfState {
   // must not make an otherwise valid paid ride impossible to settle.
   input = input.slice(0, 128);
   const prefix = normalize(input);
-  return { ...state, input, feedback: 'listen', navigation: !prefix ? 'waiting'
-    : currentSurfWord(state).answer.startsWith(prefix) ? 'guided' : 'locked' };
+  const previous = normalize(state.input);
+  const correct = Boolean(prefix) && currentSurfWord(state).answer.startsWith(prefix);
+  // A valid prefix is feedback, not permission to drive forever. Only an edit
+  // inserting/replacing a correct character sets a new course. Removing text
+  // (including a wrong letter in the middle), repeat events and case/spacing
+  // normalization must not buy another steering action.
+  let from = 0;
+  while (from < previous.length && from < prefix.length && previous[from] === prefix[from]) from++;
+  let oldEnd = previous.length;
+  let newEnd = prefix.length;
+  while (oldEnd > from && newEnd > from && previous[oldEnd - 1] === prefix[newEnd - 1]) { oldEnd--; newEnd--; }
+  const turns = correct && newEnd > from;
+  const next: SurfState = { ...state, input, feedback: 'listen',
+    navigation: !prefix || correct && !turns ? 'waiting' : correct ? 'guided' : 'locked' };
+  if (!turns) return next;
+  const targetX = navigationTarget(next);
+  return { ...next, targetX, vx: navigationVelocity(next, targetX) };
 }
 
 function injure(state: SurfState, collision?: SurfObstacle): SurfState {
@@ -193,18 +207,48 @@ function navigationTarget(state: SurfState): number {
   return clamp(target, EDGE, SURF_WORLD_WIDTH - EDGE);
 }
 
-/** Wrong letters preserve the current heading: there is no hidden obstacle dodge. */
-function steer(state: SurfState, seconds: number): { x: number; vx: number; targetX: number } {
-  let targetX = state.targetX;
-  let vx = state.vx;
-  let x = state.x + vx * seconds;
-  if (state.navigation === 'guided' && state.phase !== 'hurt') {
-    targetX = navigationTarget(state);
-    const targetSpeed = clamp((targetX - state.x) * 2.2, -MAX_STEER_SPEED, MAX_STEER_SPEED);
-    const decay = Math.exp(-STEER_RESPONSE * seconds);
-    vx = targetSpeed + (state.vx - targetSpeed) * decay;
-    x = state.x + targetSpeed * seconds + (state.vx - targetSpeed) * (1 - decay) / STEER_RESPONSE;
+/** Pick one safe straight course per correct-letter event, including the listening gap. */
+function navigationVelocity(state: SurfState, targetX: number): number {
+  const horizon = 2.8;
+  const low = Math.max(-MAX_STEER_SPEED, (EDGE - state.x) / horizon);
+  const high = Math.min(MAX_STEER_SPEED, (SURF_WORLD_WIDTH - EDGE - state.x) / horizon);
+  const desired = clamp((targetX - state.x) * 2.2, low, high);
+  const candidates = [desired, clamp(state.vx, low, high), 0];
+  for (let speed = -MAX_STEER_SPEED; speed <= MAX_STEER_SPEED; speed += 15) candidates.push(clamp(speed, low, high));
+  const ahead = state.speed * horizon;
+  const islands = state.obstacles.filter(island => !island.hit
+    && island.y + island.ry + HERO_RY + 20 > state.distance
+    && island.y - island.ry - HERO_RY - 20 < state.distance + ahead);
+  let best = desired;
+  let bestClearance = -Infinity;
+  let bestDeviation = Infinity;
+  for (const vx of candidates) {
+    let clearance = Infinity;
+    for (const island of islands) {
+      const rx = island.rx + HERO_RX + 20;
+      const ry = island.ry + HERO_RY + 20;
+      const px = (state.x - island.x) / rx;
+      const py = (state.distance - island.y) / ry;
+      const dx = vx * horizon / rx;
+      const dy = ahead / ry;
+      const along = clamp(-(px * dx + py * dy) / (dx * dx + dy * dy), 0, 1);
+      clearance = Math.min(clearance, (px + dx * along) ** 2 + (py + dy * along) ** 2);
+    }
+    // All clear headings are equally safe; favor the crystal route. If an
+    // obstacle is already too close, choose the heading with most clearance.
+    clearance = Math.min(1, clearance);
+    const deviation = Math.abs(vx - desired);
+    if (clearance > bestClearance || clearance === bestClearance && deviation < bestDeviation) {
+      best = vx; bestClearance = clearance; bestDeviation = deviation;
+    }
   }
+  return best;
+}
+
+/** Time alone never chooses a route, even with a valid prefix or legacy guided save. */
+function steer(state: SurfState, seconds: number): { x: number; vx: number; targetX: number } {
+  const { vx, targetX } = state;
+  const x = state.x + vx * seconds;
   const bounded = clamp(x, EDGE, SURF_WORLD_WIDTH - EDGE);
   return { x: bounded, vx: x !== bounded ? 0 : vx, targetX };
 }
@@ -277,7 +321,7 @@ function tickChase(state: SurfState, deltaMs: number): SurfState {
   return { ...next, speed: surfingSpeed(next) };
 }
 
-/** Continuous sea movement. Typing changes the planner; no gates interrupt the run. */
+/** Continuous sea movement. New correct letters set the heading; time only advances it. */
 export function tickSurf(state: SurfState, deltaMs: number, _controls?: SurfControls): SurfState {
   if (state.phase === 'ready' || state.phase === 'paused' || state.phase === 'over'
     || !Number.isFinite(deltaMs) || deltaMs <= 0) return state;

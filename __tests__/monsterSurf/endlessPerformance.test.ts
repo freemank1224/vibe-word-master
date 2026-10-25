@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startSurf, setSurfInput, tickSurf } from '../../features/monster-surf/game.ts';
+import { startSurf, tickSurf } from '../../features/monster-surf/game.ts';
 import { createSurfRenderer } from '../../features/monster-surf/renderer.ts';
 import { SURF_BASE_SPEED, SURF_MAX_VISIBLE_GULLS, surfMagnetMultiplier, surfMagnetRadius, surfSpeedMultiplier } from '../../features/monster-surf/constants.ts';
 
 test('2500 correct words keep Endless physics finite and collect the entire active sea', () => {
-  let state = setSurfInput({ ...startSurf(), correct: 2500, speed: SURF_BASE_SPEED * surfSpeedMultiplier(2500) }, 'o');
+  // Isolate long-running course generation and magnet arithmetic from injury
+  // termination. A retained correct prefix no longer grants automatic steering.
+  let state = { ...startSurf(), correct: 2500, speed: SURF_BASE_SPEED * surfSpeedMultiplier(2500), invulnerableMs: 100_000 };
   const initialCrystals = state.items.filter(item => item.collectedAt === null).length;
   state = tickSurf(state, 16);
   assert.equal(state.coins, initialCrystals);
@@ -13,7 +15,8 @@ test('2500 correct words keep Endless physics finite and collect the entire acti
     state = tickSurf(state, 1000);
     for (const value of [state.x, state.vx, state.distance, state.speed, state.score, state.coins,
       surfMagnetMultiplier(state.correct), surfMagnetRadius(state.correct)]) assert.ok(Number.isFinite(value));
-    assert.equal(state.hits, 0);
+    assert.equal(state.x, 500);
+    assert.equal(state.vx, 0);
     assert.ok(state.items.length <= 210);
     assert.ok(state.obstacles.length <= 28);
   }

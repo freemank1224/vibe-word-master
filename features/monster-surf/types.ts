@@ -41,6 +41,7 @@ export interface SurfState {
   checkpoint: number; nextCheckpoint: number; input: string; hits: number;
   correct: number; streak: number; bestStreak: number; coins: number; score: number;
   items: SurfCoin[]; obstacles: SurfObstacle[];
+  /** Result of the latest input edit, never an automatic-steering permission. */
   navigation: 'waiting' | 'guided' | 'locked'; targetX: number; invulnerableMs: number;
   chase: SurfChase;
   feedback: SurfFeedback; event: SurfEvent | null; eventId: number;

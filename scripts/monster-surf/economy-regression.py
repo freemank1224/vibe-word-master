@@ -65,10 +65,23 @@ def preload_evidence():
       blocked:window.__paidRecordingProbe.blocked})'''))
 
 
-def answer(text=None):
+def type_current_word():
     s = until(lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
     word = ride()['snapshot']['deck'][int(s['checkpoint'])]['answer']
-    browse('fill', '#ms-answer', word if text is None else text)
+    browse('click', '#ms-answer')
+    browse('press', 'ControlOrMeta+A')
+    browse('press', 'Backspace')
+    for letter in word:
+        browse('type', letter)
+        time.sleep(.4)
+
+
+def answer(text=None):
+    until(lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
+    if text is None:
+        type_current_word()
+    else:
+        browse('fill', '#ms-answer', text)
     browse('press', 'Enter')
     until(lambda s: s['phase'] != 'surfing')
 
@@ -142,9 +155,8 @@ prepared = preload_evidence()
 assert len(prepared['starts']) == 1 and len(prepared['downloads']) == 10, prepared
 assert all(row['completed'] <= prepared['starts'][0]['started'] for row in prepared['downloads']), prepared
 trace.append({'check': 'all-ten-recordings-complete-before-paid-entry-request', **prepared})
-# Correct prefix lets the genuine automatic route gather crystals.
-browse('fill', '#ms-answer', ride()['snapshot']['deck'][0]['answer'][:1])
-until(lambda s: int(s['crystals']) >= 30, 35)
+# Navigation only reacts to newly typed correct letters. Gather crystals while
+# actually typing the three answers, never by leaving one prefix on autopilot.
 browse('click', '.ms-listen')
 assert state()['focus'] == 'ms-answer'
 answer('wrong')
@@ -155,7 +167,8 @@ answer()
 until(lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
 answer()
 until(lambda s: s['phase'] == 'surfing' and s.get('audioReady') == 'true')
-browse('fill', '#ms-answer', ride()['snapshot']['deck'][3]['answer'][:1])
+type_current_word()  # Fourth word stays unsubmitted and remains "unanswered".
+assert int(state()['crystals']) >= 30, state()
 for size in [(1366, 768), (1440, 900), (1920, 1080)]:
     fit('active-en', *size)
 browse('press', 'Escape')

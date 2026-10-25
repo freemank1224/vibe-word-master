@@ -58,9 +58,12 @@ def select_full_demo():
     assert js('document.querySelector("[data-testid=surf-word-count]").value') == '24'
 
 
-def guided():
+def steer_next_letter():
     s = ready_input()
-    browse('fill', '#ms-answer', WORDS[int(s['checkpoint']) % len(WORDS)][:1])
+    word = WORDS[int(s['checkpoint']) % len(WORDS)]
+    current = js('document.querySelector("#ms-answer").value')
+    assert word.startswith(current) and len(current) < len(word), (word, current)
+    browse('type', word[len(current)])
 
 
 def answer(value=None, mouse=False):
@@ -135,7 +138,7 @@ for key in ['distance', 'chasePhaseMs', 'chaseGap', 'chaseBoost']:
     assert frozen[key] == p[key], (key, p, frozen)
 assert js('window.__surfPausedFrame===document.querySelector("canvas").toDataURL()') == 'true'
 browse('press', 'Enter')
-guided()
+steer_next_letter()
 until(lambda s: s['chasePhase'] == 'chasing')
 time.sleep(.6)
 s = record('follows-without-an-unearned-attack')
@@ -181,11 +184,11 @@ for n in range(1, 6):
         assert s['chasePhase'] == 'retreating', s
         record('five-consecutive-words-retreat')
         shot('retreat-en-1440')
-guided()
+steer_next_letter()
 until(lambda s: s['chasePhase'] == 'escaped')
 record('escaped-and-still-playable')
 answer()
-guided()
+steer_next_letter()
 assert state()['chasePhase'] == 'escaped'
 browse('press', 'Escape')
 
@@ -196,7 +199,7 @@ answer('wrong')
 answer('wrong')
 assert state()['hits'] == '2'
 reach_ten()
-guided()
+steer_next_letter()
 first = answer('wrong')
 assert first['chaseMistakes'] == '1' and first['hits'] == '2' and first['phase'] == 'hurt', first
 record('first-error-approach-keeps-original-lives')
