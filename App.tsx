@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { createLazyFeature } from './components/LazyFeature';
-import { fetchUserData, fetchUserLearningProgress, invalidateUserDataReads, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, recordWordStrikeRound, updateWordMetadata, healDoubleEncodedImageUrls } from './services/dataService';
+import { fetchUserData, fetchUserLearningProgress, invalidateUserDataReads, fetchUserStats, saveSessionData, modifySession, updateWordStatus, getImageUrl, updateWordStatusV2, deleteSessions, deleteWordsByIds, fetchUserAchievements, saveUserAchievement, DeleteProgress, recordPuzzleGameRound, updateWordMetadata, healDoubleEncodedImageUrls } from './services/dataService';
 import { resolveStatsUpdate, compareVersions, mergeStats } from './utils/versionMerge';
 import { processPendingSyncs, getPendingSyncCount, enqueuePendingSync, hasUnattributedLegacySyncs } from './services/offlineSyncQueue';
 import {
@@ -17,12 +17,11 @@ import {
   SyncStatus,
   SyncResult
 } from './services/syncService';
-import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, WordEntry, WordMeaningOption, WordStrikeGameConfig, WordStrikeGameSummary } from './types';
+import { AppMode, ClassicTestConfig, CompletedTestSummary, DayStats, InputSession, PuzzleGameSummary, WordEntry, WordMeaningOption } from './types';
 import { LargeWordInput } from './components/LargeWordInput';
 import { CalendarView } from './components/CalendarView';
 import { Confetti } from './components/Confetti';
 import { MeaningFlipCard } from './components/MeaningFlipCard';
-import type { WordOrbitSummary } from './services/wordOrbit';
 import { adaptiveWordSelector } from './services/adaptiveWordSelector';
 import { persistLearningAttempt, recordLearningRound, overlayLearningProgress, type LearningResult } from './services/learningRecordStore';
 import { syncPendingLearningProgress } from './services/learningProgressSync';
@@ -42,7 +41,6 @@ import { subscribeToWalletChanges } from './services/walletUpdates';
 import {
   claimDailyLoginReward,
   awardPuzzleCoins,
-  awardWordStrikeCoins,
   awardAchievementCoins,
   awardAllAchievementsBonus,
   getCoinBalance,
@@ -66,8 +64,6 @@ const PasswordForgotRequest = createLazyFeature(() => import('./components/Passw
 const WatchaCallback = createLazyFeature(() => import('./components/WatchaCallback'), '账号授权');
 const TestModeV2 = createLazyFeature(() => import('./components/TestModeV2'), '普通测验');
 const PuzzleGameMode = createLazyFeature(() => import('./components/PuzzleGameMode'), '九宫格游戏');
-const WordStrikeGameMode = createLazyFeature(() => import('./components/WordStrikeGameMode'), '单词射击');
-const WordOrbitGameMode = createLazyFeature(() => import('./components/WordOrbitGameMode'), '星球跑酷');
 const AccountPanel = createLazyFeature(() => import('./components/AccountPanel').then(module => ({ default: module.AccountPanel })), '个人中心', true);
 const AdminConsole = createLazyFeature(() => import('./components/AdminConsole').then(module => ({ default: module.AdminConsole })), '管理面板', true);
 const PronunciationMaintenancePanel = createLazyFeature(() => import('./components/PronunciationMaintenancePanel').then(module => ({ default: module.PronunciationMaintenancePanel })), '发音维护', true);
@@ -132,7 +128,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, className = '' }) 
                                     );
                                 };
 
-type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' } | { kind: 'ORBIT' } | WordStrikeGameConfig;
+type TestConfig = ClassicTestConfig | { kind: 'PUZZLE' };
 
 type EditableWord = {
   tempId: string;
@@ -214,7 +210,6 @@ const App: React.FC = () => {
   const latestWordsRef = useRef<WordEntry[]>([]);
   const authUserIdRef = useRef<string | null>(null);
   const refreshRequestRef = useRef(0);
-  const strikeRoundIds = useRef(new WeakMap<WordStrikeGameSummary, { id: string; occurredAt: number }>());
 
   // 通知系统
   const [notification, setNotification] = useState<{ message: string | { en: string; zh: string }; type: 'success' | 'warning' | 'error' } | null>(null);
@@ -358,8 +353,7 @@ const App: React.FC = () => {
   // Test Mode Configuration State
   const [testConfig, setTestConfig] = useState<TestConfig | null>(null);
   const [showQuickTestModal, setShowQuickTestModal] = useState(false);
-  // GAME MODE picker — hosts Word Strike and Puzzle (games left the
-  // QUICK TEST modal so it stays a pure test-range chooser).
+  // Monster Surf and Puzzle use a separate picker from the classic test ranges.
   const [showGamePickerModal, setShowGamePickerModal] = useState(false);
   
   // Multi-Select State for Dashboard Testing
@@ -1743,18 +1737,8 @@ const App: React.FC = () => {
     }).catch(error => console.warn('[LearningSync] Saved locally:', error));
   };
 
-  const handleStartWordOrbit = () => {
-    setTestConfig({ kind: 'ORBIT' });
-    setMode('TEST');
-  };
-
   const handleStartPuzzleGame = () => {
     setTestConfig({ kind: 'PUZZLE' });
-    setMode('TEST');
-  };
-
-  const handleStartWordStrike = () => {
-    setTestConfig({ kind: 'STRIKE' });
     setMode('TEST');
   };
 
@@ -2108,48 +2092,7 @@ const App: React.FC = () => {
           />
         )}
         {mode === 'TEST' && (
-          testConfig?.kind === 'ORBIT' ? (
-            <WordOrbitGameMode allWords={visibleWords} sessions={sessions} onCancel={() => setMode('DASHBOARD')}
-              onComplete={(summary: WordOrbitSummary) => saveGameLearning(summary.roundId, summary.occurredAt, summary.results.map(result => ({
-                wordId: result.wordId, status: result.status, hintUsed: result.hintUsed, hadMistake: result.hadMistake, durationMs: result.responseTimeMs,
-              })))} />
-          ) : testConfig?.kind === 'STRIKE' ? (
-            <WordStrikeGameMode
-              allWords={visibleWords}
-              sessions={sessions}
-              onComplete={async (summary: WordStrikeGameSummary) => {
-                if (!strikeRoundIds.current.has(summary)) strikeRoundIds.current.set(summary, { id: crypto.randomUUID(), occurredAt: Date.now() });
-                const record = strikeRoundIds.current.get(summary)!;
-                await saveGameLearning(record.id, record.occurredAt, summary.results.map(result => ({
-                  wordId: result.wordId, status: result.correct ? 'correct' : result.attemptsUsed > 0 ? 'incorrect' : 'unattempted',
-                  hintUsed: result.hintUsed, hadMistake: result.attemptsUsed > (result.correct ? 1 : 0),
-                  durationMs: result.activatedAtMs != null && result.solvedAtMs != null ? result.solvedAtMs - result.activatedAtMs : null,
-                })));
-                if (!summary.rankingEligible) return;
-                try {
-                  const round: any = await recordWordStrikeRound(summary);
-                  const roundId = round?.round_id || round?.id;
-                  if (roundId) {
-                    const awarded = await awardWordStrikeCoins(roundId, summary.totalScore);
-                    if (awarded > 0) {
-                      void refreshCoinBalance();
-                      setPendingCoinReward({ amount: awarded, source: 'word_strike' });
-                    } else {
-                      showLocalizedNotification(`Score recorded: ${summary.totalScore} points`, `🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
-                    }
-                  } else {
-                    showLocalizedNotification(`Score recorded: ${summary.totalScore} points`, `🎯 射击成绩已记录：${summary.totalScore} 分`, 'success');
-                  }
-                } catch (error) {
-                  // Migration not applied yet (RPC 42883) lands here — the game
-                  // stays playable and the round just isn't ranked.
-                  console.error('[WordStrikeGameMode] Failed to record word strike round:', error);
-                  showLocalizedNotification("Your score could not sync. The round results remain on this page.", "⚠️ 射击成绩上传失败，但本局结果仍已保留在页面中。", 'warning');
-                }
-              }}
-              onCancel={() => setMode('DASHBOARD')}
-            />
-          ) : testConfig?.kind === 'PUZZLE' ? (
+          testConfig?.kind === 'PUZZLE' ? (
             <PuzzleGameMode
               allWords={visibleWords}
               sessions={sessions}
@@ -2355,9 +2298,7 @@ const App: React.FC = () => {
                             <span className="text-xs opacity-50 font-body group-hover:text-charcoal/70"><HoverTranslationText text={`A comprehensive test of all ${visibleWords.length} words in your vault.`} translation={`对你词库中的全部 ${visibleWords.length} 个单词进行综合测试。`} /></span>
                         </button>
 
-                        {/* Games moved out of QUICK TEST — they now live in the
-                            GAME MODE picker (handleStartPuzzleGame /
-                            handleStartWordStrike are wired there). */}
+                        {/* Games have their own GAME MODE picker. */}
 
                         <button
                             onClick={() => setShowQuickTestModal(false)}
@@ -2374,8 +2315,6 @@ const App: React.FC = () => {
         {showGamePickerModal && (
             <GameModePickerModal
                 visibleWords={visibleWords}
-                onSelectOrbit={() => { handleStartWordOrbit(); setShowGamePickerModal(false); }}
-                onSelectStrike={() => { handleStartWordStrike(); setShowGamePickerModal(false); }}
                 onSelectPuzzle={() => { handleStartPuzzleGame(); setShowGamePickerModal(false); }}
                 onClose={() => setShowGamePickerModal(false)}
             />

@@ -1,22 +1,18 @@
 import React, { useMemo } from 'react';
 import { HoverTranslationText } from './HoverTranslationText';
 import { WordEntry } from '../types';
-import { getWordStrikeCandidateWords, WORD_STRIKE_MIN_WORDS } from '../services/wordStrike';
-import { toWordOrbitQuestion } from '../services/wordOrbit';
 import { getPuzzleCandidateWords } from '../services/puzzleGame';
 import { toSurfReviewWord } from '../features/monster-surf/reviewVocabulary';
 
 interface GameModePickerModalProps {
   visibleWords: WordEntry[];
-  onSelectOrbit: () => void;
-  onSelectStrike: () => void;
   onSelectPuzzle: () => void;
   onClose: () => void;
 }
 
 interface GameEntry {
-  key: 'strike' | 'puzzle' | 'orbit' | 'surf';
-  optionLabel: string;
+  key: 'puzzle' | 'surf';
+  optionLabel: { en: string; zh: string };
   titleEn: string;
   titleZh: string;
   descEn: string;
@@ -33,24 +29,13 @@ interface GameEntry {
   onSelect: () => void;
 }
 
-/**
- * GAME MODE picker — hosts the two game modes. Games used to be options 3/4
- * of the Quick Test modal; they were split out so QUICK TEST stays a pure
- * test-range chooser and this modal becomes the arcade entrance.
- *
- * Each entry carries its own readiness gate, mirroring the old inline checks:
- *   strike ≥ 5 plain words · puzzle ≥ 9 image words
- */
+/** Game entrance for Monster Surf and the nine-cell audio puzzle. */
 export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
   visibleWords,
-  onSelectOrbit,
-  onSelectStrike,
   onSelectPuzzle,
   onClose,
 }) => {
-  const strikeReadyCount = useMemo(() => getWordStrikeCandidateWords(visibleWords).length, [visibleWords]);
   const surfReadyCount = useMemo(() => new Set(visibleWords.map(toSurfReviewWord).filter(Boolean).map(word => word!.answer)).size, [visibleWords]);
-  const orbitReadyCount = useMemo(() => new Set(visibleWords.map(toWordOrbitQuestion).filter(Boolean).map(question => question!.answer)).size, [visibleWords]);
   const puzzleReadyCount = useMemo(
     () => getPuzzleCandidateWords(visibleWords).length,
     [visibleWords]
@@ -58,7 +43,7 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
 
   const entries: GameEntry[] = [
     {
-      key: 'surf', optionLabel: 'Recommended', titleEn: 'MONSTER SURF', titleZh: '怪兽冲浪',
+      key: 'surf', optionLabel: { en: 'Recommended', zh: '推荐' }, titleEn: 'MONSTER SURF', titleZh: '怪兽冲浪',
       descEn: 'Ride with today’s monster and review due words. Entry: 1 coin. Collect Sea Crystals and exchange up to 1 coin per correct word.',
       descZh: '和今日怪兽乘风逐浪，优先复习到期词。入场 1 金币，收集海晶兑换奖励，每答对一词最多兑换 1 金币。',
       icon: 'sports_esports',
@@ -68,31 +53,8 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
       onSelect: () => { window.location.assign('/monster-run.html'); },
     },
     {
-      key: 'orbit', optionLabel: 'Practice', titleEn: 'WORD ORBIT', titleZh: '星词漫游',
-      descEn: `Run across a small planet. Fill a word to vault, slide or jet across obstacles. ${orbitReadyCount} words ready.`,
-      descZh: `第三人称星球跑酷：填对越障，答错摔跤后继续。可用词 ${orbitReadyCount} 个，练习进度自动保存。`,
-      icon: 'rocket_launch',
-      accent: { text: 'text-electric-green group-hover:text-charcoal', hoverBg: 'hover:bg-electric-green hover:text-charcoal', border: '' },
-      ready: orbitReadyCount > 0,
-      readyLabel: { en: 'Add an English word with a definition first', zh: '请先添加带释义的英文单词' },
-      onSelect: onSelectOrbit,
-    },
-    {
-      key: 'strike',
-      optionLabel: 'Game 1',
-      titleEn: 'WORD STRIKE',
-      titleZh: '单词射击（旧版）',
-      descEn: `A physics typing-shooter. Type the word, press Enter, shatter the falling brick. Ready words: ${strikeReadyCount}.`,
-      descZh: `物理打字射击：拼出单词按回车开火，击碎下落的单词砖。当前可用单词：${strikeReadyCount}。`,
-      icon: 'gps_fixed',
-      accent: { text: 'text-electric-green group-hover:text-charcoal', hoverBg: 'hover:bg-electric-green hover:text-charcoal', border: '' },
-      ready: strikeReadyCount >= WORD_STRIKE_MIN_WORDS,
-      readyLabel: { en: `Needs ≥ ${WORD_STRIKE_MIN_WORDS} plain words`, zh: `至少需要 ${WORD_STRIKE_MIN_WORDS} 个纯字母单词` },
-      onSelect: onSelectStrike,
-    },
-    {
       key: 'puzzle',
-      optionLabel: 'Game 2',
+      optionLabel: { en: 'Puzzle', zh: '九宫格' },
       titleEn: 'PUZZLE GAME',
       titleZh: '九格连线',
       descEn: `A 90-second 3x3 audio puzzle using 9 image words. Ready words: ${puzzleReadyCount}.`,
@@ -134,7 +96,7 @@ export const GameModePickerModal: React.FC<GameModePickerModalProps> = ({
                 entry.ready ? entry.accent.text : 'text-text-dark'
               }`}>
                 <span className="material-symbols-outlined text-[18px]">{entry.icon}</span>
-                <HoverTranslationText text={entry.optionLabel} translation={entry.optionLabel === 'Recommended' ? '推荐' : entry.optionLabel === 'Practice' ? '练习' : entry.optionLabel === 'Game 1' ? '旧版' : '九宫格'} />
+                <HoverTranslationText text={entry.optionLabel.en} translation={entry.optionLabel.zh} />
               </span>
               <span className="text-xl font-headline group-hover:text-charcoal">
                 <HoverTranslationText text={entry.titleEn} translation={entry.titleZh} />
