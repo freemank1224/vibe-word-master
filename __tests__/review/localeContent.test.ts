@@ -53,6 +53,16 @@ test('an English fallback option cannot hide an existing Chinese meaning', () =>
   assert.match(wordMeaningForLanguage({ ...entry, definition_cn: 'sabertooth' }, false), /pronunciation/);
 });
 
+test('unselected imported meanings are usable without substituting a different selected sense', () => {
+  const entry = word({ definition_cn: null, meaning_options: [
+    { key: 'bad', meaningZh: 'bank' },
+    { key: 'river', meaningZh: '河岸' },
+  ] });
+  assert.equal(wordMeaningForLanguage(entry, false), '河岸');
+  assert.equal(wordMeaningForLanguage(entry, true), '河岸');
+  assert.match(wordMeaningForLanguage({ ...entry, selected_meaning_key: 'bad' }, false), /pronunciation/);
+});
+
 test('all database leaderboard categories render English units independently of server labels', () => {
   for (const category of ['daily_total', 'achievements', 'game_total', 'word_mastery', 'coins'] as const) {
     assert.doesNotMatch(leaderboardCategoryLabel(category, false), /\p{Script=Han}/u);
