@@ -56,6 +56,7 @@ import { DailyReviewReminder, ReviewBadge } from './components/DailyReviewRemind
 import { createReviewReminderHistory, shouldShowDailyReviewReminder } from './utils/dailyReviewReminder';
 import { useT } from './hooks/useT';
 import { wordMeaningForLanguage } from './utils/wordMeaningLocale';
+import { normalizeChineseMeaning } from './utils/chineseMeaning';
 import GlobalChampionBanner from './components/GlobalChampionBanner';
 
 const Auth = createLazyFeature(() => import('./components/Auth'), '登录');
@@ -4251,9 +4252,9 @@ const InputMode: React.FC<{
   const confirmMeaningSelection = () => {
     if (!pendingMeaningSelection) return;
 
-    const meaningZh = pendingMeaningSelection.meaningZh.trim();
+    const meaningZh = normalizeChineseMeaning(pendingMeaningSelection.meaningZh);
     const partOfSpeech = pendingMeaningSelection.partOfSpeech;
-    if (!partOfSpeech || !/\p{Script=Han}/u.test(meaningZh) || ['暂无中文释义', '无中文释义', '暂无释义'].includes(meaningZh)) return;
+    if (!partOfSpeech || !meaningZh) return;
     const selectedOption: WordMeaningOption = {
       key: `${partOfSpeech.toLowerCase()}::${meaningZh.toLowerCase()}`,
       meaningZh,
@@ -4978,6 +4979,7 @@ const InputMode: React.FC<{
             {currentWords.map((w, i) => (
               <MeaningFlipCard
                 key={w.tempId}
+                wordText={w.text}
                 meaning={w.definition_cn}
                 definitionEn={w.definition_en}
                 meaningOptions={w.meaning_options}
@@ -5021,7 +5023,11 @@ const InputMode: React.FC<{
                         </button>
                         <div className="min-w-0 flex-1 text-left">
                           <span className="block truncate font-mono text-electric-blue">{w.text}</span>
-                          <span className="mt-1 block text-[10px] font-mono uppercase tracking-[0.2em] text-text-dark">{tr("Flip to see the meaning", "点击翻面看中文")}</span>
+                          <span className={`mt-1 block text-[10px] font-mono uppercase tracking-[0.1em] ${normalizeChineseMeaning(w.meaning_options?.find(option => option.key === w.selected_meaning_key)?.meaningZh) || normalizeChineseMeaning(w.definition_cn) ? 'text-text-dark' : 'text-amber-300'}`}>
+                            {normalizeChineseMeaning(w.meaning_options?.find(option => option.key === w.selected_meaning_key)?.meaningZh) || normalizeChineseMeaning(w.definition_cn)
+                              ? tr('Flip to see the meaning', '点击翻面看中文')
+                              : tr('Use pencil to add meaning', '点铅笔填写中文释义')}
+                          </span>
                         </div>
                     </div>
                     <button
@@ -5032,8 +5038,8 @@ const InputMode: React.FC<{
                           const rawPart = selected?.partOfSpeech || '';
                           const partMap: Record<string, string> = { noun: 'n.', verb: 'v.', adjective: 'adj.', adverb: 'adv.', pronoun: 'pron.', preposition: 'prep.', conjunction: 'conj.', interjection: 'int.', article: 'art.', determiner: 'det.', auxiliary: 'aux.', phrase: 'phr.' };
                           const part = partMap[rawPart.toLowerCase()] || rawPart;
-                          const savedMeaning = selected?.meaningZh || w.definition_cn || '';
-                          setPendingMeaningSelection({ text: w.text, editingTempId: w.tempId, partOfSpeech: part, meaningZh: ['暂无中文释义', '无中文释义', '暂无释义'].includes(savedMeaning.trim()) ? '' : savedMeaning });
+                          const savedMeaning = normalizeChineseMeaning(selected?.meaningZh) || normalizeChineseMeaning(w.definition_cn) || '';
+                          setPendingMeaningSelection({ text: w.text, editingTempId: w.tempId, partOfSpeech: part, meaningZh: savedMeaning });
                         }}
                         onKeyDown={event => event.stopPropagation()}
                         className="ml-1 w-8 h-8 rounded-lg flex items-center justify-center text-text-dark hover:bg-electric-blue hover:text-charcoal transition-colors"
@@ -5122,7 +5128,7 @@ const InputMode: React.FC<{
                   className="mt-2 block w-full rounded-xl border border-white/20 bg-[#1c2028] px-4 py-3 text-white placeholder:text-text-dark focus:border-electric-blue focus:ring-electric-blue"
                 />
               </label>
-              {pendingMeaningSelection.meaningZh.trim() && (!/\p{Script=Han}/u.test(pendingMeaningSelection.meaningZh) || ['暂无中文释义', '无中文释义', '暂无释义'].includes(pendingMeaningSelection.meaningZh.trim())) && (
+              {pendingMeaningSelection.meaningZh.trim() && !normalizeChineseMeaning(pendingMeaningSelection.meaningZh) && (
                 <p role="alert" className="text-sm text-amber-300">{tr('Please enter a Chinese meaning.', '请输入包含中文的释义。')}</p>
               )}
             </div>
@@ -5132,7 +5138,7 @@ const InputMode: React.FC<{
               )}
               <button
                 type="submit"
-                disabled={!pendingMeaningSelection.partOfSpeech || !/\p{Script=Han}/u.test(pendingMeaningSelection.meaningZh) || ['暂无中文释义', '无中文释义', '暂无释义'].includes(pendingMeaningSelection.meaningZh.trim())}
+                disabled={!pendingMeaningSelection.partOfSpeech || !normalizeChineseMeaning(pendingMeaningSelection.meaningZh)}
                 className="rounded-xl bg-amber-300 px-5 py-3 font-mono text-sm font-bold uppercase tracking-[0.2em] text-[#111318] transition-all hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {tr('Save meaning', '保存释义')}

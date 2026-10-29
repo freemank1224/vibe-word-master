@@ -163,6 +163,7 @@ const HistoryCard = ({ result, word }: { result: TestWordResult, word: WordEntry
 
     return (
         <MeaningFlipCard
+            wordText={word.text}
             meaning={word.definition_cn}
             definitionEn={word.definition_en}
             meaningOptions={word.meaning_options}

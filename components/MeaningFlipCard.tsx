@@ -2,9 +2,12 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { WordMeaningOption } from '../types';
 import { useLanguage } from '../contexts/LanguageContext';
+import { normalizeChineseMeaning } from '../utils/chineseMeaning';
+import { chineseWordMeaning } from '../utils/wordMeaningLocale';
 
 interface MeaningFlipCardProps {
   front: React.ReactNode;
+  wordText?: string;
   meaning?: string | null;
   definitionEn?: string | null;
   meaningOptions?: WordMeaningOption[] | null;
@@ -29,6 +32,7 @@ const meaningPreviewStyle: React.CSSProperties = {
 
 export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
   front,
+  wordText,
   meaning,
   definitionEn,
   meaningOptions,
@@ -45,11 +49,10 @@ export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
   const meaningTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const overlayCloseTimerRef = useRef<number | null>(null);
-  const normalizedMeaningOptions = (meaningOptions || []).filter(option => option?.meaningZh?.trim() && !['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-'].includes(option.meaningZh.trim().toLowerCase()));
-  const selectedMeaning = (meaningOptions || []).find(option => option.key === selectedMeaningKey);
-  const usableSelectedMeaning = normalizedMeaningOptions.find(option => option.key === selectedMeaning?.key);
-  const usableMeaning = meaning?.trim() && !['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-'].includes(meaning.trim().toLowerCase()) ? meaning.trim() : undefined;
-  const displayMeaning = usableSelectedMeaning?.meaningZh || usableMeaning || normalizedMeaningOptions[0]?.meaningZh || (isZh ? '暂无中文释义' : 'No Chinese meaning yet');
+  const normalizedMeaningOptions = (meaningOptions || []).filter(option => !!normalizeChineseMeaning(option?.meaningZh));
+  const displayMeaning = chineseWordMeaning({ definition_cn: meaning || null, meaning_options: meaningOptions, selected_meaning_key: selectedMeaningKey })
+    || (!selectedMeaningKey ? normalizeChineseMeaning(normalizedMeaningOptions[0]?.meaningZh) : undefined)
+    || (isZh ? '暂无中文释义，请在批次中编辑' : 'No Chinese meaning yet. Edit the session to add one.');
 
   const clearOverlayCloseTimer = () => {
     if (overlayCloseTimerRef.current !== null) {
@@ -217,7 +220,8 @@ export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
                     {isSelected && <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-200">{isZh ? '当前记录' : 'Selected meaning'}</span>}
                   </div>
                   <p className="mt-2 break-words text-sm leading-relaxed text-white">{option.meaningZh}</p>
-                  {option.definitionEn && !/\p{Script=Han}/u.test(option.definitionEn) && (
+                  {option.definitionEn && !/\p{Script=Han}/u.test(option.definitionEn)
+                    && (!wordText || option.definitionEn.trim().toLowerCase() !== wordText.trim().toLowerCase()) && (
                     <p className="mt-1 break-words text-xs leading-relaxed text-gray-400">{option.definitionEn}</p>
                   )}
                 </div>

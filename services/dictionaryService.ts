@@ -1,6 +1,7 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import type { WordMeaningOption } from '../types';
 import { createDictionaryLookupCache, withinDeadline } from './dictionaryLookupCache';
+import { normalizeChineseMeaning } from '../utils/chineseMeaning';
 
 export interface DictionaryData {
   phonetic?: string;
@@ -57,7 +58,7 @@ const dedupeMeaningOptions = (options: WordMeaningOption[]): WordMeaningOption[]
   const optionMap = new Map<string, WordMeaningOption>();
 
   for (const option of options) {
-    const meaningZh = normalizeMeaning(option.meaningZh);
+    const meaningZh = normalizeChineseMeaning(option.meaningZh);
     if (!meaningZh) continue;
 
     const partOfSpeech = normalizePartOfSpeech(option.partOfSpeech);
@@ -150,7 +151,7 @@ const fetchDictionaryDataViaEdge = async (word: string, lang: string, signal: Ab
       if (error) return null;
       const result = {
         phonetic: normalizeMeaning(data?.phonetic), definition_en: normalizeMeaning(data?.definition_en),
-        definition_cn: normalizeMeaning(data?.definition_cn),
+        definition_cn: normalizeChineseMeaning(data?.definition_cn),
       };
       return result.definition_cn || result.definition_en || result.phonetic ? result : null;
     }, 4000, signal);
@@ -173,13 +174,13 @@ const fetchChineseTranslation = (word: string, lang: string, signal: AbortSignal
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(uapisApiKey ? {
         Authorization: `Bearer ${uapisApiKey}`, 'x-api-key': uapisApiKey,
       } : {}) }, body: JSON.stringify({ text: word }),
-    }).then(data => normalizeMeaning(data.translated_text));
+    }).then(data => normalizeChineseMeaning(data.translated_text));
     const google = jsonRequest<unknown>(
       `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(lang)}&tl=zh-CN&dt=t&q=${encodeURIComponent(word)}`,
       requestSignal,
     ).then(data => {
       const rows = Array.isArray(data) ? data[0] : undefined;
-      return normalizeMeaning(Array.isArray(rows) ? rows.map(row => Array.isArray(row) ? row[0] : '').join('') : undefined);
+      return normalizeChineseMeaning(Array.isArray(rows) ? rows.map(row => Array.isArray(row) ? row[0] : '').join('') : undefined);
     });
     try {
       return await Promise.any([uapis, google].map(request => request.then(value => {
@@ -191,7 +192,7 @@ const fetchChineseTranslation = (word: string, lang: string, signal: AbortSignal
       const fallback = await jsonRequest<{ responseData?: { translatedText?: string } }>(
         `https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=${encodeURIComponent(lang)}|zh-CN`, requestSignal,
       );
-      return normalizeMeaning(fallback.responseData?.translatedText) || null;
+      return normalizeChineseMeaning(fallback.responseData?.translatedText) || null;
     }
   }, signal);
 

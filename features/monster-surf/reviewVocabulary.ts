@@ -1,6 +1,7 @@
 import type { WordEntry } from '../../types.ts';
 import { adaptiveWordSelector, type ReviewQueueSummary } from '../../services/adaptiveWordSelector.ts';
 import type { SurfWord } from './types.ts';
+import { chineseWordMeaning } from '../../utils/wordMeaningLocale.ts';
 
 /** Default fixed round. Infinity explicitly selects every eligible word once. */
 export const SURF_REVIEW_LIMIT = 20;
@@ -30,7 +31,7 @@ export function toSurfReviewWord(word: WordEntry): SurfWord | null {
     || !/^en(?:-[a-z]{2,})?$/.test(language)
     || !/^[a-z]+(?:[-'][a-z]+)*$/.test(answer) || answer.length < 2 || answer.length > 24) return null;
   const selected = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
-  const meaningZh = cleanMeaning(selected?.meaningZh || word.definition_cn);
+  const meaningZh = chineseWordMeaning(word);
   const meaningEn = cleanMeaning(selected ? selected.definitionEn : word.definition_en);
   const answerInClue = new RegExp(`\\b${answer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
   if (!han.test(meaningZh) || meaningZh.length > 240 || answerInClue.test(meaningZh)) return null;

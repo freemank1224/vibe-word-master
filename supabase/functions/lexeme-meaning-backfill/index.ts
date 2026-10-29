@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { normalizeChineseMeaning, splitChineseMeanings } from '../_shared/chineseMeaning.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -16,31 +17,6 @@ const uapisApiKey = Deno.env.get('UAPIS_API_KEY') || '';
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
-
-const normalizeMeaning = (value?: string | null): string | undefined => {
-  const normalized = value?.replace(/\s+/g, ' ').trim();
-  return normalized ? normalized : undefined;
-};
-
-const splitMeaningCandidates = (value?: string | null): string[] => {
-  const normalized = normalizeMeaning(value);
-  if (!normalized) return [];
-
-  const rawParts = normalized
-    .split(/[;/；、，]/g)
-    .map(part => normalizeMeaning(part))
-    .filter((part): part is string => !!part);
-
-  const parts = rawParts.length > 0 ? rawParts : [normalized];
-  const unique = new Set<string>();
-
-  for (const part of parts) {
-    unique.add(part);
-    if (unique.size >= 5) break;
-  }
-
-  return Array.from(unique);
-};
 
 const fetchWithTimeout = async (input: string, timeoutMs: number, init?: RequestInit): Promise<Response> => {
   const controller = new AbortController();
@@ -71,7 +47,7 @@ const fetchUapisTranslation = async (text: string) => {
   }
 
   const data = await response.json().catch(() => ({}));
-  return splitMeaningCandidates(data?.translated_text);
+  return splitChineseMeanings(data?.translated_text);
 };
 
 const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
@@ -104,7 +80,7 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
         const translated = Array.isArray(data?.[0])
           ? data[0].map((segment: any) => segment?.[0]).filter(Boolean).join('')
           : undefined;
-        const meanings = splitMeaningCandidates(translated);
+        const meanings = splitChineseMeanings(translated);
         if (meanings.length > 0) {
           return { provider: 'google-translate', meanings };
         }
@@ -121,7 +97,7 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
 
     if (response.ok) {
       const data = await response.json();
-      const meanings = splitMeaningCandidates(data?.responseData?.translatedText);
+      const meanings = splitChineseMeanings(data?.responseData?.translatedText);
       if (meanings.length > 0) {
         return { provider: 'mymemory', meanings };
       }
@@ -167,7 +143,9 @@ const completeJob = async (jobId: string, success: boolean, errorMessage?: strin
 };
 
 const upsertMeanings = async (lexemeId: string, meanings: string[], provider: string) => {
-  const payload = meanings.map((meaning, index) => ({
+  const validMeanings = meanings.map(normalizeChineseMeaning).filter((meaning): meaning is string => !!meaning);
+  if (validMeanings.length === 0) return;
+  const payload = validMeanings.map((meaning, index) => ({
     lexeme_id: lexemeId,
     meaning_zh: meaning,
     source_type: 'machine',
@@ -182,28 +160,6 @@ const upsertMeanings = async (lexemeId: string, meanings: string[], provider: st
 
   if (error) {
     throw new Error(`Upsert meanings failed: ${error.message}`);
-  }
-};
-
-const propagateMeaningToWords = async (lexemeId: string, meaning: string) => {
-  const { error: nullError } = await supabase
-    .from('words')
-    .update({ definition_cn: meaning })
-    .eq('lexeme_id', lexemeId)
-    .is('definition_cn', null);
-
-  if (nullError) {
-    throw new Error(`Propagate null meaning failed: ${nullError.message}`);
-  }
-
-  const { error: emptyError } = await supabase
-    .from('words')
-    .update({ definition_cn: meaning })
-    .eq('lexeme_id', lexemeId)
-    .eq('definition_cn', '');
-
-  if (emptyError) {
-    throw new Error(`Propagate empty meaning failed: ${emptyError.message}`);
   }
 };
 
@@ -238,13 +194,13 @@ const processJobs = async (batchSize: number) => {
         .from('lexeme_meanings')
         .select('meaning_zh')
         .eq('lexeme_id', job.lexeme_id)
-        .limit(1);
+        .limit(50);
 
       if (existingError) {
         throw new Error(`Check existing meanings failed: ${existingError.message}`);
       }
 
-      if ((existingMeanings || []).length > 0) {
+      if ((existingMeanings || []).some((item: { meaning_zh: string }) => normalizeChineseMeaning(item.meaning_zh))) {
         await completeJob(job.job_id, true, null, 300);
         summary.skipped += 1;
         continue;
@@ -259,7 +215,6 @@ const processJobs = async (batchSize: number) => {
       const provider = translation.provider;
 
       await upsertMeanings(job.lexeme_id, meanings, provider);
-      await propagateMeaningToWords(job.lexeme_id, meanings[0]);
       await completeJob(job.job_id, true, null, 300);
 
       summary.succeeded += 1;

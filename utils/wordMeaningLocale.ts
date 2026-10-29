@@ -1,15 +1,10 @@
 import type { WordEntry } from '../types';
-
-const placeholders = new Set(['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-']);
-const usable = (value?: string | null): string => {
-  const trimmed = value?.trim() || '';
-  return placeholders.has(trimmed.toLowerCase()) ? '' : trimmed;
-};
+import { normalizeChineseMeaning } from './chineseMeaning.ts';
 
 /** Chinese meanings are learning content and do not follow the UI language. */
-export const chineseWordMeaning = (word: WordEntry): string => {
+export const chineseWordMeaning = (word: Pick<WordEntry, 'definition_cn' | 'meaning_options' | 'selected_meaning_key'>): string => {
   const selected = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
-  return usable(selected?.meaningZh) || usable(word.definition_cn);
+  return normalizeChineseMeaning(selected?.meaningZh) || normalizeChineseMeaning(word.definition_cn) || '';
 };
 
 /** Only the fallback instruction follows the UI language. */

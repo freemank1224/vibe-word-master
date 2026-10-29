@@ -37,11 +37,20 @@ test('an untranslated selected sense does not fall back to a different default s
 });
 
 test('missing or placeholder Chinese meanings use a localized instruction', () => {
-  for (const definition_cn of [null, '', '暂无中文释义']) {
+  for (const definition_cn of [null, '', '暂无中文释义', 'sabertooth', 'A type of large cat']) {
     const entry = word({ definition_cn });
     assert.match(wordMeaningForLanguage(entry, false), /pronunciation/);
     assert.match(wordMeaningForLanguage(entry, true), /发音/);
   }
+});
+
+test('an English fallback option cannot hide an existing Chinese meaning', () => {
+  const entry = word({ definition_cn: '剑齿虎', selected_meaning_key: 'fallback', meaning_options: [
+    { key: 'fallback', meaningZh: 'sabertooth', definitionEn: 'sabertooth', sourceProvider: 'input-fallback' },
+  ] });
+  assert.equal(wordMeaningForLanguage(entry, false), '剑齿虎');
+  assert.equal(wordMeaningForLanguage(entry, true), '剑齿虎');
+  assert.match(wordMeaningForLanguage({ ...entry, definition_cn: 'sabertooth' }, false), /pronunciation/);
 });
 
 test('all database leaderboard categories render English units independently of server labels', () => {

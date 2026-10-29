@@ -92,6 +92,8 @@ test('chosen word sense and real Chinese meaning survive while English clue answ
   assert.deepEqual(toSurfReviewWord(source), { wordId: 'bank', answer: 'bank', meaningZh: '河岸', meaningEn: 'The ____ of a river.', audioUrl: null });
   assert.equal(toSurfReviewWord(word('sun', { definition_en: '太阳 is bright' }))?.meaningEn, '');
   assert.equal(toSurfReviewWord(word('sun', { definition_en: null }))?.meaningEn, '');
+  assert.equal(toSurfReviewWord(word('sun', { definition_cn: '太阳', selected_meaning_key: 'fallback', meaning_options: [{ key: 'fallback', meaningZh: 'sun' }] }))?.meaningZh, '太阳');
+  assert.equal(toSurfReviewWord(word('sun', { definition_cn: '暂无中文释义' })), null);
 });
 
 test('account pronunciation URLs travel with the selected word for the audio safety gate', () => {

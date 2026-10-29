@@ -126,6 +126,25 @@ test('a saved failed lookup can be recovered without replacing real or unknown s
   assert.deepEqual(missingDictionaryFields(unknown, { definition_cn: '操纵者' }), {});
 });
 
+test('invalid automated Chinese results are retried without overwriting real or user-selected meanings', () => {
+  const failed = {
+    definition_cn: 'sabertooth', definition_en: null, phonetic: null,
+    selected_meaning_key: 'na::sabertooth',
+    meaning_options: [{ key: 'na::sabertooth', meaningZh: 'sabertooth', sourceProvider: 'translation-fallback' }],
+  };
+  assert.equal(needsDictionaryEnrichment(failed), true);
+  assert.deepEqual(missingDictionaryFields(failed, { definition_cn: 'sabertooth' }), {});
+  assert.deepEqual(missingDictionaryFields(failed, { definition_cn: '剑齿虎' }), {
+    definition_cn: '剑齿虎', selected_meaning_key: null,
+  });
+  const filters = dictionaryBackfillFilters(failed, { definition_cn: '剑齿虎', selected_meaning_key: null });
+  assert.ok(filters.equals.some(([field, value]) => field === 'meaning_options' && value === JSON.stringify(failed.meaning_options)));
+  assert.equal(needsDictionaryEnrichment({ ...failed, meaning_options: [{ ...failed.meaning_options[0], sourceProvider: 'user' }] }), false);
+  assert.equal(needsDictionaryEnrichment({ ...failed, meaning_options: [{ ...failed.meaning_options[0], meaningZh: '剑齿虎' }] }), false);
+  assert.equal(needsDictionaryEnrichment({ ...failed, meaning_options: [{ ...failed.meaning_options[0], sourceProvider: 'unknown' }] }), false);
+  assert.equal(needsDictionaryEnrichment({ ...failed, selected_meaning_key: null }), true);
+});
+
 test('workers immediately refill freed slots without waiting for a slow batch member', async () => {
   const controller = new AbortController();
   const slow = deferred<void>();

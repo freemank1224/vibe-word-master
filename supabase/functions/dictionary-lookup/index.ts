@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { firstChineseMeaning, normalizeChineseMeaning, splitChineseMeanings } from '../_shared/chineseMeaning.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -101,25 +102,7 @@ const fetchUapisTranslation = async (text: string) => {
   }
 
   const data = await response.json().catch(() => ({}));
-  return splitMeaningCandidates(data?.translated_text);
-};
-
-const splitMeaningCandidates = (value?: string | null): string[] => {
-  const normalized = normalizeMeaning(value);
-  if (!normalized) return [];
-
-  const rawParts = normalized
-    .split(/[;/；、，]/g)
-    .map((part) => normalizeMeaning(part))
-    .filter((part): part is string => !!part);
-
-  const unique = new Set<string>();
-  for (const part of rawParts.length > 0 ? rawParts : [normalized]) {
-    unique.add(part);
-    if (unique.size >= 5) break;
-  }
-
-  return Array.from(unique);
+  return splitChineseMeanings(data?.translated_text);
 };
 
 const fetchExistingLexemeData = async (word: string, lang: string): Promise<DictionaryResponse | null> => {
@@ -146,13 +129,13 @@ const fetchExistingLexemeData = async (word: string, lang: string): Promise<Dict
     .order('is_verified', { ascending: false })
     .order('confidence', { ascending: false })
     .order('created_at', { ascending: true })
-    .limit(5);
+    .limit(50);
 
   if (meaningsError) {
     throw new Error(`Global lexeme meanings lookup failed: ${meaningsError.message}`);
   }
 
-  const definition_cn = normalizeMeaning(meanings?.[0]?.meaning_zh);
+  const definition_cn = firstChineseMeaning((meanings || []).map((item: { meaning_zh: string }) => item.meaning_zh));
   const phonetic = normalizeMeaning(lexeme.phonetic);
   const definition_en = normalizeMeaning(lexeme.definition_en);
 
@@ -207,7 +190,7 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
         const translated = Array.isArray(data?.[0])
           ? data[0].map((segment: any) => segment?.[0]).filter(Boolean).join('')
           : undefined;
-        const meanings = splitMeaningCandidates(translated);
+        const meanings = splitChineseMeanings(translated);
         if (meanings.length > 0) {
           return { provider: 'google-translate', meanings };
         }
@@ -225,7 +208,7 @@ const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
 
     if (response.ok) {
       const data = await response.json();
-      const meanings = splitMeaningCandidates(data?.responseData?.translatedText);
+      const meanings = splitChineseMeanings(data?.responseData?.translatedText);
       if (meanings.length > 0) {
         return { provider: 'mymemory', meanings };
       }
@@ -300,9 +283,10 @@ const ensureLexemeEntry = async (
 };
 
 const upsertMeanings = async (lexemeId: string, meanings: string[], provider: string) => {
-  if (meanings.length === 0) return;
+  const validMeanings = meanings.map(normalizeChineseMeaning).filter((meaning): meaning is string => !!meaning);
+  if (validMeanings.length === 0) return;
 
-  const payload = meanings.map((meaning, index) => ({
+  const payload = validMeanings.map((meaning, index) => ({
     lexeme_id: lexemeId,
     meaning_zh: meaning,
     source_type: 'machine',
@@ -317,28 +301,6 @@ const upsertMeanings = async (lexemeId: string, meanings: string[], provider: st
 
   if (error) {
     throw new Error(`Upsert meanings failed: ${error.message}`);
-  }
-};
-
-const propagateMeaningToWords = async (lexemeId: string, meaning: string) => {
-  const { error: nullError } = await supabase
-    .from('words')
-    .update({ definition_cn: meaning })
-    .eq('lexeme_id', lexemeId)
-    .is('definition_cn', null);
-
-  if (nullError) {
-    throw new Error(`Propagate null meaning failed: ${nullError.message}`);
-  }
-
-  const { error: emptyError } = await supabase
-    .from('words')
-    .update({ definition_cn: meaning })
-    .eq('lexeme_id', lexemeId)
-    .eq('definition_cn', '');
-
-  if (emptyError) {
-    throw new Error(`Propagate empty meaning failed: ${emptyError.message}`);
   }
 };
 
@@ -391,9 +353,6 @@ serve(async (req) => {
     const lexemeId = await ensureLexemeEntry(word, lang, phonetic, definition_en);
     if (lexemeId && translation.meanings.length > 0) {
       await upsertMeanings(lexemeId, translation.meanings, translation.provider === 'none' ? 'edge-none' : translation.provider);
-      if (definition_cn) {
-        await propagateMeaningToWords(lexemeId, definition_cn);
-      }
     }
 
     const response: DictionaryResponse = {

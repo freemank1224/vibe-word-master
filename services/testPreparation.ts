@@ -1,7 +1,8 @@
 import type { WordEntry } from '../types.ts';
+import { normalizeChineseMeaning } from '../utils/chineseMeaning.ts';
 
 const placeholderDefinitions = new Set(['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-']);
-const hasDefinition = (value?: string | null) => !!value?.trim() && !placeholderDefinitions.has(value.trim().toLowerCase());
+const hasDefinition = (value?: string | null) => !!normalizeChineseMeaning(value);
 
 type MeaningSelection = Pick<WordEntry, 'definition_cn' | 'selected_meaning_key' | 'meaning_options'>;
 
@@ -11,7 +12,11 @@ type MeaningSelection = Pick<WordEntry, 'definition_cn' | 'selected_meaning_key'
 const hasChosenMeaning = (word: MeaningSelection): boolean => {
   if (!word.selected_meaning_key) return false;
   const selected = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
-  return !selected || hasDefinition(selected.meaningZh);
+  if (!selected || hasDefinition(selected.meaningZh) || selected.sourceProvider === 'user') return true;
+  // Only replace an identifiable failed automated fallback; other selections
+  // may reflect an intentional sense and must remain untouched.
+  const text = selected.meaningZh?.trim().toLowerCase() || '';
+  return !placeholderDefinitions.has(text) && !['input-fallback', 'translation-fallback'].includes(selected.sourceProvider || '');
 };
 
 export function needsDictionaryEnrichment(word: MeaningSelection): boolean {
@@ -75,15 +80,20 @@ export function preloadHintImage(url: string, signal: AbortSignal): Promise<bool
 
 /** Fixed-column conditions for a metadata-only compare-and-set; user values use .eq(), never raw filters. */
 export function dictionaryBackfillFilters(
-  word: Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key'>,
-  patch: Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic'>>,
+  word: Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key' | 'meaning_options'>,
+  patch: Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key'>>,
   language: string = 'en',
 ): { or: string[]; equals: Array<[string, string]> } {
   const or = ['deleted.eq.false,deleted.is.null'];
   const equals: Array<[string, string]> = [];
   if (!language || language === 'en') or.push('language.eq.en,language.is.null,language.eq.""');
   else equals.push(['language', language]);
-  const columns: Array<keyof typeof word> = ['selected_meaning_key'];
+  // A concurrent edit can preserve the same key while changing its option.
+  // Guard the exact JSON whenever the patch clears a failed selection.
+  if (Object.hasOwn(patch, 'selected_meaning_key') && Array.isArray(word.meaning_options)) {
+    equals.push(['meaning_options', JSON.stringify(word.meaning_options)]);
+  }
+  const columns: Array<'selected_meaning_key' | 'definition_cn' | 'definition_en' | 'phonetic'> = ['selected_meaning_key'];
   for (const field of ['definition_cn', 'definition_en', 'phonetic'] as const) {
     if (Object.hasOwn(patch, field)) columns.push(field);
   }
