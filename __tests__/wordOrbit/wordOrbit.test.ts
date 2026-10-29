@@ -144,31 +144,29 @@ test('long delayed frames cannot manufacture failures for unseen future question
   assert.equal(delayed.questionElapsedMs, 0); assert.equal(delayed.remainingMs, 50_000);
 });
 
-test('English clues use the selected sense, hide the answer, and never reuse a different English meaning', () => {
+test('the selected Chinese meaning stays visible in both interface languages', () => {
   const entry = {
     ...word('open', 'open', '打开'), definition_en: 'Not closed; allowing passage.', selected_meaning_key: 'verb',
     meaning_options: [{ key: 'verb', meaningZh: '打开', definitionEn: 'To open something that was closed.' }],
   };
   const question = toWordOrbitQuestion(entry)!;
   assert.equal(wordOrbitClue(question, 'zh'), '打开');
-  assert.equal(wordOrbitClue(question, 'en'), 'To ____ something that was closed.');
+  assert.equal(wordOrbitClue(question, 'en'), '打开');
   const noSelectedEnglish = toWordOrbitQuestion({ ...entry, meaning_options: [{ key: 'verb', meaningZh: '打开' }] })!;
-  assert.equal(wordOrbitClue(noSelectedEnglish, 'en'), 'Complete the sentence.');
+  assert.equal(wordOrbitClue(noSelectedEnglish, 'en'), '打开');
   const englishOnly = toWordOrbitQuestion({ ...word('orbit', 'orbit', null), definition_en: 'A curved path around a planet.' })!;
   assert.equal(wordOrbitClue(englishOnly, 'en'), 'A curved path around a planet.');
 });
 
-test('Chinese-only saved words remain playable with English spelling clues', () => {
+test('Chinese-only saved words keep their meanings in English mode', () => {
   for (const [answer, meaning] of [['at', '在'], ['sun', '太阳'], ['orbit', '轨道'], ['sky', '天空']]) {
     const question = toWordOrbitQuestion(word(answer, answer, meaning))!;
     const clue = wordOrbitClue(question, 'en');
-    assert.equal(/\p{Script=Han}/u.test(clue), false);
-    assert.equal(clue.includes(answer), false, 'the spelling fallback must not reveal the full answer');
-    assert.ok(question.before !== undefined || clue.includes('_'), 'provide a usable sentence or spelling prompt');
+    assert.equal(clue, meaning);
     assert.equal(wordOrbitClue(question, 'zh'), meaning);
   }
   const mixed = toWordOrbitQuestion({ ...word('orbit', 'orbit', '轨道'), definition_en: 'path 轨道' })!;
-  assert.equal(/\p{Script=Han}/u.test(wordOrbitClue(mixed, 'en')), false);
+  assert.equal(wordOrbitClue(mixed, 'en'), '轨道');
 });
 
 test('feedback and animation messages can change language without changing game state', () => {
@@ -184,7 +182,13 @@ test('feedback and animation messages can change language without changing game 
     ...(['jump', 'slide', 'jet'] as const).map(action => ({ key: 'action' as const, action })),
   ];
   for (const message of messages) {
-    assert.equal(/\p{Script=Han}/u.test(formatOrbitMessage(message, 'en')), false, message.key);
+    const englishMessage = formatOrbitMessage(message, 'en');
+    if (message.key === 'missed' || message.key === 'skip') {
+      assert.ok(englishMessage.includes(message.question.clue), 'feedback keeps the saved Chinese meaning');
+      assert.equal(/\p{Script=Han}/u.test(englishMessage.replace(message.question.clue, '')), false, message.key);
+    } else {
+      assert.equal(/\p{Script=Han}/u.test(englishMessage), false, message.key);
+    }
     assert.ok(formatOrbitMessage(message, 'zh').length > 0);
   }
 });

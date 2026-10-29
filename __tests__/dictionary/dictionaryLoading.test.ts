@@ -106,6 +106,26 @@ test('complete/selected meanings skip requests and late enrichment cannot overwr
   assert.deepEqual(missingDictionaryFields({ ...current, definition_cn: '暂无释义' }, { definition_cn: '银行' }), { definition_cn: '银行' });
 });
 
+test('a saved failed lookup can be recovered without replacing real or unknown selections', () => {
+  const failed = {
+    definition_cn: '暂无中文释义', definition_en: null, phonetic: null,
+    selected_meaning_key: 'na::暂无中文释义',
+    meaning_options: [{ key: 'na::暂无中文释义', meaningZh: '暂无中文释义', sourceProvider: 'input-fallback' }],
+  };
+  assert.equal(needsDictionaryEnrichment(failed), true);
+  assert.deepEqual(missingDictionaryFields(failed, { definition_cn: '控制器' }), {
+    definition_cn: '控制器', selected_meaning_key: null,
+  });
+  assert.deepEqual(missingDictionaryFields(failed, { definition_en: 'a device' }), { definition_en: 'a device' });
+
+  const real = { ...failed, meaning_options: [{ key: failed.selected_meaning_key, meaningZh: '控制器' }] };
+  assert.equal(needsDictionaryEnrichment(real), false);
+  assert.deepEqual(missingDictionaryFields(real, { definition_cn: '操纵者' }), {});
+  const unknown = { ...failed, meaning_options: [] };
+  assert.equal(needsDictionaryEnrichment(unknown), false);
+  assert.deepEqual(missingDictionaryFields(unknown, { definition_cn: '操纵者' }), {});
+});
+
 test('workers immediately refill freed slots without waiting for a slow batch member', async () => {
   const controller = new AbortController();
   const slow = deferred<void>();

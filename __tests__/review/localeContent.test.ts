@@ -11,21 +11,20 @@ const word = (patch: Partial<WordEntry> = {}): WordEntry => ({
   ...patch,
 });
 
-test('definition language follows the selected sense without resetting learning data', () => {
+test('Chinese meaning follows the selected sense in either interface language', () => {
   const entry = word({ selected_meaning_key: 'river', meaning_options: [
     { key: 'money', meaningZh: '银行', definitionEn: 'A financial institution' },
     { key: 'river', meaningZh: '河岸', definitionEn: 'The side of a river' },
   ] });
-  assert.equal(wordMeaningForLanguage(entry, false), 'The side of a river');
+  assert.equal(wordMeaningForLanguage(entry, false), '河岸');
   assert.equal(wordMeaningForLanguage(entry, true), '河岸');
   assert.equal(entry.selected_meaning_key, 'river');
 });
 
-test('missing or mislabeled English definitions use a useful English audio cue', () => {
+test('missing or mislabeled English definitions do not hide an existing Chinese meaning', () => {
   for (const definition_en of [null, '', '银行']) {
     const cue = wordMeaningForLanguage(word({ definition_en }), false);
-    assert.match(cue, /pronunciation/);
-    assert.doesNotMatch(cue, /\p{Script=Han}/u);
+    assert.equal(cue, '银行');
   }
 });
 
@@ -33,8 +32,16 @@ test('an untranslated selected sense does not fall back to a different default s
   const entry = word({ selected_meaning_key: 'river', meaning_options: [
     { key: 'river', meaningZh: '河岸', definitionEn: null },
   ] });
-  assert.match(wordMeaningForLanguage(entry, false), /pronunciation/);
+  assert.equal(wordMeaningForLanguage(entry, false), '河岸');
   assert.equal(wordMeaningForLanguage(entry, true), '河岸');
+});
+
+test('missing or placeholder Chinese meanings use a localized instruction', () => {
+  for (const definition_cn of [null, '', '暂无中文释义']) {
+    const entry = word({ definition_cn });
+    assert.match(wordMeaningForLanguage(entry, false), /pronunciation/);
+    assert.match(wordMeaningForLanguage(entry, true), /发音/);
+  }
 });
 
 test('all database leaderboard categories render English units independently of server labels', () => {

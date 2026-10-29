@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLanguage } from '../contexts/LanguageContext';
-import { wordMeaningForLanguage } from '../utils/wordMeaningLocale';
+import { chineseWordMeaning, wordMeaningForLanguage } from '../utils/wordMeaningLocale';
 import { HoverTranslationText } from './HoverTranslationText';
 import { WordStrikeLeaderboardPanel } from './WordStrikeLeaderboardPanel';
 import { InputSession, WordEntry, WordStrikeCardResult, WordStrikeGameSummary } from '../types';
@@ -999,7 +999,7 @@ export const WordStrikeGameMode: React.FC<WordStrikeGameModeProps> = ({
   // ----------------------------------------------------------------
 
   const currentWord = currentWordIndex >= 0 ? selectedWords[currentWordIndex] : null;
-  const hintDefinition = currentWord?.definition_cn || null;
+  const hintDefinition = currentWord ? chineseWordMeaning(currentWord) : null;
 
   const summaryCards = result
     ? [

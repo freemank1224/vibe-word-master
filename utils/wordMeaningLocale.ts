@@ -1,9 +1,18 @@
 import type { WordEntry } from '../types';
 
-/** Preserve the chosen sense; never substitute another sense to obtain a translation. */
-export const wordMeaningForLanguage = (word: WordEntry, isZh: boolean): string => {
+const placeholders = new Set(['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-']);
+const usable = (value?: string | null): string => {
+  const trimmed = value?.trim() || '';
+  return placeholders.has(trimmed.toLowerCase()) ? '' : trimmed;
+};
+
+/** Chinese meanings are learning content and do not follow the UI language. */
+export const chineseWordMeaning = (word: WordEntry): string => {
   const selected = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
-  if (isZh) return selected?.meaningZh?.trim() || word.definition_cn?.trim() || '请听发音回忆单词';
-  const definition = word.selected_meaning_key ? selected?.definitionEn?.trim() : word.definition_en?.trim();
-  return definition && !/\p{Script=Han}/u.test(definition) ? definition : 'Listen to the pronunciation to recall the word';
+  return usable(selected?.meaningZh) || usable(word.definition_cn);
+};
+
+/** Only the fallback instruction follows the UI language. */
+export const wordMeaningForLanguage = (word: WordEntry, isZh: boolean): string => {
+  return chineseWordMeaning(word) || (isZh ? '请听发音回忆单词' : 'Listen to the pronunciation to recall the word');
 };

@@ -1904,7 +1904,7 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                     {hintLevel >= 2 && !isRevealed && (
                         <div className="animate-in fade-in duration-500">
                             <p className="text-xl text-gray-300 font-light italic leading-relaxed max-w-lg mx-auto">
-                              "{currentWord.definition_en || "Keep listening to the audio hints..."}"
+                              "{wordMeaningForLanguage(currentWord, isZh)}"
                             </p>
                         </div>
                     )}

@@ -1,4 +1,5 @@
 import type { InputSession, WordEntry } from '../types.ts';
+import { chineseWordMeaning } from '../utils/wordMeaningLocale.ts';
 
 export const WORD_ORBIT_RULES_VERSION = 'orbit-practice-v1';
 export const WORD_ORBIT_DURATION_MS = 90_000;
@@ -75,16 +76,10 @@ export const ORBIT_ACTION_SECONDS: Record<OrbitAction, number> = { jump: .86, sl
 export const orbitWordBudget = (answer: string) => Math.min(15_000, 8_000 + answer.length * 700);
 export const normalizeOrbitAnswer = (value: string) => value.trim().toLocaleLowerCase('en').replace(/[’‘]/g, "'");
 
-export function wordOrbitClue(question: WordOrbitQuestion, language: OrbitLanguage): string {
-  if (language === 'zh') return question.clue;
-  if (question.clueEn) return question.clueEn;
-  if (!/\p{Script=Han}/u.test(question.clue)) return question.clue;
-  if (question.before !== undefined) return 'Complete the sentence.';
-  // Older entries may have only a Chinese definition. A partial spelling still
-  // gives an answerable English-only prompt without revealing the whole word.
-  const pattern = Array.from(question.answer).map((letter, index) =>
-    index === 0 || question.answer.length > 3 && index === question.answer.length - 1 || index > 1 && index % 2 === 0 ? letter : '_').join(' ');
-  return `Complete the word: ${pattern}`;
+export function wordOrbitClue(question: WordOrbitQuestion, _language: OrbitLanguage): string {
+  // The saved meaning is learning content, not interface copy. Keep it visible
+  // when the interface language changes.
+  return question.clue;
 }
 
 export function formatOrbitMessage(message: OrbitMessage, language: OrbitLanguage): string {
@@ -134,7 +129,7 @@ const SENTENCES: Record<string, { before: string; after: string; meaning: RegExp
 export function toWordOrbitQuestion(word: WordEntry): WordOrbitQuestion | null {
   const answer = normalizeOrbitAnswer(word.text || '');
   const selectedMeaning = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
-  const clue = (selectedMeaning?.meaningZh || word.definition_cn || selectedMeaning?.definitionEn || word.definition_en || '').trim();
+  const clue = (chineseWordMeaning(word) || (selectedMeaning ? selectedMeaning.definitionEn : word.definition_en) || '').trim();
   if (word.deleted || !/^[a-z]+(?:[-'][a-z]+)*$/.test(answer) || answer.length < 2 || answer.length > 18 || !clue || clue.length > 240) return null;
   // A clue containing the answer would make the recall task meaningless.
   if (new RegExp(`\\b${answer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(clue)) return null;

@@ -8,33 +8,24 @@ const word = {
   definition_en: 'The land beside a river.',
 } as WordEntry;
 
-test('puzzle clues use the selected interface language', () => {
-  assert.equal(getPuzzleDefinition(word, 'en'), 'The land beside a river.');
+test('puzzle clues keep Chinese in both interface languages', () => {
+  assert.equal(getPuzzleDefinition(word, 'en'), '河岸');
   assert.equal(getPuzzleDefinition(word, 'zh'), '河岸');
 });
 
-test('an explicitly selected meaning supplies the English clue', () => {
-  assert.equal(getPuzzleDefinition({
+test('the selected Chinese meaning takes precedence over another default sense', () => {
+  const selected = {
     ...word,
     selected_meaning_key: 'finance',
     meaning_options: [{ key: 'finance', meaningZh: '银行', definitionEn: 'A business that keeps money.' }],
-  }, 'en'), 'A business that keeps money.');
+  };
+  assert.equal(getPuzzleDefinition(selected, 'en'), '银行');
+  assert.equal(getPuzzleDefinition(selected, 'zh'), '银行');
 });
 
-test('missing or mixed English definitions never fall back to Chinese', () => {
-  for (const definition_en of [null, '', '河岸', 'The river bank（河岸）']) {
-    assert.equal(getPuzzleDefinition({ ...word, definition_en }, 'en'), '');
+test('missing Chinese meaning leaves the localized image fallback to the UI', () => {
+  for (const definition_cn of [null, '', '暂无中文释义']) {
+    assert.equal(getPuzzleDefinition({ ...word, definition_cn }, 'en'), '');
+    assert.equal(getPuzzleDefinition({ ...word, definition_cn }, 'zh'), '');
   }
-});
-
-test('a missing selected translation never substitutes a different word sense', () => {
-  assert.equal(getPuzzleDefinition({
-    ...word,
-    selected_meaning_key: 'river',
-    meaning_options: [{ key: 'river', meaningZh: '河岸', definitionEn: '河流边缘' }],
-  }, 'en'), '');
-});
-
-test('missing Chinese definition leaves the localized image fallback to the UI', () => {
-  assert.equal(getPuzzleDefinition({ ...word, definition_cn: null }, 'zh'), '');
 });

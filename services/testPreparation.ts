@@ -3,18 +3,33 @@ import type { WordEntry } from '../types.ts';
 const placeholderDefinitions = new Set(['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-']);
 const hasDefinition = (value?: string | null) => !!value?.trim() && !placeholderDefinitions.has(value.trim().toLowerCase());
 
-export function needsDictionaryEnrichment(word: Pick<WordEntry, 'definition_cn' | 'selected_meaning_key'>): boolean {
+type MeaningSelection = Pick<WordEntry, 'definition_cn' | 'selected_meaning_key' | 'meaning_options'>;
+
+// Older versions saved a failed lookup as a selected placeholder. Preserve unknown
+// selections (for example when legacy rows do not have meaning_options), and only
+// replace a selection when its stored option proves it is a placeholder.
+const hasChosenMeaning = (word: MeaningSelection): boolean => {
+  if (!word.selected_meaning_key) return false;
+  const selected = word.meaning_options?.find(option => option.key === word.selected_meaning_key);
+  return !selected || hasDefinition(selected.meaningZh);
+};
+
+export function needsDictionaryEnrichment(word: MeaningSelection): boolean {
   // Optional phonetics/English explanations never delay a word whose chosen meaning is already usable.
-  return !word.selected_meaning_key && !hasDefinition(word.definition_cn);
+  return !hasChosenMeaning(word) && !hasDefinition(word.definition_cn);
 }
 
 export function missingDictionaryFields(
-  word: Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key'>,
+  word: Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key' | 'meaning_options'>,
   data: { definition_cn?: string; definition_en?: string; phonetic?: string } | null,
-): Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic'>> {
-  if (!data || word.selected_meaning_key) return {};
-  const patch: Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic'>> = {};
-  if (!hasDefinition(word.definition_cn) && hasDefinition(data.definition_cn)) patch.definition_cn = data.definition_cn;
+): Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key'>> {
+  if (!data || hasChosenMeaning(word)) return {};
+  const patch: Partial<Pick<WordEntry, 'definition_cn' | 'definition_en' | 'phonetic' | 'selected_meaning_key'>> = {};
+  if (!hasDefinition(word.definition_cn) && hasDefinition(data.definition_cn)) {
+    patch.definition_cn = data.definition_cn;
+    // Stop the old placeholder option from shadowing the recovered definition.
+    if (word.selected_meaning_key) patch.selected_meaning_key = null;
+  }
   if (!word.definition_en?.trim() && data.definition_en?.trim()) patch.definition_en = data.definition_en;
   if (!word.phonetic?.trim() && data.phonetic?.trim()) patch.phonetic = data.phonetic;
   return patch;

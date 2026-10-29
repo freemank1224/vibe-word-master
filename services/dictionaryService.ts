@@ -143,6 +143,8 @@ const fetchGlobalLexemeData = (word: string, lang: string, signal: AbortSignal) 
 const fetchDictionaryDataViaEdge = async (word: string, lang: string, signal: AbortSignal): Promise<DictionaryData | null> => {
   if (!isSupabaseConfigured) return null;
   try {
+    // The edge function can spend up to 2.5 seconds on its first translation
+    // provider. Give it time to return before cancelling the client request.
     return await withinDeadline(async requestSignal => {
       const { data, error } = await supabase.functions.invoke('dictionary-lookup', { body: { word, lang }, signal: requestSignal });
       if (error) return null;
@@ -151,7 +153,7 @@ const fetchDictionaryDataViaEdge = async (word: string, lang: string, signal: Ab
         definition_cn: normalizeMeaning(data?.definition_cn),
       };
       return result.definition_cn || result.definition_en || result.phonetic ? result : null;
-    }, 2000, signal);
+    }, 4000, signal);
   } catch { return null; }
 };
 

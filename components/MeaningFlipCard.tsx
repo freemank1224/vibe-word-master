@@ -45,14 +45,11 @@ export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
   const meaningTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const overlayCloseTimerRef = useRef<number | null>(null);
-  const normalizedMeaningOptions = (meaningOptions || []).filter(option => isZh ? option?.meaningZh?.trim() : option?.definitionEn?.trim() && !/\p{Script=Han}/u.test(option.definitionEn));
+  const normalizedMeaningOptions = (meaningOptions || []).filter(option => option?.meaningZh?.trim() && !['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-'].includes(option.meaningZh.trim().toLowerCase()));
   const selectedMeaning = (meaningOptions || []).find(option => option.key === selectedMeaningKey);
-  const englishDefinition = selectedMeaningKey
-    ? selectedMeaning?.definitionEn
-    : definitionEn?.trim() || normalizedMeaningOptions[0]?.definitionEn;
-  const displayMeaning = isZh
-    ? selectedMeaning?.meaningZh || meaning?.trim() || normalizedMeaningOptions[0]?.meaningZh || '暂无中文释义'
-    : englishDefinition && !/\p{Script=Han}/u.test(englishDefinition) ? englishDefinition : 'No English definition yet';
+  const usableSelectedMeaning = normalizedMeaningOptions.find(option => option.key === selectedMeaning?.key);
+  const usableMeaning = meaning?.trim() && !['暂无中文释义', '无中文释义', '暂无释义', 'n/a', 'na', '-'].includes(meaning.trim().toLowerCase()) ? meaning.trim() : undefined;
+  const displayMeaning = usableSelectedMeaning?.meaningZh || usableMeaning || normalizedMeaningOptions[0]?.meaningZh || (isZh ? '暂无中文释义' : 'No Chinese meaning yet');
 
   const clearOverlayCloseTimer = () => {
     if (overlayCloseTimerRef.current !== null) {
@@ -172,7 +169,7 @@ export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
         >
           <div className="flex h-full flex-col rounded-inherit">
             <div className="min-w-0 overflow-hidden">
-              <p className="text-[10px] font-mono uppercase tracking-[0.24em] text-gray-500">{isZh ? '中文释义' : 'English definition'}</p>
+              <p className="text-[10px] font-mono uppercase tracking-[0.24em] text-gray-500">{isZh ? '中文释义' : 'Chinese meaning'}</p>
               <button
                 ref={meaningTriggerRef}
                 type="button"
@@ -219,8 +216,8 @@ export const MeaningFlipCard: React.FC<MeaningFlipCardProps> = ({
                     </span>
                     {isSelected && <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-200">{isZh ? '当前记录' : 'Selected meaning'}</span>}
                   </div>
-                  <p className="mt-2 break-words text-sm leading-relaxed text-white">{isZh ? option.meaningZh : option.definitionEn}</p>
-                  {isZh && option.definitionEn && (
+                  <p className="mt-2 break-words text-sm leading-relaxed text-white">{option.meaningZh}</p>
+                  {option.definitionEn && !/\p{Script=Han}/u.test(option.definitionEn) && (
                     <p className="mt-1 break-words text-xs leading-relaxed text-gray-400">{option.definitionEn}</p>
                   )}
                 </div>

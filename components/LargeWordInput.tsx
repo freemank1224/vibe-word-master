@@ -95,7 +95,7 @@ export const LargeWordInput: React.FC<LargeWordInputProps> = ({
 
   // Robust focus management: Always keep the input focused
   const keepFocus = () => {
-    if (!disabled && inputRef.current) {
+    if (!disabled && inputRef.current && !inputRef.current.disabled) {
       inputRef.current.focus();
     }
   };
