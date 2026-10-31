@@ -30,7 +30,8 @@ import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { aiService } from './services/ai';
 import { compressToWebP } from './utils/imageUtils';
 import { getImageGenerationQueueSnapshot, requestQueuedWordImage } from './services/imageGenerationQueue';
-import { fetchDictionaryData, playWordAudio as playWordAudioService, type DictionaryData } from './services/dictionaryService';
+import { fetchSavedDictionaryData, playWordAudio as playWordAudioService, type DictionaryData } from './services/dictionaryService';
+import { DEFINITION_BACKFILL_INTERVAL_MS, DEFINITION_BACKFILL_RETRY_MS, isSupabaseRateLimited, withDefinitionBackfillPermit } from './services/definitionBackfillPacing';
 import { dictionaryBackfillFilters, missingDictionaryFields, needsDictionaryEnrichment } from './services/testPreparation';
 import { playDing, playBuzzer, playAchievementUnlock } from './utils/audioFeedback';
 import { cacheGeneratedImageForWord, getCachedImageDataUrl, getCachedImageWordIds } from './services/imageCache';
@@ -208,6 +209,8 @@ const App: React.FC = () => {
   const definitionBackfillRetryRef = useRef<Map<string, number>>(new Map());
   const definitionBackfillRunningRef = useRef(false);
   const definitionBackfillIdentityRevisionRef = useRef(-1);
+  const definitionBackfillEpochRef = useRef(0);
+  const definitionBackfillControllerRef = useRef<AbortController | null>(null);
   const latestWordsRef = useRef<WordEntry[]>([]);
   const authUserIdRef = useRef<string | null>(null);
   const refreshRequestRef = useRef(0);
@@ -275,6 +278,11 @@ const App: React.FC = () => {
     definitionBackfillRetryRef.current.clear();
     definitionBackfillRunningRef.current = false;
   }, [session?.user?.id]);
+
+  useEffect(() => () => {
+    definitionBackfillEpochRef.current += 1;
+    definitionBackfillControllerRef.current?.abort();
+  }, []);
 
   // 一次性自愈：登录后修复历史多词短语图片被双重编码的 public_url（get up / high heels 等）
   useEffect(() => {
@@ -550,6 +558,7 @@ const App: React.FC = () => {
       if (!alive) return;
       const nextUserId = nextSession?.user?.id || null;
       if (authUserIdRef.current !== nextUserId) {
+        definitionBackfillControllerRef.current?.abort();
         invalidateUserDataReads();
         authUserIdRef.current = nextUserId;
         refreshRequestRef.current++;
@@ -969,28 +978,30 @@ const App: React.FC = () => {
   const backfillWordDictionaryMetadata = useCallback(async (
     userId: string, identityRevision: number, wordId: string, data: DictionaryData | null,
     source: Pick<WordEntry, 'text' | 'language'>,
-  ): Promise<void> => {
+    signal?: AbortSignal,
+  ): Promise<'updated' | 'retry' | 'skipped'> => {
     const isCurrent = () => authUserIdRef.current === userId
-      && authIdentityRevisionRef.current === identityRevision;
-    if (!data || !isCurrent()) return;
+      && authIdentityRevisionRef.current === identityRevision && !signal?.aborted;
+    if (!data || !isCurrent() || isSupabaseRateLimited()) return 'retry';
     const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (!isCurrent() || authError || user?.id !== userId) return;
+    if (!isCurrent() || authError || user?.id !== userId || isSupabaseRateLimited()) return 'retry';
     const current = latestWordsRef.current.find(word => word.id === wordId && !word.deleted);
     const sourceKey = normalizeDefinitionBackfillKey(source.text, source.language || 'en');
     if (!current || !needsDictionaryEnrichment(current)
-      || normalizeDefinitionBackfillKey(current.text, current.language || 'en') !== sourceKey) return;
+      || normalizeDefinitionBackfillKey(current.text, current.language || 'en') !== sourceKey) return 'skipped';
     const patch = missingDictionaryFields(current, data);
-    if (!Object.keys(patch).length) return;
+    if (!Object.keys(patch).length) return 'skipped';
 
     // A meaning chosen on another tab/device while this request is in flight wins.
     let update = supabase.from('words').update(patch).eq('id', wordId).eq('user_id', userId)
       .eq('text', current.text);
+    if (signal) update = update.abortSignal(signal);
     const filters = dictionaryBackfillFilters(current, patch, source.language || 'en');
     for (const filter of filters.or) update = update.or(filter);
     for (const [field, value] of filters.equals) update = update.eq(field, value);
     const { data: updated, error } = await update.select('id');
     if (error) throw error;
-    if (!isCurrent() || !updated?.length) return;
+    if (!isCurrent() || !updated?.length) return 'retry';
     setWords(previous => {
       if (!isCurrent()) return previous;
       const next = previous.map(word => word.id === wordId && !word.deleted
@@ -1000,6 +1011,7 @@ const App: React.FC = () => {
       latestWordsRef.current = next;
       return next;
     });
+    return 'updated';
   }, []);
 
   // Background Process
@@ -1098,19 +1110,7 @@ const App: React.FC = () => {
         appendImageGenDebug('word_skip_has_existing_image', { id: w.id, text: w.text, imagePath: w.image_path, assetId: w.image_asset_id });
       }
 
-      // 2. Backfill only missing dictionary fields; chosen meanings remain authoritative.
-      try {
-        const current = latestWordsRef.current.find(word => word.id === w.id && !word.deleted);
-        if (!current || !needsDictionaryEnrichment(current)) continue;
-        const dict = await fetchDictionaryData(current.text, current.language || 'en');
-        if (!isCurrent()) return;
-        await backfillWordDictionaryMetadata(userId, identityRevision, current.id, dict, current);
-        if (!isCurrent()) return;
-      } catch (error) {
-        if (!isCurrent()) return;
-        console.warn(`Background dictionary fetch failed for ${w.text}:`, error);
-        appendImageGenDebug('dictionary_fetch_failed', { id: w.id, text: w.text, error: String(error) });
-      }
+      // Historical meanings are handled by the shared paced queue below.
     }
 
       appendImageGenDebug('background_process_complete', { total: wordsToProcess.length });
@@ -1377,56 +1377,88 @@ const App: React.FC = () => {
   const processDefinitionBackfillQueue = useCallback(async () => {
     const userId = session?.user?.id;
     const identityRevision = authIdentityRevisionRef.current;
+    const epoch = definitionBackfillEpochRef.current;
+    const controller = new AbortController();
     const isCurrent = () => !!userId && authUserIdRef.current === userId
-      && authIdentityRevisionRef.current === identityRevision;
+      && authIdentityRevisionRef.current === identityRevision && definitionBackfillEpochRef.current === epoch && !controller.signal.aborted;
     if (definitionBackfillRunningRef.current || !isCurrent()) return;
     definitionBackfillRunningRef.current = true;
+    definitionBackfillControllerRef.current = controller;
+    let restartAllowed = true;
+    const wait = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, Math.min(milliseconds, 30_000)));
 
     try {
       while (isCurrent() && definitionBackfillQueueRef.current.size > 0) {
-        const next = definitionBackfillQueueRef.current.entries().next().value;
-        if (!next) break;
+        const now = Date.now();
+        const next = [...definitionBackfillQueueRef.current.entries()]
+          .find(([key]) => (definitionBackfillRetryRef.current.get(key) || 0) <= now);
+        if (!next) {
+          let earliest = Infinity;
+          for (const timestamp of definitionBackfillRetryRef.current.values()) earliest = Math.min(earliest, timestamp);
+          await wait(Number.isFinite(earliest) ? Math.max(1, earliest - now) : 30_000);
+          continue;
+        }
         const [queueKey, candidate] = next;
-        definitionBackfillQueueRef.current.delete(queueKey);
-        definitionBackfillInFlightRef.current.add(queueKey);
         const matchesCandidate = (word: WordEntry) => !word.deleted && needsDictionaryEnrichment(word)
           && (candidate.lexemeId && word.lexeme_id
             ? word.lexeme_id === candidate.lexemeId
             : normalizeDefinitionBackfillKey(word.text, word.language || 'en')
               === normalizeDefinitionBackfillKey(candidate.text, candidate.language));
         try {
-          // The queue may outlive a user edit; skip it before making any request.
           if (!latestWordsRef.current.some(matchesCandidate)) {
+            definitionBackfillQueueRef.current.delete(queueKey);
+            definitionBackfillRetryRef.current.delete(queueKey);
             definitionBackfillCompletedRef.current.add(queueKey);
             continue;
           }
-          const dict = await fetchDictionaryData(candidate.text, candidate.language || 'en');
+          let storage: Storage | undefined;
+          let locks: LockManager | undefined;
+          try { storage = window.localStorage; locks = navigator.locks; } catch { /* Stop background work when coordination is unavailable. */ }
+          const permit = await withDefinitionBackfillPermit(storage, locks, isCurrent, async () => {
+            definitionBackfillInFlightRef.current.add(queueKey);
+            try {
+              if (!isCurrent() || isSupabaseRateLimited()) return 'paused' as const;
+              // Read previously saved shared meanings only. Translation is left
+              // to the server's globally paced worker; manual input stays immediate.
+              const dict = await fetchSavedDictionaryData(candidate.text, candidate.language || 'en', controller.signal);
+              if (!isCurrent()) return 'cancelled' as const;
+              if (isSupabaseRateLimited()) return 'paused' as const;
+              if (!dict?.definition_cn) return 'missing' as const;
+              const word = latestWordsRef.current.find(matchesCandidate);
+              if (!word) return 'processed' as const;
+              const result = await backfillWordDictionaryMetadata(userId, identityRevision, word.id, dict, candidate, controller.signal);
+              if (!isCurrent()) return 'cancelled' as const;
+              return isSupabaseRateLimited() ? 'paused' as const : result === 'retry' ? 'missing' as const : 'processed' as const;
+            } finally {
+              if (isCurrent()) definitionBackfillInFlightRef.current.delete(queueKey);
+            }
+          });
           if (!isCurrent()) return;
-          const wordIds = latestWordsRef.current.filter(matchesCandidate).map(word => word.id);
-          for (const wordId of wordIds) {
-            if (!isCurrent()) return;
-            await backfillWordDictionaryMetadata(userId, identityRevision, wordId, dict, candidate);
-            if (!isCurrent()) return;
-          }
-          // Missing provider results are not written as permanent placeholder definitions.
-          definitionBackfillCompletedRef.current.add(queueKey);
-          definitionBackfillRetryRef.current.delete(queueKey);
+          if (permit.kind === 'unavailable') { restartAllowed = false; return; }
+          if (permit.kind === 'cancelled') return;
+          if (permit.kind === 'wait') { await wait(permit.ms); continue; }
+          if (permit.value === 'cancelled') return;
+          // Revisit absent shared meanings later instead of marking them done.
+          // One personal row per permit also bounds duplicate-word writes.
+          const retryDelay = permit.value === 'missing' ? DEFINITION_BACKFILL_RETRY_MS
+            : permit.value === 'processed' ? DEFINITION_BACKFILL_INTERVAL_MS : 0;
+          definitionBackfillRetryRef.current.set(queueKey, Date.now() + retryDelay);
+          definitionBackfillQueueRef.current.delete(queueKey);
+          definitionBackfillQueueRef.current.set(queueKey, candidate);
         } catch (error) {
           if (!isCurrent()) return;
-          const retries = (definitionBackfillRetryRef.current.get(queueKey) || 0) + 1;
-          definitionBackfillRetryRef.current.set(queueKey, retries);
-          if (retries < 2) definitionBackfillQueueRef.current.set(queueKey, candidate);
-          else definitionBackfillCompletedRef.current.add(queueKey);
+          definitionBackfillRetryRef.current.set(queueKey, Date.now() + DEFINITION_BACKFILL_RETRY_MS);
+          definitionBackfillQueueRef.current.delete(queueKey);
+          definitionBackfillQueueRef.current.set(queueKey, candidate);
           console.warn(`Failed to backfill Chinese definition for ${candidate.text}:`, error);
-        } finally {
-          if (isCurrent()) definitionBackfillInFlightRef.current.delete(queueKey);
         }
       }
     } finally {
+      if (definitionBackfillControllerRef.current === controller) definitionBackfillControllerRef.current = null;
       // An obsolete A→B→A worker must not clear the newer account's running flag or queue.
       if (isCurrent()) {
         definitionBackfillRunningRef.current = false;
-        if (definitionBackfillQueueRef.current.size > 0) void processDefinitionBackfillQueue();
+        if (restartAllowed && definitionBackfillQueueRef.current.size > 0) void processDefinitionBackfillQueue();
       }
     }
   }, [session?.user?.id, backfillWordDictionaryMetadata]);

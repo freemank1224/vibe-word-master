@@ -2,6 +2,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import type { WordMeaningOption } from '../types';
 import { createDictionaryLookupCache, withinDeadline } from './dictionaryLookupCache';
 import { normalizeChineseMeaning } from '../utils/chineseMeaning';
+import { isSupabaseRateLimited } from './definitionBackfillPacing';
 
 export interface DictionaryData {
   phonetic?: string;
@@ -140,6 +141,34 @@ const fetchGlobalLexemeData = (word: string, lang: string, signal: AbortSignal) 
       return data.definition_cn || data.definition_en || data.phonetic ? data : null;
     }, 2000, sharedSignal);
   }, signal);
+
+/** Historical-word repair reads only the shared cache. The paced server worker
+ * fills missing shared meanings; this path must not launch new translations. */
+export const fetchSavedDictionaryData = (word: string, lang: string = 'en', signal?: AbortSignal) => {
+  if (!normalizeWordKey(word) || signal?.aborted || !isSupabaseConfigured || isSupabaseRateLimited()) return Promise.resolve(null);
+  return withinDeadline(async requestSignal => {
+    const { data: lexeme, error } = await supabase.from('lexeme_entries')
+      .select('id, phonetic, definition_en').eq('normalized_text', normalizeWordKey(word))
+      .eq('language', lang).abortSignal(requestSignal).maybeSingle();
+    // A 429 or identity change during the first read must prevent the second.
+    if (requestSignal.aborted || isSupabaseRateLimited() || error || !lexeme?.id) return null;
+    const { data: meanings, error: meaningsError } = await supabase.from('lexeme_meanings')
+      .select('meaning_zh, part_of_speech, source_provider, confidence, is_verified, created_at')
+      .eq('lexeme_id', lexeme.id).order('is_verified', { ascending: false })
+      .order('confidence', { ascending: false }).order('created_at', { ascending: true })
+      .limit(10).abortSignal(requestSignal);
+    if (requestSignal.aborted || isSupabaseRateLimited() || meaningsError) return null;
+    const meaningOptions = dedupeMeaningOptions((meanings || []).map(item => ({
+      key: buildMeaningOptionKey(item.meaning_zh, item.part_of_speech),
+      meaningZh: item.meaning_zh, partOfSpeech: item.part_of_speech, sourceProvider: item.source_provider,
+    })));
+    if (!meaningOptions.length) return null;
+    return {
+      phonetic: normalizeMeaning(lexeme.phonetic), definition_en: normalizeMeaning(lexeme.definition_en),
+      definition_cn: meaningOptions[0].meaningZh, meaningOptions,
+    };
+  }, 2000, signal).catch(() => null);
+};
 
 const fetchDictionaryDataViaEdge = async (word: string, lang: string, signal: AbortSignal): Promise<DictionaryData | null> => {
   if (!isSupabaseConfigured) return null;

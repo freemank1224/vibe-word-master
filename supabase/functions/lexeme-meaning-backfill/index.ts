@@ -1,6 +1,9 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { normalizeChineseMeaning, splitChineseMeanings } from '../_shared/chineseMeaning.ts';
+import { normalizeChineseMeaning } from '../_shared/chineseMeaning.ts';
+import { isLexemeBackfillAuthorized } from '../_shared/lexemeBackfillAuth.ts';
+import { BACKFILL_MAX_COOLDOWN_SECONDS, BackfillRateLimitError, failureDelaySeconds, retryAfterSeconds, translateBackfillWord } from '../_shared/lexemeBackfillPolicy.ts';
+import { addMachineMeanings } from '../_shared/lexemeBackfillStore.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -14,100 +17,20 @@ const backfillSecret = Deno.env.get('LEXEME_BACKFILL_SECRET') || '';
 const uapisTranslateEndpoint = Deno.env.get('UAPIS_TRANSLATE_ENDPOINT') || 'https://uapis.cn/api/v1/translate/text';
 const uapisApiKey = Deno.env.get('UAPIS_API_KEY') || '';
 
+// PostgREST's client response does not expose response headers. Capture the
+// retry deadline at fetch level so database 429s do not lose Retry-After.
+let observedDatabaseCooldownUntil = 0;
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
+  global: { fetch: async (input, init) => {
+    const response = await fetch(input, init);
+    if (response.status === 429 || response.status === 503) {
+      const seconds = Math.max(3600, retryAfterSeconds(response.headers.get('Retry-After')));
+      observedDatabaseCooldownUntil = Math.max(observedDatabaseCooldownUntil, Date.now() + seconds * 1000);
+    }
+    return response;
+  } },
 });
-
-const fetchWithTimeout = async (input: string, timeoutMs: number, init?: RequestInit): Promise<Response> => {
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...(init || {}), signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
-};
-
-const fetchUapisTranslation = async (text: string) => {
-  const response = await fetchWithTimeout(`${uapisTranslateEndpoint}?to_lang=zh`, 2500, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(uapisApiKey ? {
-        Authorization: `Bearer ${uapisApiKey}`,
-        'x-api-key': uapisApiKey,
-      } : {}),
-    },
-    body: JSON.stringify({ text }),
-  });
-
-  if (!response.ok) {
-    const details = await response.text().catch(() => '');
-    throw new Error(`UAPIs translate failed (${response.status}): ${details.slice(0, 300)}`);
-  }
-
-  const data = await response.json().catch(() => ({}));
-  return splitChineseMeanings(data?.translated_text);
-};
-
-const fetchChineseTranslation = async (text: string, fallbackText?: string) => {
-  const query = text.trim();
-  if (!query) {
-    return { provider: 'none', meanings: [] as string[] };
-  }
-
-  const googleTargets = [query, fallbackText].filter((item): item is string => !!item?.trim());
-
-  for (const target of googleTargets) {
-    try {
-      const meanings = await fetchUapisTranslation(target);
-      if (meanings.length > 0) {
-        return { provider: 'uapis', meanings };
-      }
-    } catch (error) {
-      console.warn('UAPIs translation failed:', error);
-    }
-  }
-
-  for (const target of googleTargets) {
-    try {
-      const response = await fetch(
-        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(target)}`
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        const translated = Array.isArray(data?.[0])
-          ? data[0].map((segment: any) => segment?.[0]).filter(Boolean).join('')
-          : undefined;
-        const meanings = splitChineseMeanings(translated);
-        if (meanings.length > 0) {
-          return { provider: 'google-translate', meanings };
-        }
-      }
-    } catch (error) {
-      console.warn('Google translation failed:', error);
-    }
-  }
-
-  try {
-    const response = await fetch(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(query)}&langpair=en|zh-CN`
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      const meanings = splitChineseMeanings(data?.responseData?.translatedText);
-      if (meanings.length > 0) {
-        return { provider: 'mymemory', meanings };
-      }
-    }
-  } catch (error) {
-    console.warn('MyMemory translation failed:', error);
-  }
-
-  return { provider: 'none', meanings: [] as string[] };
-};
 
 type ClaimedJob = {
   job_id: string;
@@ -121,56 +44,54 @@ type ClaimedJob = {
   max_attempts: number;
 };
 
-const claimJobs = async (batchSize: number): Promise<ClaimedJob[]> => {
-  const { data, error } = await supabase.rpc('claim_lexeme_meaning_backfill_jobs', { p_limit: batchSize });
-  if (error) {
-    throw new Error(`Claim jobs failed: ${error.message}`);
+const assertDatabaseSuccess = (error: { message?: string } | null, status: number, operation: string) => {
+  if (status === 429 || (error && observedDatabaseCooldownUntil > Date.now())) {
+    throw new BackfillRateLimitError(Math.max(3600, Math.ceil((observedDatabaseCooldownUntil - Date.now()) / 1000)));
   }
+  if (error) throw new Error(`${operation}: ${error.message || 'Database request failed'}`);
+};
+
+const claimJobs = async (token: string): Promise<ClaimedJob[]> => {
+  const { data, error, status } = await supabase.rpc('claim_lexeme_backfill_with_slot', { p_token: token });
+  assertDatabaseSuccess(error, status, 'Claim jobs failed');
   return (data || []) as ClaimedJob[];
 };
 
-const completeJob = async (jobId: string, success: boolean, errorMessage?: string, retryDelaySeconds = 300) => {
-  const { error } = await supabase.rpc('complete_lexeme_meaning_backfill_job', {
+const completeJob = async (jobId: string, attempts: number, success: boolean, errorMessage?: string, retryDelaySeconds = 300) => {
+  const { error, status } = await supabase.rpc('finish_claimed_lexeme_backfill', {
     p_job_id: jobId,
+    p_expected_attempt: attempts,
     p_success: success,
     p_error: errorMessage || null,
     p_retry_delay_seconds: retryDelaySeconds,
   });
 
-  if (error) {
-    throw new Error(`Complete job failed: ${error.message}`);
-  }
+  assertDatabaseSuccess(error, status, 'Complete job failed');
 };
 
+const deferRateLimitedJob = async (jobId: string, attempts: number, delaySeconds: number) => {
+  const { error, status } = await supabase.rpc('defer_rate_limited_lexeme_backfill', {
+    p_job_id: jobId, p_expected_attempt: attempts, p_retry_delay_seconds: delaySeconds,
+  });
+  assertDatabaseSuccess(error, status, 'Defer rate-limited job failed');
+};
+
+class PreserveBackfillLeaseError extends Error {
+  constructor() { super('Unable to safely persist a rate-limit retry'); this.name = 'PreserveBackfillLeaseError'; }
+}
+
 const upsertMeanings = async (lexemeId: string, meanings: string[], provider: string) => {
-  const validMeanings = meanings.map(normalizeChineseMeaning).filter((meaning): meaning is string => !!meaning);
-  if (validMeanings.length === 0) return;
-  const payload = validMeanings.map((meaning, index) => ({
-    lexeme_id: lexemeId,
-    meaning_zh: meaning,
-    source_type: 'machine',
-    source_provider: provider,
-    confidence: index === 0 ? 0.78 : 0.68,
-    is_verified: false,
-  }));
+  const { error, status } = await addMachineMeanings(supabase, lexemeId, meanings, provider);
 
-  const { error } = await supabase
-    .from('lexeme_meanings')
-    .upsert(payload, { onConflict: 'lexeme_id,meaning_zh' });
-
-  if (error) {
-    throw new Error(`Upsert meanings failed: ${error.message}`);
-  }
+  assertDatabaseSuccess(error, status, 'Upsert meanings failed');
 };
 
 const getJobCounts = async () => {
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from('lexeme_meaning_backfill_jobs')
     .select('status');
 
-  if (error) {
-    throw new Error(`Load job counts failed: ${error.message}`);
-  }
+  assertDatabaseSuccess(error, status, 'Load job counts failed');
 
   return (data || []).reduce((acc: Record<string, number>, row: { status: string }) => {
     acc[row.status] = (acc[row.status] || 0) + 1;
@@ -178,8 +99,8 @@ const getJobCounts = async () => {
   }, {});
 };
 
-const processJobs = async (batchSize: number) => {
-  const claimedJobs = await claimJobs(batchSize);
+const processJobs = async (token: string) => {
+  const claimedJobs = await claimJobs(token);
   const summary = {
     claimed: claimedJobs.length,
     succeeded: 0,
@@ -190,38 +111,65 @@ const processJobs = async (batchSize: number) => {
 
   for (const job of claimedJobs) {
     try {
-      const { data: existingMeanings, error: existingError } = await supabase
+      const { data: existingMeanings, error: existingError, status } = await supabase
         .from('lexeme_meanings')
         .select('meaning_zh')
         .eq('lexeme_id', job.lexeme_id)
         .limit(50);
 
-      if (existingError) {
-        throw new Error(`Check existing meanings failed: ${existingError.message}`);
-      }
+      assertDatabaseSuccess(existingError, status, 'Check existing meanings failed');
 
       if ((existingMeanings || []).some((item: { meaning_zh: string }) => normalizeChineseMeaning(item.meaning_zh))) {
-        await completeJob(job.job_id, true, null, 300);
+        await completeJob(job.job_id, job.attempts, true, undefined, 300);
         summary.skipped += 1;
         continue;
       }
 
-      const translation = await fetchChineseTranslation(job.display_text || job.normalized_text, job.definition_en || undefined);
+      const translation = await translateBackfillWord(job.display_text || job.normalized_text, job.attempts, uapisTranslateEndpoint, uapisApiKey);
       if (translation.meanings.length === 0) {
-        throw new Error('No translation result returned from all providers');
+        throw new Error('No Chinese translation returned by provider');
       }
 
       const meanings = translation.meanings;
       const provider = translation.provider;
 
+      // A learner may have supplied a meaning while the provider was running.
+      // A second read avoids needless machine options; ignoreDuplicates below
+      // also prevents replacing user metadata if the same meaning races in.
+      const { data: afterTranslation, error: recheckError, status: recheckStatus } = await supabase
+        .from('lexeme_meanings').select('meaning_zh').eq('lexeme_id', job.lexeme_id).limit(50);
+      assertDatabaseSuccess(recheckError, recheckStatus, 'Recheck existing meanings failed');
+      if ((afterTranslation || []).some((item: { meaning_zh: string }) => normalizeChineseMeaning(item.meaning_zh))) {
+        await completeJob(job.job_id, job.attempts, true, undefined, 300);
+        summary.skipped += 1;
+        continue;
+      }
       await upsertMeanings(job.lexeme_id, meanings, provider);
-      await completeJob(job.job_id, true, null, 300);
+      await completeJob(job.job_id, job.attempts, true, undefined, 300);
 
       summary.succeeded += 1;
       summary.processedLexemes.push(job.display_text || job.normalized_text);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await completeJob(job.job_id, false, message, 120);
+      // A cooldown too large to store leaves the shared lease locked; the job
+      // can be retried only after an operator inspects and resets that lease.
+      const delay = error instanceof BackfillRateLimitError
+        ? (Number.isFinite(error.cooldownSeconds) ? error.cooldownSeconds : 3600)
+        : failureDelaySeconds(job.attempts);
+      if (error instanceof BackfillRateLimitError) {
+        try { await deferRateLimitedJob(job.job_id, job.attempts, delay); }
+        catch { throw new PreserveBackfillLeaseError(); }
+        throw error;
+      }
+      try { await completeJob(job.job_id, job.attempts, false, message, delay); }
+      catch (completionError) {
+        if (completionError instanceof BackfillRateLimitError) {
+          const rateDelay = Number.isFinite(completionError.cooldownSeconds) ? completionError.cooldownSeconds : 3600;
+          try { await deferRateLimitedJob(job.job_id, job.attempts, rateDelay); }
+          catch { throw new PreserveBackfillLeaseError(); }
+        }
+        throw completionError;
+      }
       summary.failed += 1;
     }
   }
@@ -248,23 +196,18 @@ serve(async (req) => {
     });
   }
 
-  if (backfillSecret) {
-    const requestSecret = req.headers.get('x-admin-secret') || '';
-    if (requestSecret !== backfillSecret) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+  if (!isLexemeBackfillAuthorized(backfillSecret, req.headers.get('x-admin-secret') || '')) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   }
 
+  let leaseToken: string | null = null;
+  let cooldownSeconds = 0;
   try {
     const body = await req.json().catch(() => ({}));
     const action = body.action || 'run_once';
-    const batchSize = Math.min(Math.max(Number(body.batchSize || 25), 1), 100);
-    const maxBatches = Math.min(Math.max(Number(body.maxBatches || 1), 1), 50);
-    const enqueueLimit = Math.min(Math.max(Number(body.enqueueLimit || 1000), 1), 5000);
-    const force = body.force === true;
 
     if (action === 'status') {
       const counts = await getJobCounts();
@@ -273,69 +216,53 @@ serve(async (req) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-
-    let enqueued = 0;
-    if (action === 'enqueue_missing' || action === 'run_once') {
-      const { data, error } = await supabase.rpc('enqueue_missing_lexeme_backfills', {
-        p_limit: enqueueLimit,
-        p_force: force,
+    if (action !== 'run_once') {
+      return new Response(JSON.stringify({ error: 'Unsupported action' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
-
-      if (error) {
-        throw new Error(`Enqueue missing lexemes failed: ${error.message}`);
-      }
-
-      enqueued = Number(data || 0);
-
-      if (action === 'enqueue_missing') {
-        const counts = await getJobCounts();
-        return new Response(JSON.stringify({ success: true, enqueued, counts }), {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
     }
 
-    const runs = [] as Array<Record<string, unknown>>;
-    let totalSucceeded = 0;
-    let totalFailed = 0;
-    let totalClaimed = 0;
-
-    for (let index = 0; index < maxBatches; index += 1) {
-      const result = await processJobs(batchSize);
-      runs.push(result);
-      totalSucceeded += result.succeeded;
-      totalFailed += result.failed;
-      totalClaimed += result.claimed;
-
-      if (result.claimed === 0) {
-        break;
-      }
+    // Shared database gate is authoritative across cron and all Edge instances.
+    const { data: token, error: gateError, status: gateStatus } = await supabase.rpc('try_acquire_lexeme_backfill_slot');
+    assertDatabaseSuccess(gateError, gateStatus, 'Acquire backfill slot failed');
+    if (!token) {
+      return new Response(JSON.stringify({ success: true, paced: true, totalClaimed: 0 }), {
+        status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
+    leaseToken = token;
 
-    const counts = await getJobCounts();
-
+    // Deliberately ignore request batch controls and do not scan/re-enqueue the
+    // full vocabulary. The scheduler separately discovers missing lexemes.
+    const result = await processJobs(leaseToken);
     return new Response(JSON.stringify({
-      success: true,
-      action,
-      enqueued,
-      totalClaimed,
-      totalSucceeded,
-      totalFailed,
-      counts,
-      runs,
+      success: true, action, totalClaimed: result.claimed,
+      totalSucceeded: result.succeeded, totalFailed: result.failed, runs: [result],
     }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    if (error instanceof BackfillRateLimitError) cooldownSeconds = error.cooldownSeconds;
+    if (error instanceof PreserveBackfillLeaseError) cooldownSeconds = Infinity;
     console.error('lexeme-meaning-backfill error:', error);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : String(error),
     }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: error instanceof BackfillRateLimitError ? 429 : 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json', ...(error instanceof BackfillRateLimitError ? {
+        'Retry-After': String(Number.isFinite(error.cooldownSeconds) ? error.cooldownSeconds : BACKFILL_MAX_COOLDOWN_SECONDS),
+      } : {}) },
     });
+  } finally {
+    if (leaseToken && Number.isFinite(cooldownSeconds)) {
+      const { error } = await supabase.rpc('release_lexeme_backfill_slot', {
+        p_token: leaseToken, p_cooldown_seconds: cooldownSeconds,
+      });
+      // An unreleased lease fails closed. Do not silently allow
+      // a new worker after a failure to persist the provider cooldown.
+      if (error) console.error('Could not release backfill slot:', error.message);
+    }
   }
 });

@@ -1,5 +1,6 @@
 
 import { createClient } from '@supabase/supabase-js';
+import { observeSupabaseRateLimits } from '../services/definitionBackfillPacing.ts';
 
 // ------------------------------------------------------------------
 // CONFIGURATION INSTRUCTIONS
@@ -35,4 +36,6 @@ if (isSupabaseConfigured && !supabaseAnonKey) {
 const url = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
 const key = isSupabaseConfigured ? supabaseAnonKey : 'placeholder';
 
-export const supabase = createClient(url, key);
+const observingFetch: typeof fetch = observeSupabaseRateLimits((input, init) => fetch(input, init));
+
+export const supabase = createClient(url, key, { global: { fetch: observingFetch } });
