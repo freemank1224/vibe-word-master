@@ -14,7 +14,7 @@ for _ in {1..60}; do
 done
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == 'healthy' ]]
 cat "$repo_dir/supabase/tests/lexeme_rate_gate_fixture.sql" \
-    "$repo_dir/supabase/migrations/20261031013028_lexeme_backfill_global_rate_gate.sql" \
+    "$repo_dir/supabase/migrations/20261031014534_lexeme_backfill_global_rate_gate.sql" \
     "$repo_dir/supabase/tests/lexeme_rate_gate_assertions.sql" \
   | docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres
 docker exec "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres \

@@ -14,7 +14,7 @@ done
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == 'healthy' ]]
 cat "$repo_dir/supabase/tests/lexeme_meaning_queue_fixture.sql" \
     "$repo_dir/supabase/migrations/20261029160848_lexeme_valid_chinese_meanings.sql" \
-    "$repo_dir/supabase/migrations/20261031013028_lexeme_backfill_global_rate_gate.sql" \
+    "$repo_dir/supabase/migrations/20261031014534_lexeme_backfill_global_rate_gate.sql" \
     "$repo_dir/supabase/tests/secure_lexeme_cron_fixture.sql" \
   | docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres
 # This test-only stub is installed as the extension object owner; no HTTP leaves
@@ -24,7 +24,7 @@ CREATE EXTENSION dblink WITH SCHEMA private_lexeme_http;
 SQL
 docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   < "$repo_dir/supabase/tests/secure_lexeme_http_stub.sql"
-cat "$repo_dir/supabase/migrations/20261031013350_secure_lexeme_cron.sql" \
+cat "$repo_dir/supabase/migrations/20261031014637_secure_lexeme_cron.sql" \
     "$repo_dir/supabase/tests/secure_lexeme_cron_assertions.sql" \
   | docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres
 docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
