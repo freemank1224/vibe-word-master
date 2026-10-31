@@ -32,6 +32,7 @@ export function failureDelaySeconds(attempts: number, retryAfter = 0): number {
 /** One provider and one HTTP request per admitted job; fallback happens on a later attempt. */
 export async function translateBackfillWord(
   text: string,
+  lexemeId: string,
   attempts: number,
   uapisEndpoint: string,
   uapisApiKey: string,
@@ -43,7 +44,15 @@ export async function translateBackfillWord(
   }
   // MyMemory is deliberately excluded: its public 5,000-character daily
   // budget is shared with other callers and cannot be safely reserved here.
-  const useUapis = attempts % 2 !== 0;
+  // UUIDs are stable and their final hexadecimal digit distributes the first
+  // attempts across both providers; a failed attempt flips the next provider.
+  // The database rolls back the attempt number for a 429/503, so a rate-limited
+  // job keeps the same provider after the global cooldown expires.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lexemeId)) {
+    throw new Error('Invalid lexeme ID for automatic backfill');
+  }
+  const firstAttemptUsesUapis = (parseInt(lexemeId.slice(-1), 16) & 1) === 1;
+  const useUapis = attempts % 2 === 1 ? firstAttemptUsesUapis : !firstAttemptUsesUapis;
   const endpoint = useUapis
     ? new URL(uapisEndpoint)
     : new URL('https://translate.googleapis.com/translate_a/single');

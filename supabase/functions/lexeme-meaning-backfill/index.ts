@@ -125,7 +125,7 @@ const processJobs = async (token: string) => {
         continue;
       }
 
-      const translation = await translateBackfillWord(job.display_text || job.normalized_text, job.attempts, uapisTranslateEndpoint, uapisApiKey);
+      const translation = await translateBackfillWord(job.display_text || job.normalized_text, job.lexeme_id, job.attempts, uapisTranslateEndpoint, uapisApiKey);
       if (translation.meanings.length === 0) {
         throw new Error('No Chinese translation returned by provider');
       }
