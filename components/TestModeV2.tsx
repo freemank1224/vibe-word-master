@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { WordEntry, InputSession, CompletedTestSummary } from '../types';
 import { updateWordStatusV2 } from '../services/dataService';
 import { supabase } from '../lib/supabaseClient'; // Adjusted import for supabase
-import { fetchDictionaryData, playWordAudio as playWordAudioService, preloadWordAudio } from '../services/dictionaryService';
+import { playWordAudio as playWordAudioService, preloadWordAudio } from '../services/dictionaryService';
 import { stopCurrentAudio as stopPronunciationAudio, clearAudioCache } from '../services/pronunciationService';
 import { playDing, playBuzzer, playCheer } from '../utils/audioFeedback';
 import { adaptiveWordSelector } from '../services/adaptiveWordSelector';
@@ -14,7 +14,7 @@ import { HoverTranslationText } from './HoverTranslationText';
 import { useLanguage } from '../contexts/LanguageContext';
 import { wordMeaningForLanguage } from '../utils/wordMeaningLocale';
 import { useT } from '../hooks/useT';
-import { forEachWithConcurrency, missingDictionaryFields, needsDictionaryEnrichment, preloadHintImage } from '../services/testPreparation';
+import { forEachWithConcurrency, latestTestWordMeaning, preloadHintImage } from '../services/testPreparation';
 import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
 import type { LearningResult } from '../services/learningRecordStore';
 
@@ -260,10 +260,6 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
   // word.id set of words whose pronunciation failed to preload (drives strict START gate + retry)
   const failedAudioRef = useRef<Set<string>>(new Set());
   const preparationRef = useRef<AbortController | null>(null);
-  const isStartedRef = useRef(isStarted);
-  isStartedRef.current = isStarted;
-  const latestWordsRef = useRef(allWords);
-  latestWordsRef.current = allWords;
   // Per-resource preload progress for the detailed Loading bar (audio X/Y · images X/Y)
   const [resourceProgress, setResourceProgress] = useState({ audioReady: 0, audioTotal: 0, imagesReady: 0, imagesTotal: 0 });
   const objectUrlsRef = useRef<string[]>([]);
@@ -455,22 +451,6 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
     setMissingResources({ images: 0, audio: 0 });
     setResourceProgress({ audioReady: 0, audioTotal: snapshot.length, imagesReady: 0,
       imagesTotal: snapshot.filter(word => word.image_url).length });
-
-    // Optional dictionary enrichment is independent of the START gate and media workers.
-    // It only fills missing local fields, never writes over a user's chosen meaning in the DB.
-    void forEachWithConcurrency(snapshot.filter(needsDictionaryEnrichment), 2, controller.signal, async word => {
-      const data = await fetchDictionaryData(word.text, word.language || 'en', { signal: controller.signal });
-      if (!isCurrent() || isStartedRef.current || !data) return;
-      setQueue(previous => {
-        if (!isCurrent() || isStartedRef.current) return previous;
-        return previous.map(item => {
-        if (item.id !== word.id) return item;
-        const latest = latestWordsRef.current.find(candidate => candidate.id === item.id) || item;
-        const patch = missingDictionaryFields({ ...item, ...latest }, data);
-        return Object.keys(patch).length ? { ...item, ...patch } : item;
-        });
-      });
-    }).catch(error => { if (isCurrent()) console.warn('Optional dictionary enrichment failed:', error); });
 
     let completedAudio = 0;
     const loadAudio = async () => {
@@ -779,7 +759,8 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
         if (phase === 'REVIEW_INSTANT_TEST' && currentReviewWord) {
                 playAudio(currentReviewWord);
         }
-    }, [phase, currentReviewWord, playAudio]);
+    // Meaning updates must not restart pronunciation or the test clock.
+    }, [phase, currentReviewWord?.id, currentReviewWord?.text, currentReviewWord?.language, currentReviewWord?.audio_url, playAudio]);
 
   useEffect(() => {
     // Auto-play audio when word changes IN SESSION
@@ -1782,7 +1763,10 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
 
   if (!currentWord) return null;
 
-    const currentChineseMeaning = wordMeaningForLanguage(currentWord, isZh);
+    // The app's paced repair updates allWords. Read its latest meaning without
+    // changing the test queue, restarting pronunciation, or blocking the test.
+    const meaningWord = latestTestWordMeaning(currentWord, allWords);
+    const currentChineseMeaning = wordMeaningForLanguage(meaningWord, isZh);
     const typingFlowMetrics = getTypingFlowMetrics(liveCharsPerMinute);
     const typingFlowLedColors = [
         '#ff3b30',
@@ -1898,14 +1882,14 @@ const TestModeV2: React.FC<TestModeV2Props> = ({
                                 {currentWord.text}
                             </span>
                             <div className="inline-block px-3 py-1 bg-white/10 backdrop-blur-md rounded-lg text-gray-400 font-mono text-xs border border-white/5">
-                              {currentWord.phonetic || "/ ... /"}
+                              {meaningWord.phonetic || "/ ... /"}
                             </div>
                         </div>
                     )}
                     {hintLevel >= 2 && !isRevealed && (
                         <div className="animate-in fade-in duration-500">
                             <p className="text-xl text-gray-300 font-light italic leading-relaxed max-w-lg mx-auto">
-                              "{wordMeaningForLanguage(currentWord, isZh)}"
+                              "{currentChineseMeaning}"
                             </p>
                         </div>
                     )}

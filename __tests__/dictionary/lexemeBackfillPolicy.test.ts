@@ -127,3 +127,47 @@ test('an invalid lexeme ID cannot dispatch a provider request', async () => {
   await assert.rejects(translateBackfillWord('test', 'invalid', 1, 'https://example.test', '', fakeFetch));
   assert.equal(calls, 0);
 });
+
+test('failed provider responses expose only safe structural diagnostics', async () => {
+  const sensitive = 'private-word-and-provider-value';
+  const cases: Array<[unknown, string]> = [
+    [{}, 'root=object, field=missing, empty=true, han=false'],
+    [{ translated_text: null }, 'root=object, field=null, empty=true, han=false'],
+    [{ translated_text: { [sensitive]: '在船上' } }, 'root=object, field=other, empty=true, han=false'],
+    [{ translated_text: '' }, 'root=object, field=string, empty=true, han=false'],
+    [{ translated_text: sensitive }, 'root=object, field=string, empty=false, han=false'],
+    [{ translated_text: '暂无中文释义' }, 'root=object, field=string, empty=false, han=true'],
+    [{ data: { translated_text: '在船上' } }, 'root=object, field=missing, empty=true, han=false'],
+    [null, 'root=null, field=missing, empty=true, han=false'],
+  ];
+  for (const [payload, expected] of cases) {
+    const fakeFetch: typeof fetch = async () => new Response(JSON.stringify(payload));
+    await assert.rejects(translateBackfillWord(sensitive, oddLexeme, 1, 'https://example.test', '', fakeFetch), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.includes('provider=uapis, status=200'));
+      assert.ok(error.message.includes(expected), error.message);
+      assert.ok(!error.message.includes(sensitive));
+      assert.ok(!error.message.includes('在船上'));
+      return true;
+    });
+  }
+  const valid: typeof fetch = async () => new Response(JSON.stringify({ translated_text: '在船上' }));
+  assert.deepEqual((await translateBackfillWord(sensitive, oddLexeme, 1, 'https://example.test', '', valid)).meanings, ['在船上']);
+});
+
+test('malformed JSON and Google shape errors omit response contents', async () => {
+  const secret = 'private-body';
+  const invalidJson: typeof fetch = async () => new Response(`{${secret}`);
+  await assert.rejects(translateBackfillWord('test', oddLexeme, 1, 'https://example.test', '', invalidJson), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, 'Translation response invalid JSON (provider=uapis, status=200)');
+    return true;
+  });
+  const googleInvalid: typeof fetch = async () => new Response(JSON.stringify({ [secret]: '在船上' }));
+  await assert.rejects(translateBackfillWord('test', evenLexeme, 1, 'https://example.test', '', googleInvalid), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.includes('provider=google-translate, status=200, root=object, field=missing'));
+    assert.ok(!error.message.includes(secret));
+    return true;
+  });
+});

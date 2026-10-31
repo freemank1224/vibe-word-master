@@ -6,6 +6,11 @@ const hasDefinition = (value?: string | null) => !!normalizeChineseMeaning(value
 
 type MeaningSelection = Pick<WordEntry, 'definition_cn' | 'selected_meaning_key' | 'meaning_options'>;
 
+/** Use the parent's newest saved meaning while keeping the active test queue stable. */
+export function latestTestWordMeaning(word: WordEntry, latestWords: readonly WordEntry[]): WordEntry {
+  return latestWords.find(candidate => candidate.id === word.id) || word;
+}
+
 // Older versions saved a failed lookup as a selected placeholder. Preserve unknown
 // selections (for example when legacy rows do not have meaning_options), and only
 // replace a selection when its stored option proves it is a placeholder.

@@ -79,11 +79,27 @@ export async function translateBackfillWord(
       throw new BackfillRateLimitError(Math.max(3600, retryAfterSeconds(response.headers.get('Retry-After'))));
     }
     if (!response.ok) throw new Error(`Translation provider returned HTTP ${response.status}`);
-    const data = await response.json();
-    const translated = useUapis ? data?.translated_text : Array.isArray(data?.[0])
-      ? data[0].map((segment: unknown) => Array.isArray(segment) ? segment[0] : '').join('')
+    const provider = useUapis ? 'uapis' : 'google-translate';
+    let data: unknown;
+    try { data = await response.json(); }
+    catch { throw new Error(`Translation response invalid JSON (provider=${provider}, status=${response.status})`); }
+    const root = data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data === 'object' ? 'object' : 'other';
+    const uapisObject = root === 'object' ? data as Record<string, unknown> : undefined;
+    const fieldPresent = useUapis
+      ? !!uapisObject && Object.prototype.hasOwnProperty.call(uapisObject, 'translated_text')
+      : Array.isArray(data) && Array.isArray(data[0]);
+    const raw = useUapis ? uapisObject?.translated_text : fieldPresent && Array.isArray(data)
+      ? data[0].map((segment: unknown) => Array.isArray(segment) && typeof segment[0] === 'string' ? segment[0] : '').join('')
       : undefined;
-    return { provider: useUapis ? 'uapis' : 'google-translate', meanings: splitChineseMeanings(translated) };
+    const fieldType = !fieldPresent ? 'missing' : raw === null ? 'null' : typeof raw === 'string' ? 'string' : 'other';
+    const translated = typeof raw === 'string' ? raw : '';
+    const meanings = splitChineseMeanings(translated);
+    if (!meanings.length) {
+      // Never include provider text, request text, arbitrary JSON keys or secrets.
+      // These fixed enums and booleans are stored as the job error for diagnosis.
+      throw new Error(`Translation response unusable (provider=${provider}, status=${response.status}, root=${root}, field=${fieldType}, empty=${!translated.trim()}, han=${/\p{Script=Han}/u.test(translated)})`);
+    }
+    return { provider, meanings };
   } finally {
     clearTimeout(timer);
   }

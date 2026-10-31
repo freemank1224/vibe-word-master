@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDictionaryLookupCache, withinDeadline } from '../../services/dictionaryLookupCache.ts';
-import { dictionaryBackfillFilters, forEachWithConcurrency, missingDictionaryFields, needsDictionaryEnrichment } from '../../services/testPreparation.ts';
+import { dictionaryBackfillFilters, forEachWithConcurrency, latestTestWordMeaning, missingDictionaryFields, needsDictionaryEnrichment } from '../../services/testPreparation.ts';
+import type { WordEntry } from '../../types.ts';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -9,6 +10,21 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test('active test displays the latest saved meaning without changing its queue entry', () => {
+  const queued: WordEntry = {
+    id: 'one', text: 'bank', timestamp: 1, sessionId: 'session', correct: false, tested: false,
+    error_count: 0, best_time_ms: null, last_tested: null, phonetic: null, audio_url: null,
+    definition_cn: null, definition_en: null,
+  };
+  const unrelated = { ...queued, id: 'two', definition_cn: '错误' };
+  assert.equal(latestTestWordMeaning(queued, [unrelated]), queued);
+  const repaired = { ...queued, definition_cn: '银行' };
+  assert.equal(latestTestWordMeaning(queued, [unrelated, repaired]).definition_cn, '银行');
+  const manuallyEdited = { ...repaired, definition_cn: '河岸' };
+  assert.equal(latestTestWordMeaning(queued, [manuallyEdited]).definition_cn, '河岸');
+  assert.equal(queued.definition_cn, null);
+});
 
 test('simultaneous public lookups share one request, with independent mutable results', async () => {
   const lookup = createDictionaryLookupCache<{ meanings: string[] }>();
