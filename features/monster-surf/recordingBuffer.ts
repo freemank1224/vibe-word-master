@@ -18,7 +18,8 @@ export interface SurfRecordingProgress {
 }
 
 export interface SurfRecordingBufferOptions {
-  resolveSources: (word: string, audioUrl?: string | null) => readonly string[];
+  /** May resolve asynchronously (e.g. appending a tiny-voca synthesized Blob URL). */
+  resolveSources: (word: string, audioUrl?: string | null) => readonly string[] | Promise<readonly string[]>;
   onSourceReady?: (word: string, sourceUrl: string) => void;
 }
 
@@ -282,7 +283,10 @@ export class SurfRecordingBuffer {
   }
 
   private async download(entry: RecordingEntry): Promise<{ source: string; remote: string }> {
-    const sources = [...new Set(this.options.resolveSources(entry.word, entry.audioUrl)
+    // Keep the synchronous fast path: awaiting unconditionally would insert a
+    // microtask before the first fetch, changing prepare()'s start timing.
+    const resolved = this.options.resolveSources(entry.word, entry.audioUrl);
+    const sources = [...new Set((resolved instanceof Promise ? await resolved : resolved)
       .map(safePronunciationUrl).filter((source): source is string => Boolean(source)))];
     let retry: { remote: string; delay: number } | null = null;
     for (const remote of sources) {

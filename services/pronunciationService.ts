@@ -3,13 +3,17 @@
  *
  * Strategy:
  * 1) localStorage URL cache hit
- * 2) Supabase Edge Function /pronunciation (global dedup + generation)
- * 3) no WebSpeech fallback by default (to avoid low-quality synthetic voice)
+ * 2) direct Storage CDN URL (word.audio_url) if known
+ * 3) Supabase Edge Function /pronunciation (global dedup + generation)
+ * 4) local tiny-voca synthesis in the browser (offline / MiniMax unavailable,
+ *    or forced via the AccountPanel "prefer local TTS" toggle)
+ * 5) system WebSpeech as the last resort
  */
 
-import { buildPronunciationCandidates } from './pronunciationSources';
-import { audioCacheManager } from './audioCache';
-import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig';
+import { buildPronunciationCandidates } from './pronunciationSources.ts';
+import { audioCacheManager } from './audioCache.ts';
+import { WORD_LEARNING_CONFIG } from '../config/wordLearningConfig.ts';
+import { LOCAL_TTS_SOURCE_NAME, isLocalTtsPreferred, isLocalTtsSupportedLang, synthesizeLocalTts } from './localTtsService.ts';
 
 export interface PronunciationSource {
   name: string;
@@ -85,13 +89,19 @@ const supabaseProxySource: PronunciationSource = {
   }
 };
 
+const tinyVocaSource: PronunciationSource = {
+  name: LOCAL_TTS_SOURCE_NAME,
+  priority: 100,
+  getAudioUrl: async (word: string, lang: string = 'en') => synthesizeLocalTts(word, lang),
+};
+
 const webSpeechFallback: PronunciationSource = {
   name: 'Browser TTS Fallback',
   priority: 999,
   getAudioUrl: async () => null,
 };
 
-const sources: PronunciationSource[] = [supabaseProxySource, webSpeechFallback];
+const sources: PronunciationSource[] = [supabaseProxySource, tinyVocaSource, webSpeechFallback];
 
 const playAudioFromUrl = async (url: string, cacheKey: string, word: string): Promise<boolean> => {
   return new Promise((resolve) => {
@@ -206,18 +216,27 @@ export const playWordPronunciation = async (
   const cacheKey = `${word}-${lang}`;
   await stopCurrentAudio();
 
-  const cachedUrl = audioCacheManager.get(word, lang);
-  if (cachedUrl) {
-    const success = await playAudioFromUrl(cachedUrl, cacheKey, word);
-    if (success) return { success: true, sourceUsed: 'Persistent Cache' };
-    audioCacheManager.delete(word, lang);
+  // The AccountPanel "prefer local TTS" toggle must win UNIFORMLY: when it is
+  // on, neither the persistent cache nor a MiniMax directUrl may preempt the
+  // local source — those only serve as fallbacks. An explicit preferredSource
+  // argument still wins over the toggle.
+  const preferLocal = !preferredSource && isLocalTtsPreferred();
+
+  if (!preferLocal) {
+    const cachedUrl = audioCacheManager.get(word, lang);
+    if (cachedUrl) {
+      const success = await playAudioFromUrl(cachedUrl, cacheKey, word);
+      if (success) return { success: true, sourceUsed: 'Persistent Cache' };
+      audioCacheManager.delete(word, lang);
+    }
   }
 
   // Prefer a known direct Storage CDN URL (already-generated asset) — this
   // bypasses the edge function entirely for a true, cacheable download. Only
   // fall through to the edge-function source loop (which generates server-side)
-  // if no direct URL is available or it fails to play.
-  if (directUrl) {
+  // if no direct URL is available or it fails to play. Skipped while the
+  // prefer-local toggle is on (see above).
+  if (directUrl && !preferLocal) {
     const result = await playAudioWithResilience(directUrl, cacheKey, word);
     if (result.success) {
       audioCacheManager.set(word, lang, stripTransientQueryParams(result.playedUrl), 'Storage CDN (direct)');
@@ -225,11 +244,14 @@ export const playWordPronunciation = async (
     }
   }
 
+  // The AccountPanel "prefer local TTS" toggle promotes tiny-voca above the
+  // online sources; an explicit preferredSource argument still wins.
+  const preferredName = preferredSource || (isLocalTtsPreferred() ? LOCAL_TTS_SOURCE_NAME : undefined);
   let sortedSources = [...sources].sort((a, b) => a.priority - b.priority);
-  if (preferredSource) {
-    const preferred = sortedSources.find(s => s.name === preferredSource);
+  if (preferredName) {
+    const preferred = sortedSources.find(s => s.name === preferredName);
     if (preferred) {
-      sortedSources = [preferred, ...sortedSources.filter(s => s.name !== preferredSource)];
+      sortedSources = [preferred, ...sortedSources.filter(s => s.name !== preferredName)];
     }
   }
 
@@ -246,7 +268,11 @@ export const playWordPronunciation = async (
     if (!audioUrl) continue;
     const result = await playAudioWithResilience(audioUrl, cacheKey, word);
     if (result.success) {
-      audioCacheManager.set(word, lang, stripTransientQueryParams(result.playedUrl), source.name);
+      // blob: URLs (local tiny-voca synthesis) die with the page session and
+      // must never be written into the persistent localStorage cache.
+      if (!result.playedUrl.startsWith('blob:')) {
+        audioCacheManager.set(word, lang, stripTransientQueryParams(result.playedUrl), source.name);
+      }
       return { success: true, sourceUsed: source.name };
     }
   }
@@ -375,9 +401,22 @@ export const preloadWordAudio = async (
   //   3. The edge-function URL — generates+caches server-side if the asset
   //      isn't ready yet. Always tried last so a stale direct/cache URL can't
   //      cause a preload failure the edge function could have recovered.
+  // With the prefer-local toggle on, local synthesis runs BEFORE these so a
+  // warmed session stays network-free and MiniMax audio only serves as a
+  // fallback when synthesis fails.
+  if (isLocalTtsPreferred() && isLocalTtsSupportedLang(lang)) {
+    const localUrl = await synthesizeLocalTts(word, lang);
+    if (localUrl) {
+      const audio = await loadAudioElement(localUrl, timeoutMs);
+      if (audio) {
+        audioElementCache.set(cacheKey, audio);
+        return true;
+      }
+    }
+  }
+
   const persistentUrl = audioCacheManager.get(word, lang);
   const candidates = getRecordedPronunciationUrls(word, directUrl, lang);
-  if (candidates.length === 0) return false;
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
@@ -398,6 +437,20 @@ export const preloadWordAudio = async (
     // not eviction candidates (we don't own their lifecycle here).
     if (candidate === persistentUrl) {
       audioCacheManager.delete(word, lang);
+    }
+  }
+
+  // Every network candidate failed (offline, edge function down). Synthesize
+  // locally with tiny-voca so the strict START gate still passes; the blob
+  // URL is session-only, so nothing is written to the persistent cache here.
+  if (isLocalTtsSupportedLang(lang)) {
+    const localUrl = await synthesizeLocalTts(word, lang);
+    if (localUrl) {
+      const audio = await loadAudioElement(localUrl, timeoutMs);
+      if (audio) {
+        audioElementCache.set(cacheKey, audio);
+        return true;
+      }
     }
   }
   return false;

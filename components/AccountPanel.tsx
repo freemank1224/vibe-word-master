@@ -7,6 +7,7 @@ import { AccountPanelHeader } from './AccountPanel/AccountPanelHeader';
 import { LearningAnalyticsSection } from './AccountPanel/LearningAnalyticsSection';
 import { StatsOverviewSection } from './AccountPanel/StatsOverviewSection';
 import { SmartSelectionSection } from './AccountPanel/SmartSelectionSection';
+import { LocalTtsSection } from './AccountPanel/LocalTtsSection';
 import { AchievementsSection } from './AccountPanel/AchievementsSection';
 import { AccountChartTab } from './AccountPanel/types';
 import { ProfileEditModal } from './ProfileEditModal';
@@ -140,6 +141,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({ user, words, session
             <StatsOverviewSection stats={stats} />
             <PuzzleLeaderboardPanel />
             <SmartSelectionSection enabled={aiSelectionEnabled} onToggle={toggleAiSelection} />
+            <LocalTtsSection />
             <AchievementsSection
               unlockedCount={unlockedCount}
               achievementStatuses={stats.achievementStatuses}

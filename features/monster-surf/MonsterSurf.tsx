@@ -11,6 +11,7 @@ import { SurfLaunchOptions, type SurfLaunchProgress } from './SurfLaunchOptions'
 import { modeFromSlider } from './runMode';
 import { SURF_WORDS } from './words';
 import { getRecordedPronunciationUrls, rememberRecordedPronunciation } from '../../services/pronunciationService';
+import { isLocalTtsPreferred, synthesizeLocalTts } from '../../services/localTtsService';
 import { getDailySurfMonster, millisecondsUntilNextSurfDay, refreshDailySurfMonster } from './dailyMonster';
 import { useSurfSession } from './useSurfSession';
 import { estimateMonsterSurfReward } from '../../services/monsterSurfService';
@@ -269,7 +270,24 @@ export default function MonsterSurf() {
   }, [view.monster, assetAttempt, apply, startLoadedRun, rebuildRenderer]);
 
   useEffect(() => {
-    const buffer = new SurfRecordingBuffer({ resolveSources: getRecordedPronunciationUrls, onSourceReady: rememberRecordedPronunciation });
+    // Recorded assets first; the tiny-voca synthesized Blob URL is the final
+    // candidate so listening still works when MiniMax/the edge function is
+    // unavailable. With the "prefer local TTS" toggle on, it goes first.
+    const resolveSurfSources = async (word: string, audioUrl?: string | null): Promise<readonly string[]> => {
+      const candidates = getRecordedPronunciationUrls(word, audioUrl, 'en');
+      try {
+        const local = await synthesizeLocalTts(word, 'en');
+        if (!local) return candidates;
+        return isLocalTtsPreferred() ? [local, ...candidates] : [...candidates, local];
+      } catch {
+        return candidates;
+      }
+    };
+    const buffer = new SurfRecordingBuffer({
+      resolveSources: resolveSurfSources,
+      // Session-local blob URLs must not enter the persistent localStorage cache.
+      onSourceReady: (word, url) => { if (!url.startsWith('blob:')) rememberRecordedPronunciation(word, url); },
+    });
     recordings.current = buffer;
     const player = new SurfAudio({ resolvePreparedSource: (word, url) => buffer.ensure(word, url) }); audio.current = player;
     let frame = 0; let live = true; let publishedAt = 0;

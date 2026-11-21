@@ -12,7 +12,9 @@ export function safePronunciationUrl(value?: string | null): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    return /^(https?:)$/.test(url.protocol) && !url.username && !url.password ? url.href : null;
+    // blob: URLs are origin-scoped session-local audio (tiny-voca fallback
+    // synthesis); they are ephemeral by nature and safe to attempt.
+    return /^(https?:|blob:)$/.test(url.protocol) && !url.username && !url.password ? url.href : null;
   } catch {
     return null;
   }
