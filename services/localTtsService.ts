@@ -22,6 +22,11 @@ export const LOCAL_TTS_SOURCE_NAME = 'Local Tiny-Voca TTS';
 const MODEL_URL = '/models/tiny-voca-js.gguf';
 const MODEL_CACHE_NAME = 'vibe-tts-model';
 const PREFERRED_KEY = 'vibe_tts_local_preferred';
+/** Speech-rate bounds for the AccountPanel slider: 0.5x (slowest) – 1x (native). */
+export const LOCAL_TTS_MIN_SPEED = 0.5;
+export const LOCAL_TTS_MAX_SPEED = 1;
+export const LOCAL_TTS_DEFAULT_SPEED = 0.8;
+const SPEED_KEY = 'vibe_tts_local_speed';
 /** Session cache cap; each word WAV is ~30–100 KB, so this stays well under control. */
 const MAX_SESSION_CACHE = 300;
 
@@ -95,14 +100,6 @@ export const synthesizeLocalWav = async (word: string, lang: string = 'en'): Pro
   const key = normalizeWord(word);
   if (!key || failedWords.has(key)) return null;
 
-  const cached = sessionCache.get(key);
-  if (cached) {
-    // Refresh insertion order for LRU behavior.
-    sessionCache.delete(key);
-    sessionCache.set(key, cached);
-    return cached;
-  }
-
   let runtime: VocaRuntime;
   try {
     runtime = await loadRuntime();
@@ -113,10 +110,22 @@ export const synthesizeLocalWav = async (word: string, lang: string = 'en'): Pro
   }
 
   try {
+    // The cache key includes the speed so slider changes take effect on the
+    // next synthesis instead of replaying a stale cached blob.
+    const speed = getLocalTtsSpeed();
+    const cacheKey = `${key}@${speed}`;
+    const cached = sessionCache.get(cacheKey);
+    if (cached) {
+      // Refresh insertion order for LRU behavior.
+      sessionCache.delete(cacheKey);
+      sessionCache.set(cacheKey, cached);
+      return cached;
+    }
+
     const { ids, stress } = runtime.phonemize(key);
-    const audio = runtime.synthesize(ids, stress);
+    const audio = runtime.synthesize(ids, stress, { speed });
     const blob = new Blob([runtime.toWav(audio)], { type: 'audio/wav' });
-    sessionCache.set(key, blob);
+    sessionCache.set(cacheKey, blob);
     if (sessionCache.size > MAX_SESSION_CACHE) {
       const oldest = sessionCache.keys().next().value;
       if (oldest !== undefined) sessionCache.delete(oldest);
@@ -160,6 +169,24 @@ export const isLocalTtsPreferred = (): boolean => {
 
 export const setLocalTtsPreferred = (value: boolean): void => {
   try { localStorage.setItem(PREFERRED_KEY, String(value)); } catch { /* storage unavailable */ }
+};
+
+const clampSpeed = (value: number): number => {
+  if (!Number.isFinite(value)) return LOCAL_TTS_DEFAULT_SPEED;
+  return Math.min(LOCAL_TTS_MAX_SPEED, Math.max(LOCAL_TTS_MIN_SPEED, Math.round(value * 100) / 100));
+};
+
+/** Persisted speech rate in [0.5, 1]; defaults to 0.8x. */
+export const getLocalTtsSpeed = (): number => {
+  try {
+    const raw = localStorage.getItem(SPEED_KEY);
+    if (raw === null) return LOCAL_TTS_DEFAULT_SPEED;
+    return clampSpeed(Number(raw));
+  } catch { return LOCAL_TTS_DEFAULT_SPEED; }
+};
+
+export const setLocalTtsSpeed = (value: number): void => {
+  try { localStorage.setItem(SPEED_KEY, String(clampSpeed(value))); } catch { /* storage unavailable */ }
 };
 
 /** Test hook: swap the runtime loader (skips fetch/Cache API) between tests. */

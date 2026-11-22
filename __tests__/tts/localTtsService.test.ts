@@ -8,6 +8,8 @@ import {
   synthesizeLocalTts,
   isLocalTtsPreferred,
   setLocalTtsPreferred,
+  getLocalTtsSpeed,
+  setLocalTtsSpeed,
   __setRuntimeLoaderForTests,
   __resetLocalTtsForTests,
 } from '../../services/localTtsService.ts';
@@ -105,4 +107,48 @@ test('preferred toggle persists through localStorage', () => {
   setLocalTtsPreferred(false);
   assert.equal(isLocalTtsPreferred(), false);
   assert.equal(values.get('vibe_tts_local_preferred'), 'false');
+});
+
+test('speech rate defaults to 0.8x and clamps into [0.5, 1]', () => {
+  values.delete('vibe_tts_local_speed');
+  assert.equal(getLocalTtsSpeed(), 0.8);
+  setLocalTtsSpeed(0.6);
+  assert.equal(getLocalTtsSpeed(), 0.6);
+  assert.equal(values.get('vibe_tts_local_speed'), '0.6');
+  setLocalTtsSpeed(0.3);
+  assert.equal(getLocalTtsSpeed(), 0.5, 'clamped to the slowest bound');
+  setLocalTtsSpeed(1.5);
+  assert.equal(getLocalTtsSpeed(), 1, 'clamped to the fastest bound');
+  values.set('vibe_tts_local_speed', 'garbage');
+  assert.equal(getLocalTtsSpeed(), 0.8, 'unparseable stored values fall back to the default');
+});
+
+test('speed changes re-synthesize through speed-keyed session caching', async () => {
+  __resetLocalTtsForTests();
+  const speeds: number[] = [];
+  __setRuntimeLoaderForTests(async () => ({
+    phonemize: () => ({ ids: [1, 2], stress: [0, 1] }),
+    synthesize: (_ids: number[], _stress: number[], options?: { speed?: number }) => {
+      speeds.push(options?.speed ?? 1);
+      return new Float32Array(2400);
+    },
+    toWav: () => new ArrayBuffer(44 + 2 * 2400),
+    sampleRate: 24000,
+  }));
+  try {
+    setLocalTtsSpeed(0.8);
+    const nativeish = await synthesizeLocalWav('pace');
+    assert.equal(speeds.at(-1), 0.8, 'default rate is forwarded to the runtime');
+    assert.equal(await synthesizeLocalWav('pace'), nativeish, 'same speed reuses the cached blob');
+
+    setLocalTtsSpeed(0.5);
+    const slow = await synthesizeLocalWav('pace');
+    assert.notEqual(slow, nativeish, 'a new speed synthesizes a fresh blob');
+    assert.equal(speeds.at(-1), 0.5);
+
+    setLocalTtsSpeed(0.8);
+    assert.equal(await synthesizeLocalWav('pace'), nativeish, 'switching back hits the original cache entry');
+  } finally {
+    __setRuntimeLoaderForTests(async () => runtime);
+  }
 });
